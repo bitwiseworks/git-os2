@@ -31,6 +31,8 @@ done,*)
 	;;
 esac
 
+# sava	2009-02-23	todo PATH_SEPARATOR for OS/2 (':' to ';')
+
 # Keep the original TERM for say_color
 ORIGINAL_TERM=$TERM
 

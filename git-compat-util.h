@@ -112,7 +112,9 @@
 #include <utime.h>
 #include <syslog.h>
 #ifndef NO_SYS_POLL_H
+#ifndef __KLIBC__
 #include <sys/poll.h>
+#endif
 #else
 #include <poll.h>
 #endif
@@ -144,6 +146,9 @@
 #undef _ALL_SOURCE /* AIX 5.3L defines a struct list with _ALL_SOURCE. */
 #include <grp.h>
 #define _ALL_SOURCE 1
+#endif
+#if defined(__OS2__)
+#include "compat/os2-git-compat.h"
 #endif
 #else 	/* __MINGW32__ */
 /* pull in Windows compatibility stuff */
@@ -523,7 +528,7 @@ void git_qsort(void *base, size_t nmemb, size_t size,
 # define FORCE_DIR_SET_GID 0
 #endif
 
-#ifdef NO_NSEC
+#if defined( NO_NSEC) || defined(__KLIBC__)
 #undef USE_NSEC
 #define ST_CTIME_NSEC(st) 0
 #define ST_MTIME_NSEC(st) 0
