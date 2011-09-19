@@ -2,6 +2,12 @@
 #include "run-command.h"
 #include "exec_cmd.h"
 
+#ifdef __KLIBC__
+#include "sideband.h"
+// yd use socketpair() instead of pipe() because select() does not work on pipes
+#define pipe(A) socketpair(AF_UNIX, SOCK_STREAM, 0, A)
+#endif
+
 static inline void close_pair(int fd[2])
 {
 	close(fd[0]);
@@ -567,7 +573,11 @@ int start_async(struct async *async)
 	async->proc_in = proc_in;
 	async->proc_out = proc_out;
 	{
-		int err = pthread_create(&async->tid, NULL, run_thread, async);
+		pthread_attr_t attr;
+		int err;
+		pthread_attr_init( &attr);
+		pthread_attr_setstacksize( &attr, 10*LARGE_PACKET_MAX);
+		err = pthread_create(&async->tid, &attr, run_thread, async);
 		if (err) {
 			error("cannot create thread: %s", strerror(err));
 			goto error;
