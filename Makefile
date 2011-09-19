@@ -1197,6 +1197,40 @@ else
 endif
 endif
 
+ifeq ($(uname_S),OS/2)
+	NEEDS_SOCKET = YesPlease
+	NO_MMAP = YesPlease
+#	NO_PREAD = YesPlease
+#	NO_OPENSSL = YesPlease
+#	NO_CURL = YesPlease
+	NO_SYMLINK_HEAD = YesPlease
+	NO_IPV6 = YesPlease
+#	NO_SETENV = YesPlease
+#	NO_UNSETENV = YesPlease
+#	NO_STRCASESTR = YesPlease
+#	NO_STRLCPY = YesPlease
+#	NO_MEMMEM = YesPlease
+#	NO_PTHREADS = YesPlease
+#	NEEDS_LIBICONV = YesPlease
+#	OLD_ICONV = YesPlease
+#	NO_C99_FORMAT = YesPlease
+#	NO_STRTOUMAX = YesPlease
+#	NO_MKDTEMP = YesPlease
+#	SNPRINTF_RETURNS_BOGUS = YesPlease
+#	NO_SVN_TESTS = YesPlease
+#	NO_PERL_MAKEMAKER = YesPlease
+#	RUNTIME_PREFIX = YesPlease
+#	NO_POSIX_ONLY_PROGRAMS = YesPlease
+#	NO_ST_BLOCKS_IN_STRUCT_STAT = YesPlease
+	COMPAT_CFLAGS += -Icompat
+	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
+	COMPAT_OBJS += compat/os2.o
+	EXTLIBS += -Zexe -Zomf -Zbin-files -Zhigh-mem -Zomf -Zargs-wild -Zargs-resp -lpthread
+	PERL_PATH = perl
+	CC_LD_DYNPATH = -L
+	X = .exe
+endif
+
 -include config.mak.autogen
 -include config.mak
 
