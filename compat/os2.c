@@ -687,7 +687,7 @@ int wrapped_exec_2(int with_path, const char *progname, char **argv)
   return with_path ? execvp(progname, argv) : execv(progname, argv);
 }
 
-int wrapped_execv_for_os2 (const char *progname, char **argv)
+int wrapped_execv_for_os2 (const char *progname, char * const *argv)
 {
   return wrapped_exec_2(0, progname, argv);
 }

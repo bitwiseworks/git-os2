@@ -35,7 +35,7 @@ extern int poll (struct pollfd *, nfds_t, int);
 
 extern int wrapped_execl_for_os2 (const char *, char *, ...);
 extern int wrapped_execlp_for_os2 (const char *, char *, ...);
-extern int wrapped_execv_for_os2 (const char *, char **);
+extern int wrapped_execv_for_os2 (const char *, char * const *);
 extern int wrapped_execvp_for_os2 (const char *, char **);
 
 #ifndef BUILDING_COMPAT_OS2
@@ -70,7 +70,7 @@ extern int git_os2_main(c,v); \
 int main(int argc, char **argv) \
 { \
   git_os2_main_prepare(&argc,&argv); \
-  return git_os2_main(argc, (const char **)argv); \
+  return git_os2_main(argc,argv); \
 } \
 int git_os2_main(c,v)
 
