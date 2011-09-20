@@ -11,32 +11,6 @@
 # exporting it.
 unset CDPATH
 
-git_broken_path_fix () {
-	case ":$PATH:" in
-	*:$1:*) : ok ;;
-	*)
-		PATH=$(
-			SANE_TOOL_PATH="$1"
-			IFS=: path= sep=
-			set x $PATH
-			shift
-			for elem
-			do
-				case "$SANE_TOOL_PATH:$elem" in
-				(?*:/bin | ?*:/usr/bin)
-					path="$path$sep$SANE_TOOL_PATH"
-					sep=:
-					SANE_TOOL_PATH=
-				esac
-				path="$path$sep$elem"
-				sep=:
-			done
-			echo "$path"
-		)
-		;;
-	esac
-}
-
 # @@BROKEN_PATH_FIX@@
 
 die() {
