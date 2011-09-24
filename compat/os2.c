@@ -751,10 +751,10 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
   }
 #endif
   _control87(MCW_EM, MCW_EM); /* mask all FPEs */
-  setbinmode_to_file(fileno(stdin));
-  setbinmode_to_file(fileno(stdout));
-  setbinmode_to_file(fileno(stderr));
-  
+  if (!isatty(fileno(stdin))) setmode( fileno(stdin), O_BINARY);
+  if (!isatty(fileno(stdout))) setmode( fileno(stdout), O_BINARY);
+  if (!isatty(fileno(stderr))) setmode( fileno(stderr), O_BINARY);
+
 #if 1
   if (!getenv ("HOME"))
     die("Set your home directory to the environment variable `HOME'.\n");

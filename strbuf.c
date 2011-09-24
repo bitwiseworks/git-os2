@@ -360,6 +360,9 @@ int strbuf_getwholeline(struct strbuf *sb, FILE *fp, int term)
 	strbuf_reset(sb);
 	while ((ch = fgetc(fp)) != EOF) {
 		strbuf_grow(sb, 1);
+		// skip CR if LF is the terminator
+		if (ch == '\r' && term == '\n')
+			ch = fgetc(fp);
 		sb->buf[sb->len++] = ch;
 		if (ch == term)
 			break;
