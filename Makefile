@@ -2265,6 +2265,10 @@ install: all
 	$(INSTALL) -m 644 $(SCRIPT_LIB) '$(DESTDIR_SQ)$(gitexec_instdir_SQ)'
 	$(INSTALL) $(install_bindir_programs) '$(DESTDIR_SQ)$(bindir_SQ)'
 	$(MAKE) -C templates DESTDIR='$(DESTDIR_SQ)' install
+	# symlink script files to exe, so execvp can find them
+	for p in $(patsubst %.sh,%,$(SCRIPT_SH)); do \
+		ln -s $$p $(DESTDIR_SQ)$(gitexec_instdir_SQ)/$$p.exe; \
+	done
 ifndef NO_PERL
 	$(MAKE) -C perl prefix='$(prefix_SQ)' DESTDIR='$(DESTDIR_SQ)' install
 	$(MAKE) -C gitweb install
