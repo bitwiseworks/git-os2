@@ -257,17 +257,17 @@ static char * wrapped_get_gitshell(int *warned)
       --n;
       p_rt[n] = '\0';
     }
-    p = alloca(n + sizeof( "/bin/sh" ) + 1);
+    p = alloca(n + sizeof( "/usr/bin/sh" ) + 1);
     strcpy(p, p_rt);
     _fnslashify(p);
     if (n > 0 && p[n-1] == '/') {
       --n;
       p[n] = '\0';
     }
-    strcat(p, "/bin/sh");
+    strcat(p, "/usr/bin/sh");
     rc_gitsh = searchprog_os2emx(dummy, p);
     if (rc_gitsh >= 0)
-      altsh = "$UNIXROOT/bin/sh";
+      altsh = "$UNIXROOT/usr/bin/sh";
     else {
       p = getenv("PERL_SH_DIR");
       if (p && *p) {

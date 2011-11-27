@@ -1198,6 +1198,7 @@ endif
 endif
 
 ifeq ($(uname_S),OS/2)
+	SHELL_PATH = /@unixroot/usr/bin/sh
 	NEEDS_SOCKET = YesPlease
 	NO_MMAP = YesPlease
 #	NO_PREAD = YesPlease
@@ -1225,6 +1226,7 @@ ifeq ($(uname_S),OS/2)
 	NO_PERL = YesPlease
 	NO_TCLTK = YesPlease
 	NO_PYTHON =
+	NO_CURL =
 	COMPAT_CFLAGS += -Icompat
 	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
 	COMPAT_OBJS += compat/os2.o
