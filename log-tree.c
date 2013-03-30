@@ -8,6 +8,7 @@
 #include "refs.h"
 #include "string-list.h"
 #include "color.h"
+#include "gpg-interface.h"
 
 struct decoration name_decoration = { "object names" };
 
@@ -18,6 +19,7 @@ enum decoration_type {
 	DECORATION_REF_TAG,
 	DECORATION_REF_STASH,
 	DECORATION_REF_HEAD,
+	DECORATION_GRAFTED,
 };
 
 static char decoration_colors[][COLOR_MAXLEN] = {
@@ -27,11 +29,12 @@ static char decoration_colors[][COLOR_MAXLEN] = {
 	GIT_COLOR_BOLD_YELLOW,	/* REF_TAG */
 	GIT_COLOR_BOLD_MAGENTA,	/* REF_STASH */
 	GIT_COLOR_BOLD_CYAN,	/* REF_HEAD */
+	GIT_COLOR_BOLD_BLUE,	/* GRAFTED */
 };
 
 static const char *decorate_get_color(int decorate_use_color, enum decoration_type ix)
 {
-	if (decorate_use_color)
+	if (want_color(decorate_use_color))
 		return decoration_colors[ix];
 	return "";
 }
@@ -77,7 +80,7 @@ int parse_decorate_color_config(const char *var, const int ofs, const char *valu
  * for showing the commit sha1, use the same check for --decorate
  */
 #define decorate_get_color_opt(o, ix) \
-	decorate_get_color(DIFF_OPT_TST((o), COLOR_DIFF), ix)
+	decorate_get_color((o)->use_color, ix)
 
 static void add_name_decoration(enum decoration_type type, const char *name, struct object *obj)
 {
@@ -90,16 +93,32 @@ static void add_name_decoration(enum decoration_type type, const char *name, str
 
 static int add_ref_decoration(const char *refname, const unsigned char *sha1, int flags, void *cb_data)
 {
-	struct object *obj = parse_object(sha1);
+	struct object *obj;
 	enum decoration_type type = DECORATION_NONE;
+
+	if (!prefixcmp(refname, "refs/replace/")) {
+		unsigned char original_sha1[20];
+		if (!read_replace_refs)
+			return 0;
+		if (get_sha1_hex(refname + 13, original_sha1)) {
+			warning("invalid replace ref %s", refname);
+			return 0;
+		}
+		obj = parse_object(original_sha1);
+		if (obj)
+			add_name_decoration(DECORATION_GRAFTED, "replaced", obj);
+		return 0;
+	}
+
+	obj = parse_object(sha1);
 	if (!obj)
 		return 0;
 
-	if (!prefixcmp(refname, "refs/heads"))
+	if (!prefixcmp(refname, "refs/heads/"))
 		type = DECORATION_REF_LOCAL;
-	else if (!prefixcmp(refname, "refs/remotes"))
+	else if (!prefixcmp(refname, "refs/remotes/"))
 		type = DECORATION_REF_REMOTE;
-	else if (!prefixcmp(refname, "refs/tags"))
+	else if (!prefixcmp(refname, "refs/tags/"))
 		type = DECORATION_REF_TAG;
 	else if (!prefixcmp(refname, "refs/stash"))
 		type = DECORATION_REF_STASH;
@@ -118,6 +137,15 @@ static int add_ref_decoration(const char *refname, const unsigned char *sha1, in
 	return 0;
 }
 
+static int add_graft_decoration(const struct commit_graft *graft, void *cb_data)
+{
+	struct commit *commit = lookup_commit(graft->sha1);
+	if (!commit)
+		return 0;
+	add_name_decoration(DECORATION_GRAFTED, "grafted", &commit->object);
+	return 0;
+}
+
 void load_ref_decorations(int flags)
 {
 	static int loaded;
@@ -125,6 +153,7 @@ void load_ref_decorations(int flags)
 		loaded = 1;
 		for_each_ref(add_ref_decoration, &flags);
 		head_ref(add_ref_decoration, &flags);
+		for_each_commit_graft(add_graft_decoration, NULL);
 	}
 }
 
@@ -134,6 +163,14 @@ static void show_parents(struct commit *commit, int abbrev)
 	for (p = commit->parents; p ; p = p->next) {
 		struct commit *parent = p->item;
 		printf(" %s", find_unique_abbrev(parent->object.sha1, abbrev));
+	}
+}
+
+static void show_children(struct rev_info *opt, struct commit *commit, int abbrev)
+{
+	struct commit_list *p = lookup_decoration(&opt->children, &commit->object);
+	for ( ; p; p = p->next) {
+		printf(" %s", find_unique_abbrev(p->item->object.sha1, abbrev));
 	}
 }
 
@@ -367,6 +404,129 @@ void log_write_email_headers(struct rev_info *opt, struct commit *commit,
 	*extra_headers_p = extra_headers;
 }
 
+static void show_sig_lines(struct rev_info *opt, int status, const char *bol)
+{
+	const char *color, *reset, *eol;
+
+	color = diff_get_color_opt(&opt->diffopt,
+				   status ? DIFF_WHITESPACE : DIFF_FRAGINFO);
+	reset = diff_get_color_opt(&opt->diffopt, DIFF_RESET);
+	while (*bol) {
+		eol = strchrnul(bol, '\n');
+		printf("%s%.*s%s%s", color, (int)(eol - bol), bol, reset,
+		       *eol ? "\n" : "");
+		bol = (*eol) ? (eol + 1) : eol;
+	}
+}
+
+static void show_signature(struct rev_info *opt, struct commit *commit)
+{
+	struct strbuf payload = STRBUF_INIT;
+	struct strbuf signature = STRBUF_INIT;
+	struct strbuf gpg_output = STRBUF_INIT;
+	int status;
+
+	if (parse_signed_commit(commit->object.sha1, &payload, &signature) <= 0)
+		goto out;
+
+	status = verify_signed_buffer(payload.buf, payload.len,
+				      signature.buf, signature.len,
+				      &gpg_output);
+	if (status && !gpg_output.len)
+		strbuf_addstr(&gpg_output, "No signature\n");
+
+	show_sig_lines(opt, status, gpg_output.buf);
+
+ out:
+	strbuf_release(&gpg_output);
+	strbuf_release(&payload);
+	strbuf_release(&signature);
+}
+
+static int which_parent(const unsigned char *sha1, const struct commit *commit)
+{
+	int nth;
+	const struct commit_list *parent;
+
+	for (nth = 0, parent = commit->parents; parent; parent = parent->next) {
+		if (!hashcmp(parent->item->object.sha1, sha1))
+			return nth;
+		nth++;
+	}
+	return -1;
+}
+
+static int is_common_merge(const struct commit *commit)
+{
+	return (commit->parents
+		&& commit->parents->next
+		&& !commit->parents->next->next);
+}
+
+static void show_one_mergetag(struct rev_info *opt,
+			      struct commit_extra_header *extra,
+			      struct commit *commit)
+{
+	unsigned char sha1[20];
+	struct tag *tag;
+	struct strbuf verify_message;
+	int status, nth;
+	size_t payload_size, gpg_message_offset;
+
+	hash_sha1_file(extra->value, extra->len, typename(OBJ_TAG), sha1);
+	tag = lookup_tag(sha1);
+	if (!tag)
+		return; /* error message already given */
+
+	strbuf_init(&verify_message, 256);
+	if (parse_tag_buffer(tag, extra->value, extra->len))
+		strbuf_addstr(&verify_message, "malformed mergetag\n");
+	else if (is_common_merge(commit) &&
+		 !hashcmp(tag->tagged->sha1,
+			  commit->parents->next->item->object.sha1))
+		strbuf_addf(&verify_message,
+			    "merged tag '%s'\n", tag->tag);
+	else if ((nth = which_parent(tag->tagged->sha1, commit)) < 0)
+		strbuf_addf(&verify_message, "tag %s names a non-parent %s\n",
+				    tag->tag, tag->tagged->sha1);
+	else
+		strbuf_addf(&verify_message,
+			    "parent #%d, tagged '%s'\n", nth + 1, tag->tag);
+	gpg_message_offset = verify_message.len;
+
+	payload_size = parse_signature(extra->value, extra->len);
+	if ((extra->len <= payload_size) ||
+	    (verify_signed_buffer(extra->value, payload_size,
+				  extra->value + payload_size,
+				  extra->len - payload_size,
+				  &verify_message) &&
+	     verify_message.len <= gpg_message_offset)) {
+		strbuf_addstr(&verify_message, "No signature\n");
+		status = -1;
+	}
+	else if (strstr(verify_message.buf + gpg_message_offset,
+			": Good signature from "))
+		status = 0;
+	else
+		status = -1;
+
+	show_sig_lines(opt, status, verify_message.buf);
+	strbuf_release(&verify_message);
+}
+
+static void show_mergetag(struct rev_info *opt, struct commit *commit)
+{
+	struct commit_extra_header *extra, *to_free;
+
+	to_free = read_commit_extra_headers(commit, NULL);
+	for (extra = to_free; extra; extra = extra->next) {
+		if (strcmp(extra->key, "mergetag"))
+			continue; /* not a merge tag */
+		show_one_mergetag(opt, extra, commit);
+	}
+	free_commit_extra_headers(to_free);
+}
+
 void show_log(struct rev_info *opt)
 {
 	struct strbuf msgbuf = STRBUF_INIT;
@@ -386,6 +546,8 @@ void show_log(struct rev_info *opt)
 		fputs(find_unique_abbrev(commit->object.sha1, abbrev_commit), stdout);
 		if (opt->print_parents)
 			show_parents(commit, abbrev_commit);
+		if (opt->children.name)
+			show_children(opt, commit, abbrev_commit);
 		show_decorations(opt, commit);
 		if (opt->graph && !graph_is_commit_finished(opt->graph)) {
 			putchar('\n');
@@ -445,6 +607,8 @@ void show_log(struct rev_info *opt)
 		      stdout);
 		if (opt->print_parents)
 			show_parents(commit, abbrev_commit);
+		if (opt->children.name)
+			show_children(opt, commit, abbrev_commit);
 		if (parent)
 			printf(" (from %s)",
 			       find_unique_abbrev(parent->object.sha1,
@@ -472,6 +636,11 @@ void show_log(struct rev_info *opt)
 			if (opt->commit_format == CMIT_FMT_ONELINE)
 				return;
 		}
+	}
+
+	if (opt->show_signature) {
+		show_signature(opt, commit);
+		show_mergetag(opt, commit);
 	}
 
 	if (!commit->buffer)
@@ -559,9 +728,7 @@ int log_tree_diff_flush(struct rev_info *opt)
 
 static int do_diff_combined(struct rev_info *opt, struct commit *commit)
 {
-	unsigned const char *sha1 = commit->object.sha1;
-
-	diff_tree_combined_merge(sha1, opt->dense_combined_merges, opt);
+	diff_tree_combined_merge(commit, opt->dense_combined_merges, opt);
 	return !opt->loginfo;
 }
 

@@ -14,6 +14,7 @@
 #include "builtin.h"
 #include "string-list.h"
 #include "dir.h"
+#include "diff.h"
 #include "parse-options.h"
 
 /*
@@ -249,9 +250,6 @@ static int fuzzy_matchlines(const char *s1, size_t n1,
 	const char *last1 = s1 + n1 - 1;
 	const char *last2 = s2 + n2 - 1;
 	int result = 0;
-
-	if (n1 < 0 || n2 < 0)
-		return 0;
 
 	/* ignore line endings */
 	while ((*last1 == '\r') || (*last1 == '\n'))
@@ -1407,6 +1405,9 @@ static int find_header(char *line, unsigned long size, int *hdrsize, struct patc
 					    "%d leading pathname components (line %d)" , p_value, linenr);
 				patch->old_name = patch->new_name = patch->def_name;
 			}
+			if (!patch->is_delete && !patch->new_name)
+				die("git diff header lacks filename information "
+				    "(line %d)", linenr);
 			patch->is_toplevel_relative = 1;
 			*hdrsize = git_hdr_len;
 			return offset;
@@ -2447,6 +2448,8 @@ static int apply_one_fragment(struct image *img, struct fragment *frag,
 	char *old, *oldlines;
 	struct strbuf newlines;
 	int new_blank_lines_at_end = 0;
+	int found_new_blank_lines_at_end = 0;
+	int hunk_linenr = frag->linenr;
 	unsigned long leading, trailing;
 	int pos, applied_pos;
 	struct image preimage;
@@ -2540,14 +2543,18 @@ static int apply_one_fragment(struct image *img, struct fragment *frag,
 				error("invalid start of line: '%c'", first);
 			return -1;
 		}
-		if (added_blank_line)
+		if (added_blank_line) {
+			if (!new_blank_lines_at_end)
+				found_new_blank_lines_at_end = hunk_linenr;
 			new_blank_lines_at_end++;
+		}
 		else if (is_blank_context)
 			;
 		else
 			new_blank_lines_at_end = 0;
 		patch += len;
 		size -= len;
+		hunk_linenr++;
 	}
 	if (inaccurate_eof &&
 	    old > oldlines && old[-1] == '\n' &&
@@ -2629,7 +2636,8 @@ static int apply_one_fragment(struct image *img, struct fragment *frag,
 		    preimage.nr + applied_pos >= img->nr &&
 		    (ws_rule & WS_BLANK_AT_EOF) &&
 		    ws_error_action != nowarn_ws_error) {
-			record_ws_error(WS_BLANK_AT_EOF, "+", 1, frag->linenr);
+			record_ws_error(WS_BLANK_AT_EOF, "+", 1,
+					found_new_blank_lines_at_end);
 			if (ws_error_action == correct_ws_error) {
 				while (new_blank_lines_at_end--)
 					remove_last_line(&postimage);
@@ -3234,7 +3242,7 @@ static void stat_patch_list(struct patch *patch)
 		show_stats(patch);
 	}
 
-	printf(" %d files changed, %d insertions(+), %d deletions(-)\n", files, adds, dels);
+	print_stat_summary(stdout, files, adds, dels);
 }
 
 static void numstat_patch_list(struct patch *patch)
@@ -3580,14 +3588,11 @@ static int write_out_one_reject(struct patch *patch)
 	return -1;
 }
 
-static int write_out_results(struct patch *list, int skipped_patch)
+static int write_out_results(struct patch *list)
 {
 	int phase;
 	int errs = 0;
 	struct patch *l;
-
-	if (!list && !skipped_patch)
-		return error("No changes");
 
 	for (phase = 0; phase < 2; phase++) {
 		l = list;
@@ -3714,6 +3719,9 @@ static int apply_patch(int fd, const char *filename, int options)
 		offset += nr;
 	}
 
+	if (!list && !skipped_patch)
+		die("unrecognized input");
+
 	if (whitespace_error && (ws_error_action == die_on_ws_error))
 		apply = 0;
 
@@ -3731,7 +3739,7 @@ static int apply_patch(int fd, const char *filename, int options)
 	    !apply_with_reject)
 		exit(1);
 
-	if (apply && write_out_results(list, skipped_patch))
+	if (apply && write_out_results(list))
 		exit(1);
 
 	if (fake_ancestor)
@@ -3831,7 +3839,6 @@ int cmd_apply(int argc, const char **argv, const char *prefix_)
 	int i;
 	int errs = 0;
 	int is_not_gitdir = !startup_info->have_repository;
-	int binary;
 	int force_apply = 0;
 
 	const char *whitespace_option = NULL;
@@ -3850,12 +3857,8 @@ int cmd_apply(int argc, const char **argv, const char *prefix_)
 			"ignore additions made by the patch"),
 		OPT_BOOLEAN(0, "stat", &diffstat,
 			"instead of applying the patch, output diffstat for the input"),
-		{ OPTION_BOOLEAN, 0, "allow-binary-replacement", &binary,
-		  NULL, "old option, now no-op",
-		  PARSE_OPT_HIDDEN | PARSE_OPT_NOARG },
-		{ OPTION_BOOLEAN, 0, "binary", &binary,
-		  NULL, "old option, now no-op",
-		  PARSE_OPT_HIDDEN | PARSE_OPT_NOARG },
+		OPT_NOOP_NOARG(0, "allow-binary-replacement"),
+		OPT_NOOP_NOARG(0, "binary"),
 		OPT_BOOLEAN(0, "numstat", &numstat,
 			"shows number of added and deleted lines in decimal notation"),
 		OPT_BOOLEAN(0, "summary", &summary,

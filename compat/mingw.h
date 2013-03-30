@@ -120,7 +120,7 @@ static inline int mingw_mkdir(const char *path, int mode)
 #define mkdir mingw_mkdir
 
 #define WNOHANG 1
-pid_t waitpid(pid_t pid, int *status, unsigned options);
+pid_t waitpid(pid_t pid, int *status, int options);
 
 #define kill mingw_kill
 int mingw_kill(pid_t pid, int sig);
@@ -189,6 +189,9 @@ char *mingw_getcwd(char *pointer, int len);
 
 char *mingw_getenv(const char *name);
 #define getenv mingw_getenv
+
+int mingw_gethostname(char *host, int namelen);
+#define gethostname mingw_gethostname
 
 struct hostent *mingw_gethostbyname(const char *host);
 #define gethostbyname mingw_gethostbyname
@@ -300,6 +303,15 @@ int winansi_fprintf(FILE *stream, const char *format, ...) __attribute__((format
 
 #define has_dos_drive_prefix(path) (isalpha(*(path)) && (path)[1] == ':')
 #define is_dir_sep(c) ((c) == '/' || (c) == '\\')
+static inline char *mingw_find_last_dir_sep(const char *path)
+{
+	char *ret = NULL;
+	for (; *path; ++path)
+		if (is_dir_sep(*path))
+			ret = (char *)path;
+	return ret;
+}
+#define find_last_dir_sep mingw_find_last_dir_sep
 #define PATH_SEP ';'
 #define PRIuMAX "I64u"
 

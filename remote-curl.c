@@ -115,7 +115,7 @@ static struct discovery* discover_refs(const char *service)
 	http_ret = http_get_strbuf(refs_url, &buffer, HTTP_NO_CACHE);
 
 	/* try again with "plain" url (no ? or & appended) */
-	if (http_ret != HTTP_OK) {
+	if (http_ret != HTTP_OK && http_ret != HTTP_NOAUTH) {
 		free(refs_url);
 		strbuf_reset(&buffer);
 
@@ -188,7 +188,7 @@ static int write_discovery(int in, int out, void *data)
 	return err;
 }
 
-static struct ref *parse_git_refs(struct discovery *heads)
+static struct ref *parse_git_refs(struct discovery *heads, int for_push)
 {
 	struct ref *list = NULL;
 	struct async async;
@@ -200,7 +200,8 @@ static struct ref *parse_git_refs(struct discovery *heads)
 
 	if (start_async(&async))
 		die("cannot start thread to parse advertised refs");
-	get_remote_heads(async.out, &list, 0, NULL, 0, NULL);
+	get_remote_heads(async.out, &list,
+			for_push ? REF_NORMAL : 0, NULL);
 	close(async.out);
 	if (finish_async(&async))
 		die("ref parsing thread failed");
@@ -268,7 +269,7 @@ static struct ref *get_refs(int for_push)
 		heads = discover_refs("git-upload-pack");
 
 	if (heads->proto_git)
-		return parse_git_refs(heads);
+		return parse_git_refs(heads, for_push);
 	return parse_info_refs(heads);
 }
 
@@ -573,7 +574,14 @@ static int rpc_service(struct rpc_state *rpc, struct discovery *heads)
 
 	close(client.in);
 	client.in = -1;
-	strbuf_read(&rpc->result, client.out, 0);
+	if (!err) {
+		strbuf_read(&rpc->result, client.out, 0);
+	} else {
+		char buf[4096];
+		for (;;)
+			if (xread(client.out, buf, sizeof(buf)) <= 0)
+				break;
+	}
 
 	close(client.out);
 	client.out = -1;
@@ -762,7 +770,7 @@ static int push_git(struct discovery *heads, int nr_spec, char **specs)
 		argv[argc++] = "--thin";
 	if (options.dry_run)
 		argv[argc++] = "--dry-run";
-	if (options.verbosity < 0)
+	if (options.verbosity == 0)
 		argv[argc++] = "--quiet";
 	else if (options.verbosity > 1)
 		argv[argc++] = "--verbose";
@@ -799,7 +807,7 @@ static int push(int nr_spec, char **specs)
 static void parse_push(struct strbuf *buf)
 {
 	char **specs = NULL;
-	int alloc_spec = 0, nr_spec = 0, i;
+	int alloc_spec = 0, nr_spec = 0, i, ret;
 
 	do {
 		if (!prefixcmp(buf->buf, "push ")) {
@@ -816,11 +824,12 @@ static void parse_push(struct strbuf *buf)
 			break;
 	} while (1);
 
-	if (push(nr_spec, specs))
-		exit(128); /* error already reported */
-
+	ret = push(nr_spec, specs);
 	printf("\n");
 	fflush(stdout);
+
+	if (ret)
+		exit(128); /* error already reported */
 
  free_specs:
 	for (i = 0; i < nr_spec; i++)
@@ -854,10 +863,17 @@ int main(int argc, const char **argv)
 
 	url = strbuf_detach(&buf, NULL);
 
-	http_init(remote);
+	http_init(remote, url, 0);
 
 	do {
-		if (strbuf_getline(&buf, stdin, '\n') == EOF)
+		if (strbuf_getline(&buf, stdin, '\n') == EOF) {
+			if (ferror(stdin))
+				fprintf(stderr, "Error reading command stream\n");
+			else
+				fprintf(stderr, "Unexpected end of command stream\n");
+			return 1;
+		}
+		if (buf.len == 0)
 			break;
 		if (!prefixcmp(buf.buf, "fetch ")) {
 			if (nongit)
@@ -897,6 +913,7 @@ int main(int argc, const char **argv)
 			printf("\n");
 			fflush(stdout);
 		} else {
+			fprintf(stderr, "Unknown command '%s'\n", buf.buf);
 			return 1;
 		}
 		strbuf_reset(&buf);

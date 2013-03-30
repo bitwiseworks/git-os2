@@ -79,7 +79,7 @@ static void compile_pcre_regexp(struct grep_pat *p, const struct grep_opt *opt)
 {
 	const char *error;
 	int erroffset;
-	int options = 0;
+	int options = PCRE_MULTILINE;
 
 	if (opt->ignore_case)
 		options |= PCRE_CASELESS;
@@ -137,16 +137,50 @@ static void free_pcre_regexp(struct grep_pat *p)
 }
 #endif /* !USE_LIBPCRE */
 
+static int is_fixed(const char *s, size_t len)
+{
+	size_t i;
+
+	/* regcomp cannot accept patterns with NULs so we
+	 * consider any pattern containing a NUL fixed.
+	 */
+	if (memchr(s, 0, len))
+		return 1;
+
+	for (i = 0; i < len; i++) {
+		if (is_regex_special(s[i]))
+			return 0;
+	}
+
+	return 1;
+}
+
 static void compile_regexp(struct grep_pat *p, struct grep_opt *opt)
 {
 	int err;
 
 	p->word_regexp = opt->word_regexp;
 	p->ignore_case = opt->ignore_case;
-	p->fixed = opt->fixed;
 
-	if (p->fixed)
+	if (opt->fixed || is_fixed(p->pattern, p->patternlen))
+		p->fixed = 1;
+	else
+		p->fixed = 0;
+
+	if (p->fixed) {
+		if (opt->regflags & REG_ICASE || p->ignore_case) {
+			static char trans[256];
+			int i;
+			for (i = 0; i < 256; i++)
+				trans[i] = tolower(i);
+			p->kws = kwsalloc(trans);
+		} else {
+			p->kws = kwsalloc(NULL);
+		}
+		kwsincr(p->kws, p->pattern, p->patternlen);
+		kwsprep(p->kws);
 		return;
+	}
 
 	if (opt->pcre) {
 		compile_pcre_regexp(p, opt);
@@ -395,7 +429,9 @@ void free_grep_patterns(struct grep_opt *opt)
 		case GREP_PATTERN: /* atom */
 		case GREP_PATTERN_HEAD:
 		case GREP_PATTERN_BODY:
-			if (p->pcre_regexp)
+			if (p->kws)
+				kwsfree(p->kws);
+			else if (p->pcre_regexp)
 				free_pcre_regexp(p);
 			else
 				regfree(&p->regexp);
@@ -430,7 +466,7 @@ static int word_char(char ch)
 static void output_color(struct grep_opt *opt, const void *data, size_t size,
 			 const char *color)
 {
-	if (opt->color && color && color[0]) {
+	if (want_color(opt->color) && color && color[0]) {
 		opt->output(opt, color, strlen(color));
 		opt->output(opt, data, size);
 		opt->output(opt, GIT_COLOR_RESET, strlen(GIT_COLOR_RESET));
@@ -455,26 +491,14 @@ static void show_name(struct grep_opt *opt, const char *name)
 static int fixmatch(struct grep_pat *p, char *line, char *eol,
 		    regmatch_t *match)
 {
-	char *hit;
-
-	if (p->ignore_case) {
-		char *s = line;
-		do {
-			hit = strcasestr(s, p->pattern);
-			if (hit)
-				break;
-			s += strlen(s) + 1;
-		} while (s < eol);
-	} else
-		hit = memmem(line, eol - line, p->pattern, p->patternlen);
-
-	if (!hit) {
+	struct kwsmatch kwsm;
+	size_t offset = kwsexec(p->kws, line, eol - line, &kwsm);
+	if (offset == -1) {
 		match->rm_so = match->rm_eo = -1;
 		return REG_NOMATCH;
-	}
-	else {
-		match->rm_so = hit - line;
-		match->rm_eo = match->rm_so + p->patternlen;
+	} else {
+		match->rm_so = offset;
+		match->rm_eo = match->rm_so + kwsm.size[0];
 		return 0;
 	}
 }
@@ -721,7 +745,10 @@ static void show_line(struct grep_opt *opt, char *bol, char *eol,
 	int rest = eol - bol;
 	char *line_color = NULL;
 
-	if (opt->pre_context || opt->post_context) {
+	if (opt->file_break && opt->last_shown == 0) {
+		if (opt->show_hunk_mark)
+			opt->output(opt, "\n", 1);
+	} else if (opt->pre_context || opt->post_context || opt->funcbody) {
 		if (opt->last_shown == 0) {
 			if (opt->show_hunk_mark) {
 				output_color(opt, "--", 2, opt->color_sep);
@@ -732,9 +759,13 @@ static void show_line(struct grep_opt *opt, char *bol, char *eol,
 			opt->output(opt, "\n", 1);
 		}
 	}
+	if (opt->heading && opt->last_shown == 0) {
+		output_color(opt, name, strlen(name), opt->color_filename);
+		opt->output(opt, "\n", 1);
+	}
 	opt->last_shown = lno;
 
-	if (opt->pathname) {
+	if (!opt->heading && opt->pathname) {
 		output_color(opt, name, strlen(name), opt->color_filename);
 		output_sep(opt, sign);
 	}
@@ -775,10 +806,51 @@ static void show_line(struct grep_opt *opt, char *bol, char *eol,
 	opt->output(opt, "\n", 1);
 }
 
-static int match_funcname(struct grep_opt *opt, char *bol, char *eol)
+#ifndef NO_PTHREADS
+int grep_use_locks;
+
+/*
+ * This lock protects access to the gitattributes machinery, which is
+ * not thread-safe.
+ */
+pthread_mutex_t grep_attr_mutex;
+
+static inline void grep_attr_lock(void)
+{
+	if (grep_use_locks)
+		pthread_mutex_lock(&grep_attr_mutex);
+}
+
+static inline void grep_attr_unlock(void)
+{
+	if (grep_use_locks)
+		pthread_mutex_unlock(&grep_attr_mutex);
+}
+
+/*
+ * Same as git_attr_mutex, but protecting the thread-unsafe object db access.
+ */
+pthread_mutex_t grep_read_mutex;
+
+#else
+#define grep_attr_lock()
+#define grep_attr_unlock()
+#endif
+
+static int match_funcname(struct grep_opt *opt, struct grep_source *gs, char *bol, char *eol)
 {
 	xdemitconf_t *xecfg = opt->priv;
-	if (xecfg && xecfg->find_func) {
+	if (xecfg && !xecfg->find_func) {
+		grep_source_load_driver(gs);
+		if (gs->driver->funcname.pattern) {
+			const struct userdiff_funcname *pe = &gs->driver->funcname;
+			xdiff_set_find_func(xecfg, pe->pattern, pe->cflags);
+		} else {
+			xecfg = opt->priv = NULL;
+		}
+	}
+
+	if (xecfg) {
 		char buf[1];
 		return xecfg->find_func(bol, eol - bol, buf, 1,
 					xecfg->find_func_priv) >= 0;
@@ -791,31 +863,34 @@ static int match_funcname(struct grep_opt *opt, char *bol, char *eol)
 	return 0;
 }
 
-static void show_funcname_line(struct grep_opt *opt, const char *name,
-			       char *buf, char *bol, unsigned lno)
+static void show_funcname_line(struct grep_opt *opt, struct grep_source *gs,
+			       char *bol, unsigned lno)
 {
-	while (bol > buf) {
+	while (bol > gs->buf) {
 		char *eol = --bol;
 
-		while (bol > buf && bol[-1] != '\n')
+		while (bol > gs->buf && bol[-1] != '\n')
 			bol--;
 		lno--;
 
 		if (lno <= opt->last_shown)
 			break;
 
-		if (match_funcname(opt, bol, eol)) {
-			show_line(opt, bol, eol, name, lno, '=');
+		if (match_funcname(opt, gs, bol, eol)) {
+			show_line(opt, bol, eol, gs->name, lno, '=');
 			break;
 		}
 	}
 }
 
-static void show_pre_context(struct grep_opt *opt, const char *name, char *buf,
-			     char *bol, unsigned lno)
+static void show_pre_context(struct grep_opt *opt, struct grep_source *gs,
+			     char *bol, char *end, unsigned lno)
 {
 	unsigned cur = lno, from = 1, funcname_lno = 0;
-	int funcname_needed = opt->funcname;
+	int funcname_needed = !!opt->funcname;
+
+	if (opt->funcbody && !match_funcname(opt, gs, bol, end))
+		funcname_needed = 2;
 
 	if (opt->pre_context < lno)
 		from = lno - opt->pre_context;
@@ -823,13 +898,14 @@ static void show_pre_context(struct grep_opt *opt, const char *name, char *buf,
 		from = opt->last_shown + 1;
 
 	/* Rewind. */
-	while (bol > buf && cur > from) {
+	while (bol > gs->buf &&
+	       cur > (funcname_needed == 2 ? opt->last_shown + 1 : from)) {
 		char *eol = --bol;
 
-		while (bol > buf && bol[-1] != '\n')
+		while (bol > gs->buf && bol[-1] != '\n')
 			bol--;
 		cur--;
-		if (funcname_needed && match_funcname(opt, bol, eol)) {
+		if (funcname_needed && match_funcname(opt, gs, bol, eol)) {
 			funcname_lno = cur;
 			funcname_needed = 0;
 		}
@@ -837,7 +913,7 @@ static void show_pre_context(struct grep_opt *opt, const char *name, char *buf,
 
 	/* We need to look even further back to find a function signature. */
 	if (opt->funcname && funcname_needed)
-		show_funcname_line(opt, name, buf, bol, cur);
+		show_funcname_line(opt, gs, bol, cur);
 
 	/* Back forward. */
 	while (cur < lno) {
@@ -845,7 +921,7 @@ static void show_pre_context(struct grep_opt *opt, const char *name, char *buf,
 
 		while (*eol != '\n')
 			eol++;
-		show_line(opt, bol, eol, name, cur, sign);
+		show_line(opt, bol, eol, gs->name, cur, sign);
 		bol = eol + 1;
 		cur++;
 	}
@@ -907,52 +983,49 @@ static int look_ahead(struct grep_opt *opt,
 	return 0;
 }
 
-int grep_threads_ok(const struct grep_opt *opt)
-{
-	/* If this condition is true, then we may use the attribute
-	 * machinery in grep_buffer_1. The attribute code is not
-	 * thread safe, so we disable the use of threads.
-	 */
-	if (opt->funcname && !opt->unmatch_name_only && !opt->status_only &&
-	    !opt->name_only)
-		return 0;
-
-	return 1;
-}
-
 static void std_output(struct grep_opt *opt, const void *buf, size_t size)
 {
 	fwrite(buf, size, 1, stdout);
 }
 
-static int grep_buffer_1(struct grep_opt *opt, const char *name,
-			 char *buf, unsigned long size, int collect_hits)
+static int grep_source_1(struct grep_opt *opt, struct grep_source *gs, int collect_hits)
 {
-	char *bol = buf;
-	unsigned long left = size;
+	char *bol;
+	unsigned long left;
 	unsigned lno = 1;
 	unsigned last_hit = 0;
 	int binary_match_only = 0;
 	unsigned count = 0;
 	int try_lookahead = 0;
+	int show_function = 0;
 	enum grep_context ctx = GREP_CONTEXT_HEAD;
 	xdemitconf_t xecfg;
 
 	if (!opt->output)
 		opt->output = std_output;
 
-	if (opt->last_shown && (opt->pre_context || opt->post_context) &&
-	    opt->output == std_output)
-		opt->show_hunk_mark = 1;
+	if (opt->pre_context || opt->post_context || opt->file_break ||
+	    opt->funcbody) {
+		/* Show hunk marks, except for the first file. */
+		if (opt->last_shown)
+			opt->show_hunk_mark = 1;
+		/*
+		 * If we're using threads then we can't easily identify
+		 * the first file.  Always put hunk marks in that case
+		 * and skip the very first one later in work_done().
+		 */
+		if (opt->output != std_output)
+			opt->show_hunk_mark = 1;
+	}
 	opt->last_shown = 0;
 
 	switch (opt->binary) {
 	case GREP_BINARY_DEFAULT:
-		if (buffer_is_binary(buf, size))
+		if (grep_source_is_binary(gs))
 			binary_match_only = 1;
 		break;
 	case GREP_BINARY_NOMATCH:
-		if (buffer_is_binary(buf, size))
+		if (grep_source_is_binary(gs))
 			return 0; /* Assume unmatch */
 		break;
 	case GREP_BINARY_TEXT:
@@ -962,17 +1035,15 @@ static int grep_buffer_1(struct grep_opt *opt, const char *name,
 	}
 
 	memset(&xecfg, 0, sizeof(xecfg));
-	if (opt->funcname && !opt->unmatch_name_only && !opt->status_only &&
-	    !opt->name_only && !binary_match_only && !collect_hits) {
-		struct userdiff_driver *drv = userdiff_find_by_path(name);
-		if (drv && drv->funcname.pattern) {
-			const struct userdiff_funcname *pe = &drv->funcname;
-			xdiff_set_find_func(&xecfg, pe->pattern, pe->cflags);
-			opt->priv = &xecfg;
-		}
-	}
+	opt->priv = &xecfg;
+
 	try_lookahead = should_lookahead(opt);
 
+	if (grep_source_load(gs) < 0)
+		return 0;
+
+	bol = gs->buf;
+	left = gs->size;
 	while (left) {
 		char *eol, ch;
 		int hit;
@@ -988,7 +1059,8 @@ static int grep_buffer_1(struct grep_opt *opt, const char *name,
 		 */
 		if (try_lookahead
 		    && !(last_hit
-			 && lno <= last_hit + opt->post_context)
+			 && (show_function ||
+			     lno <= last_hit + opt->post_context))
 		    && look_ahead(opt, &left, &lno, &bol))
 			break;
 		eol = end_of_line(bol, &left);
@@ -1020,14 +1092,14 @@ static int grep_buffer_1(struct grep_opt *opt, const char *name,
 			if (opt->status_only)
 				return 1;
 			if (opt->name_only) {
-				show_name(opt, name);
+				show_name(opt, gs->name);
 				return 1;
 			}
 			if (opt->count)
 				goto next_line;
 			if (binary_match_only) {
 				opt->output(opt, "Binary file ", 12);
-				output_color(opt, name, strlen(name),
+				output_color(opt, gs->name, strlen(gs->name),
 					     opt->color_filename);
 				opt->output(opt, " matches\n", 9);
 				return 1;
@@ -1035,19 +1107,24 @@ static int grep_buffer_1(struct grep_opt *opt, const char *name,
 			/* Hit at this line.  If we haven't shown the
 			 * pre-context lines, we would need to show them.
 			 */
-			if (opt->pre_context)
-				show_pre_context(opt, name, buf, bol, lno);
+			if (opt->pre_context || opt->funcbody)
+				show_pre_context(opt, gs, bol, eol, lno);
 			else if (opt->funcname)
-				show_funcname_line(opt, name, buf, bol, lno);
-			show_line(opt, bol, eol, name, lno, ':');
+				show_funcname_line(opt, gs, bol, lno);
+			show_line(opt, bol, eol, gs->name, lno, ':');
 			last_hit = lno;
+			if (opt->funcbody)
+				show_function = 1;
+			goto next_line;
 		}
-		else if (last_hit &&
-			 lno <= last_hit + opt->post_context) {
+		if (show_function && match_funcname(opt, gs, bol, eol))
+			show_function = 0;
+		if (show_function ||
+		    (last_hit && lno <= last_hit + opt->post_context)) {
 			/* If the last hit is within the post context,
 			 * we need to show this line.
 			 */
-			show_line(opt, bol, eol, name, lno, '-');
+			show_line(opt, bol, eol, gs->name, lno, '-');
 		}
 
 	next_line:
@@ -1065,7 +1142,7 @@ static int grep_buffer_1(struct grep_opt *opt, const char *name,
 		return 0;
 	if (opt->unmatch_name_only) {
 		/* We did not see any hit, so we want to show this */
-		show_name(opt, name);
+		show_name(opt, gs->name);
 		return 1;
 	}
 
@@ -1079,7 +1156,7 @@ static int grep_buffer_1(struct grep_opt *opt, const char *name,
 	 */
 	if (opt->count && count) {
 		char buf[32];
-		output_color(opt, name, strlen(name), opt->color_filename);
+		output_color(opt, gs->name, strlen(gs->name), opt->color_filename);
 		output_sep(opt, ':');
 		snprintf(buf, sizeof(buf), "%u\n", count);
 		opt->output(opt, buf, strlen(buf));
@@ -1114,23 +1191,174 @@ static int chk_hit_marker(struct grep_expr *x)
 	}
 }
 
-int grep_buffer(struct grep_opt *opt, const char *name, char *buf, unsigned long size)
+int grep_source(struct grep_opt *opt, struct grep_source *gs)
 {
 	/*
 	 * we do not have to do the two-pass grep when we do not check
 	 * buffer-wide "all-match".
 	 */
 	if (!opt->all_match)
-		return grep_buffer_1(opt, name, buf, size, 0);
+		return grep_source_1(opt, gs, 0);
 
 	/* Otherwise the toplevel "or" terms hit a bit differently.
 	 * We first clear hit markers from them.
 	 */
 	clr_hit_marker(opt->pattern_expression);
-	grep_buffer_1(opt, name, buf, size, 1);
+	grep_source_1(opt, gs, 1);
 
 	if (!chk_hit_marker(opt->pattern_expression))
 		return 0;
 
-	return grep_buffer_1(opt, name, buf, size, 0);
+	return grep_source_1(opt, gs, 0);
+}
+
+int grep_buffer(struct grep_opt *opt, char *buf, unsigned long size)
+{
+	struct grep_source gs;
+	int r;
+
+	grep_source_init(&gs, GREP_SOURCE_BUF, NULL, NULL);
+	gs.buf = buf;
+	gs.size = size;
+
+	r = grep_source(opt, &gs);
+
+	grep_source_clear(&gs);
+	return r;
+}
+
+void grep_source_init(struct grep_source *gs, enum grep_source_type type,
+		      const char *name, const void *identifier)
+{
+	gs->type = type;
+	gs->name = name ? xstrdup(name) : NULL;
+	gs->buf = NULL;
+	gs->size = 0;
+	gs->driver = NULL;
+
+	switch (type) {
+	case GREP_SOURCE_FILE:
+		gs->identifier = xstrdup(identifier);
+		break;
+	case GREP_SOURCE_SHA1:
+		gs->identifier = xmalloc(20);
+		memcpy(gs->identifier, identifier, 20);
+		break;
+	case GREP_SOURCE_BUF:
+		gs->identifier = NULL;
+	}
+}
+
+void grep_source_clear(struct grep_source *gs)
+{
+	free(gs->name);
+	gs->name = NULL;
+	free(gs->identifier);
+	gs->identifier = NULL;
+	grep_source_clear_data(gs);
+}
+
+void grep_source_clear_data(struct grep_source *gs)
+{
+	switch (gs->type) {
+	case GREP_SOURCE_FILE:
+	case GREP_SOURCE_SHA1:
+		free(gs->buf);
+		gs->buf = NULL;
+		gs->size = 0;
+		break;
+	case GREP_SOURCE_BUF:
+		/* leave user-provided buf intact */
+		break;
+	}
+}
+
+static int grep_source_load_sha1(struct grep_source *gs)
+{
+	enum object_type type;
+
+	grep_read_lock();
+	gs->buf = read_sha1_file(gs->identifier, &type, &gs->size);
+	grep_read_unlock();
+
+	if (!gs->buf)
+		return error(_("'%s': unable to read %s"),
+			     gs->name,
+			     sha1_to_hex(gs->identifier));
+	return 0;
+}
+
+static int grep_source_load_file(struct grep_source *gs)
+{
+	const char *filename = gs->identifier;
+	struct stat st;
+	char *data;
+	size_t size;
+	int i;
+
+	if (lstat(filename, &st) < 0) {
+	err_ret:
+		if (errno != ENOENT)
+			error(_("'%s': %s"), filename, strerror(errno));
+		return -1;
+	}
+	if (!S_ISREG(st.st_mode))
+		return -1;
+	size = xsize_t(st.st_size);
+	i = open(filename, O_RDONLY);
+	if (i < 0)
+		goto err_ret;
+	data = xmalloc(size + 1);
+	if (st.st_size != read_in_full(i, data, size)) {
+		error(_("'%s': short read %s"), filename, strerror(errno));
+		close(i);
+		free(data);
+		return -1;
+	}
+	close(i);
+	data[size] = 0;
+
+	gs->buf = data;
+	gs->size = size;
+	return 0;
+}
+
+int grep_source_load(struct grep_source *gs)
+{
+	if (gs->buf)
+		return 0;
+
+	switch (gs->type) {
+	case GREP_SOURCE_FILE:
+		return grep_source_load_file(gs);
+	case GREP_SOURCE_SHA1:
+		return grep_source_load_sha1(gs);
+	case GREP_SOURCE_BUF:
+		return gs->buf ? 0 : -1;
+	}
+	die("BUG: invalid grep_source type");
+}
+
+void grep_source_load_driver(struct grep_source *gs)
+{
+	if (gs->driver)
+		return;
+
+	grep_attr_lock();
+	gs->driver = userdiff_find_by_path(gs->name);
+	if (!gs->driver)
+		gs->driver = userdiff_find_by_name("default");
+	grep_attr_unlock();
+}
+
+int grep_source_is_binary(struct grep_source *gs)
+{
+	grep_source_load_driver(gs);
+	if (gs->driver->binary != -1)
+		return gs->driver->binary;
+
+	if (!grep_source_load(gs))
+		return buffer_is_binary(gs->buf, gs->size);
+
+	return 0;
 }

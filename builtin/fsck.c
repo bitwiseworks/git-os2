@@ -11,6 +11,7 @@
 #include "fsck.h"
 #include "parse-options.h"
 #include "dir.h"
+#include "progress.h"
 
 #define REACHABLE 0x0001
 #define SEEN      0x0002
@@ -27,8 +28,10 @@ static const char *head_points_at;
 static int errors_found;
 static int write_lost_and_found;
 static int verbose;
+static int show_progress = -1;
 #define ERROR_OBJECT 01
 #define ERROR_REACHABLE 02
+#define ERROR_PACK 04
 
 #ifdef NO_D_INO_IN_DIRENT
 #define SORT_DIRENT 0
@@ -137,7 +140,11 @@ static int traverse_one_object(struct object *obj)
 
 static int traverse_reachable(void)
 {
+	struct progress *progress = NULL;
+	unsigned int nr = 0;
 	int result = 0;
+	if (show_progress)
+		progress = start_progress_delay("Checking connectivity", 0, 0, 2);
 	while (pending.nr) {
 		struct object_array_entry *entry;
 		struct object *obj;
@@ -145,7 +152,9 @@ static int traverse_reachable(void)
 		entry = pending.objects + --pending.nr;
 		obj = entry->item;
 		result |= traverse_one_object(obj);
+		display_progress(progress, ++nr);
 	}
+	stop_progress(&progress);
 	return !!result;
 }
 
@@ -231,12 +240,9 @@ static void check_unreachable_object(struct object *obj)
 				unsigned long size;
 				char *buf = read_sha1_file(obj->sha1,
 						&type, &size);
-				if (buf) {
-					if (fwrite(buf, size, 1, f) != 1)
-						die_errno("Could not write '%s'",
-							  filename);
-					free(buf);
-				}
+				if (buf && fwrite(buf, 1, size, f) != size)
+					die_errno("Could not write '%s'", filename);
+				free(buf);
 			} else
 				fprintf(f, "%s\n", sha1_to_hex(obj->sha1));
 			if (fclose(f))
@@ -284,14 +290,8 @@ static void check_connectivity(void)
 	}
 }
 
-static int fsck_sha1(const unsigned char *sha1)
+static int fsck_obj(struct object *obj)
 {
-	struct object *obj = parse_object(sha1);
-	if (!obj) {
-		errors_found |= ERROR_OBJECT;
-		return error("%s: object corrupt or missing",
-			     sha1_to_hex(sha1));
-	}
 	if (obj->flags & SEEN)
 		return 0;
 	obj->flags |= SEEN;
@@ -332,6 +332,29 @@ static int fsck_sha1(const unsigned char *sha1)
 	}
 
 	return 0;
+}
+
+static int fsck_sha1(const unsigned char *sha1)
+{
+	struct object *obj = parse_object(sha1);
+	if (!obj) {
+		errors_found |= ERROR_OBJECT;
+		return error("%s: object corrupt or missing",
+			     sha1_to_hex(sha1));
+	}
+	return fsck_obj(obj);
+}
+
+static int fsck_obj_buffer(const unsigned char *sha1, enum object_type type,
+			   unsigned long size, void *buffer, int *eaten)
+{
+	struct object *obj;
+	obj = parse_object_buffer(sha1, type, size, buffer, eaten);
+	if (!obj) {
+		errors_found |= ERROR_OBJECT;
+		return error("%s: object corrupt or missing", sha1_to_hex(sha1));
+	}
+	return fsck_obj(obj);
 }
 
 /*
@@ -515,15 +538,20 @@ static void get_default_heads(void)
 static void fsck_object_dir(const char *path)
 {
 	int i;
+	struct progress *progress = NULL;
 
 	if (verbose)
 		fprintf(stderr, "Checking object directory\n");
 
+	if (show_progress)
+		progress = start_progress("Checking object directories", 256);
 	for (i = 0; i < 256; i++) {
 		static char dir[4096];
 		sprintf(dir, "%s/%02x", path, i);
 		fsck_dir(i, dir);
+		display_progress(progress, i+1);
 	}
+	stop_progress(&progress);
 	fsck_sha1_list();
 }
 
@@ -535,7 +563,7 @@ static int fsck_head_link(void)
 	if (verbose)
 		fprintf(stderr, "Checking HEAD link\n");
 
-	head_points_at = resolve_ref("HEAD", head_sha1, 0, &flag);
+	head_points_at = resolve_ref_unsafe("HEAD", head_sha1, 0, &flag);
 	if (!head_points_at)
 		return error("Invalid HEAD");
 	if (!strcmp(head_points_at, "HEAD"))
@@ -594,6 +622,7 @@ static struct option fsck_opts[] = {
 	OPT_BOOLEAN(0, "strict", &check_strict, "enable more strict checking"),
 	OPT_BOOLEAN(0, "lost-found", &write_lost_and_found,
 				"write dangling objects in .git/lost-found"),
+	OPT_BOOL(0, "progress", &show_progress, "show progress"),
 	OPT_END(),
 };
 
@@ -606,6 +635,12 @@ int cmd_fsck(int argc, const char **argv, const char *prefix)
 	read_replace_refs = 0;
 
 	argc = parse_options(argc, argv, prefix, fsck_opts, fsck_usage, 0);
+
+	if (show_progress == -1)
+		show_progress = isatty(2);
+	if (verbose)
+		show_progress = 0;
+
 	if (write_lost_and_found) {
 		check_full = 1;
 		include_reflogs = 0;
@@ -625,20 +660,28 @@ int cmd_fsck(int argc, const char **argv, const char *prefix)
 
 	if (check_full) {
 		struct packed_git *p;
+		uint32_t total = 0, count = 0;
+		struct progress *progress = NULL;
 
 		prepare_packed_git();
-		for (p = packed_git; p; p = p->next)
-			/* verify gives error messages itself */
-			verify_pack(p);
 
-		for (p = packed_git; p; p = p->next) {
-			uint32_t j, num;
-			if (open_pack_index(p))
-				continue;
-			num = p->num_objects;
-			for (j = 0; j < num; j++)
-				fsck_sha1(nth_packed_object_sha1(p, j));
+		if (show_progress) {
+			for (p = packed_git; p; p = p->next) {
+				if (open_pack_index(p))
+					continue;
+				total += p->num_objects;
+			}
+
+			progress = start_progress("Checking objects", total);
 		}
+		for (p = packed_git; p; p = p->next) {
+			/* verify gives error messages itself */
+			if (verify_pack(p, fsck_obj_buffer,
+					progress, count))
+				errors_found |= ERROR_PACK;
+			count += p->num_objects;
+		}
+		stop_progress(&progress);
 	}
 
 	heads = 0;

@@ -118,7 +118,12 @@
 #else
 #include <poll.h>
 #endif
-#ifndef __MINGW32__
+#if defined(__MINGW32__)
+/* pull in Windows compatibility stuff */
+#include "compat/mingw.h"
+#elif defined(_MSC_VER)
+#include "compat/msvc.h"
+#else
 #include <sys/wait.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
@@ -132,6 +137,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <pwd.h>
+#include <sys/un.h>
 #ifndef NO_INTTYPES_H
 #include <inttypes.h>
 #else
@@ -150,12 +156,6 @@
 #if defined(__OS2__)
 #include "compat/os2-git-compat.h"
 #endif
-#else 	/* __MINGW32__ */
-/* pull in Windows compatibility stuff */
-#include "compat/mingw.h"
-#endif	/* __MINGW32__ */
-#ifdef _MSC_VER
-#include "compat/msvc.h"
 #endif
 
 #ifndef NO_LIBGEN_H
@@ -220,10 +220,14 @@ extern char *gitbasename(char *);
 #define is_dir_sep(c) ((c) == '/')
 #endif
 
-#if __HP_cc >= 61000
+#ifndef find_last_dir_sep
+#define find_last_dir_sep(path) strrchr(path, '/')
+#endif
+
+#if defined(__HP_cc) && (__HP_cc >= 61000)
 #define NORETURN __attribute__((noreturn))
 #define NORETURN_PTR
-#elif defined(__GNUC__)
+#elif defined(__GNUC__) && !defined(NO_NORETURN)
 #define NORETURN __attribute__((__noreturn__))
 #define NORETURN_PTR __attribute__((__noreturn__))
 #elif defined(_MSC_VER)
@@ -352,6 +356,8 @@ extern size_t gitstrlcpy(char *, const char *, size_t);
 #ifdef NO_STRTOUMAX
 #define strtoumax gitstrtoumax
 extern uintmax_t gitstrtoumax(const char *, char **, int);
+#define strtoimax gitstrtoimax
+extern intmax_t gitstrtoimax(const char *, char **, int);
 #endif
 
 #ifdef NO_STRTOK_R
@@ -462,6 +468,8 @@ static inline int has_extension(const char *filename, const char *ext)
 #undef isdigit
 #undef isalpha
 #undef isalnum
+#undef islower
+#undef isupper
 #undef tolower
 #undef toupper
 extern unsigned char sane_ctype[256];
@@ -477,6 +485,8 @@ extern unsigned char sane_ctype[256];
 #define isdigit(x) sane_istest(x,GIT_DIGIT)
 #define isalpha(x) sane_istest(x,GIT_ALPHA)
 #define isalnum(x) sane_istest(x,GIT_ALPHA | GIT_DIGIT)
+#define islower(x) sane_iscase(x, 1)
+#define isupper(x) sane_iscase(x, 0)
 #define is_glob_special(x) sane_istest(x,GIT_GLOB_SPECIAL)
 #define is_regex_special(x) sane_istest(x,GIT_GLOB_SPECIAL | GIT_REGEX_SPECIAL)
 #define tolower(x) sane_case((unsigned char)(x), 0x20)
@@ -488,6 +498,17 @@ static inline int sane_case(int x, int high)
 	if (sane_istest(x, GIT_ALPHA))
 		x = (x & ~0x20) | high;
 	return x;
+}
+
+static inline int sane_iscase(int x, int is_lower)
+{
+	if (!sane_istest(x, GIT_ALPHA))
+		return 0;
+
+	if (is_lower)
+		return (x & 0x20) != 0;
+	else
+		return (x & 0x20) == 0;
 }
 
 static inline int strtoul_ui(char const *s, int base, unsigned int *result)

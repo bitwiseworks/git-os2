@@ -22,6 +22,8 @@ int main(int argc, const char **argv)
 	int get_verbosely = 0;
 	int get_recover = 0;
 
+	git_setup_gettext();
+
 	git_extract_argv0_path(argv[0]);
 
 	while (arg < argc && argv[arg][0] == '-') {
@@ -56,6 +58,10 @@ int main(int argc, const char **argv)
 		commits = 1;
 	}
 
+	if (get_all == 0)
+		warning("http-fetch: use without -a is deprecated.\n"
+			"In a future release, -a will become the default.");
+
 	if (argv[arg])
 		str_end_url_with_slash(argv[arg], &url);
 
@@ -63,7 +69,7 @@ int main(int argc, const char **argv)
 
 	git_config(git_default_config, NULL);
 
-	http_init(NULL);
+	http_init(NULL, url, 0);
 	walker = get_http_walker(url);
 	walker->get_tree = get_tree;
 	walker->get_history = get_history;

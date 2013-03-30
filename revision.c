@@ -40,6 +40,47 @@ char *path_name(const struct name_path *path, const char *name)
 	return n;
 }
 
+static int show_path_component_truncated(FILE *out, const char *name, int len)
+{
+	int cnt;
+	for (cnt = 0; cnt < len; cnt++) {
+		int ch = name[cnt];
+		if (!ch || ch == '\n')
+			return -1;
+		fputc(ch, out);
+	}
+	return len;
+}
+
+static int show_path_truncated(FILE *out, const struct name_path *path)
+{
+	int emitted, ours;
+
+	if (!path)
+		return 0;
+	emitted = show_path_truncated(out, path->up);
+	if (emitted < 0)
+		return emitted;
+	if (emitted)
+		fputc('/', out);
+	ours = show_path_component_truncated(out, path->elem, path->elem_len);
+	if (ours < 0)
+		return ours;
+	return ours || emitted;
+}
+
+void show_object_with_name(FILE *out, struct object *obj, const struct name_path *path, const char *component)
+{
+	struct name_path leaf;
+	leaf.up = (struct name_path *)path;
+	leaf.elem = component;
+	leaf.elem_len = strlen(component);
+
+	fprintf(out, "%s ", sha1_to_hex(obj->sha1));
+	show_path_truncated(out, &leaf);
+	fputc('\n', out);
+}
+
 void add_object(struct object *obj,
 		struct object_array *p,
 		struct name_path *path,
@@ -183,6 +224,13 @@ static struct object *get_reference(struct rev_info *revs, const char *name, con
 	}
 	object->flags |= flags;
 	return object;
+}
+
+void add_pending_sha1(struct rev_info *revs, const char *name,
+		      const unsigned char *sha1, unsigned int flags)
+{
+	struct object *object = get_reference(revs, name, sha1, flags);
+	add_pending_object(revs, object, name);
 }
 
 static struct commit *handle_commit(struct rev_info *revs, struct object *object, const char *name)
@@ -368,7 +416,7 @@ static int rev_same_tree_as_empty(struct rev_info *revs, struct commit *commit)
 static void try_to_simplify_commit(struct rev_info *revs, struct commit *commit)
 {
 	struct commit_list **pp, *parent;
-	int tree_changed = 0, tree_same = 0;
+	int tree_changed = 0, tree_same = 0, nth_parent = 0;
 
 	/*
 	 * If we don't do pruning, everything is interesting
@@ -396,6 +444,14 @@ static void try_to_simplify_commit(struct rev_info *revs, struct commit *commit)
 	while ((parent = *pp) != NULL) {
 		struct commit *p = parent->item;
 
+		/*
+		 * Do not compare with later parents when we care only about
+		 * the first parent chain, in order to avoid derailing the
+		 * traversal to follow a side branch that brought everything
+		 * in the path we are limited to by the pathspec.
+		 */
+		if (revs->first_parent_only && nth_parent++)
+			break;
 		if (parse_commit(p) < 0)
 			die("cannot simplify commit %s (because of %s)",
 			    sha1_to_hex(commit->object.sha1),
@@ -729,12 +785,16 @@ static void limit_to_ancestry(struct commit_list *bottom, struct commit_list *li
  * to filter the result of "A..B" further to the ones that can actually
  * reach A.
  */
-static struct commit_list *collect_bottom_commits(struct commit_list *list)
+static struct commit_list *collect_bottom_commits(struct rev_info *revs)
 {
-	struct commit_list *elem, *bottom = NULL;
-	for (elem = list; elem; elem = elem->next)
-		if (elem->item->object.flags & UNINTERESTING)
-			commit_list_insert(elem->item, &bottom);
+	struct commit_list *bottom = NULL;
+	int i;
+	for (i = 0; i < revs->cmdline.nr; i++) {
+		struct rev_cmdline_entry *elem = &revs->cmdline.rev[i];
+		if ((elem->flags & UNINTERESTING) &&
+		    elem->item->type == OBJ_COMMIT)
+			commit_list_insert((struct commit *)elem->item, &bottom);
+	}
 	return bottom;
 }
 
@@ -765,7 +825,7 @@ static int limit_list(struct rev_info *revs)
 	struct commit_list *bottom = NULL;
 
 	if (revs->ancestry_path) {
-		bottom = collect_bottom_commits(list);
+		bottom = collect_bottom_commits(revs);
 		if (!bottom)
 			die("--ancestry-path given but there are no bottom commits");
 	}
@@ -822,6 +882,23 @@ static int limit_list(struct rev_info *revs)
 	return 0;
 }
 
+static void add_rev_cmdline(struct rev_info *revs,
+			    struct object *item,
+			    const char *name,
+			    int whence,
+			    unsigned flags)
+{
+	struct rev_cmdline_info *info = &revs->cmdline;
+	int nr = info->nr;
+
+	ALLOC_GROW(info->rev, nr + 1, info->alloc);
+	info->rev[nr].item = item;
+	info->rev[nr].name = name;
+	info->rev[nr].whence = whence;
+	info->rev[nr].flags = flags;
+	info->nr++;
+}
+
 struct all_refs_cb {
 	int all_flags;
 	int warned_bad_reflog;
@@ -834,7 +911,8 @@ static int handle_one_ref(const char *path, const unsigned char *sha1, int flag,
 	struct all_refs_cb *cb = cb_data;
 	struct object *object = get_reference(cb->all_revs, path, sha1,
 					      cb->all_flags);
-	add_pending_object(cb->all_revs, object, path);
+	add_rev_cmdline(cb->all_revs, object, path, REV_CMD_REF, cb->all_flags);
+	add_pending_sha1(cb->all_revs, path, sha1, cb->all_flags);
 	return 0;
 }
 
@@ -860,6 +938,7 @@ static void handle_one_reflog_commit(unsigned char *sha1, void *cb_data)
 		struct object *o = parse_object(sha1);
 		if (o) {
 			o->flags |= cb->all_flags;
+			/* ??? CMDLINEFLAGS ??? */
 			add_pending_object(cb->all_revs, o, "");
 		}
 		else if (!cb->warned_bad_reflog) {
@@ -896,12 +975,13 @@ static void handle_reflog(struct rev_info *revs, unsigned flags)
 	for_each_reflog(handle_one_reflog, &cb);
 }
 
-static int add_parents_only(struct rev_info *revs, const char *arg, int flags)
+static int add_parents_only(struct rev_info *revs, const char *arg_, int flags)
 {
 	unsigned char sha1[20];
 	struct object *it;
 	struct commit *commit;
 	struct commit_list *parents;
+	const char *arg = arg_;
 
 	if (*arg == '^') {
 		flags ^= UNINTERESTING;
@@ -925,6 +1005,7 @@ static int add_parents_only(struct rev_info *revs, const char *arg, int flags)
 	for (parents = commit->parents; parents; parents = parents->next) {
 		it = &parents->item->object;
 		it->flags |= flags;
+		add_rev_cmdline(revs, it, arg_, REV_CMD_PARENTS_ONLY, flags);
 		add_pending_object(revs, it, arg);
 	}
 	return 1;
@@ -986,10 +1067,12 @@ static void prepare_show_merge(struct rev_info *revs)
 	const char **prune = NULL;
 	int i, prune_num = 1; /* counting terminating NULL */
 
-	if (get_sha1("HEAD", sha1) || !(head = lookup_commit(sha1)))
+	if (get_sha1("HEAD", sha1))
 		die("--merge without HEAD?");
-	if (get_sha1("MERGE_HEAD", sha1) || !(other = lookup_commit(sha1)))
+	head = lookup_commit_or_die(sha1, "HEAD");
+	if (get_sha1("MERGE_HEAD", sha1))
 		die("--merge without MERGE_HEAD?");
+	other = lookup_commit_or_die(sha1, "MERGE_HEAD");
 	add_pending_object(revs, &head->object, "HEAD");
 	add_pending_object(revs, &other->object, "MERGE_HEAD");
 	bases = get_merge_bases(head, other, 1);
@@ -1018,7 +1101,7 @@ static void prepare_show_merge(struct rev_info *revs)
 	revs->limited = 1;
 }
 
-int handle_revision_arg(const char *arg, struct rev_info *revs,
+int handle_revision_arg(const char *arg_, struct rev_info *revs,
 			int flags,
 			int cant_be_filename)
 {
@@ -1027,6 +1110,7 @@ int handle_revision_arg(const char *arg, struct rev_info *revs,
 	struct object *object;
 	unsigned char sha1[20];
 	int local_flags;
+	const char *arg = arg_;
 
 	dotdot = strstr(arg, "..");
 	if (dotdot) {
@@ -1035,6 +1119,7 @@ int handle_revision_arg(const char *arg, struct rev_info *revs,
 		const char *this = arg;
 		int symmetric = *next == '.';
 		unsigned int flags_exclude = flags ^ UNINTERESTING;
+		unsigned int a_flags;
 
 		*dotdot = 0;
 		next += symmetric;
@@ -1069,10 +1154,15 @@ int handle_revision_arg(const char *arg, struct rev_info *revs,
 				add_pending_commit_list(revs, exclude,
 							flags_exclude);
 				free_commit_list(exclude);
-				a->object.flags |= flags | SYMMETRIC_LEFT;
+				a_flags = flags | SYMMETRIC_LEFT;
 			} else
-				a->object.flags |= flags_exclude;
+				a_flags = flags_exclude;
+			a->object.flags |= a_flags;
 			b->object.flags |= flags;
+			add_rev_cmdline(revs, &a->object, this,
+					REV_CMD_LEFT, a_flags);
+			add_rev_cmdline(revs, &b->object, next,
+					REV_CMD_RIGHT, flags);
 			add_pending_object(revs, &a->object, this);
 			add_pending_object(revs, &b->object, next);
 			return 0;
@@ -1103,6 +1193,7 @@ int handle_revision_arg(const char *arg, struct rev_info *revs,
 	if (!cant_be_filename)
 		verify_non_filename(revs->prefix, arg);
 	object = get_reference(revs, arg, sha1, flags ^ local_flags);
+	add_rev_cmdline(revs, object, arg_, REV_CMD_REV, flags ^ local_flags);
 	add_pending_object_with_mode(revs, object, arg, mode);
 	return 0;
 }
@@ -1342,6 +1433,11 @@ static int handle_revision_opt(struct rev_info *revs, int argc, const char **arg
 		revs->tree_objects = 1;
 		revs->blob_objects = 1;
 		revs->edge_hint = 1;
+	} else if (!strcmp(arg, "--verify-objects")) {
+		revs->tag_objects = 1;
+		revs->tree_objects = 1;
+		revs->blob_objects = 1;
+		revs->verify_objects = 1;
 	} else if (!strcmp(arg, "--unpacked")) {
 		revs->unpacked = 1;
 	} else if (!prefixcmp(arg, "--unpacked=")) {
@@ -1381,6 +1477,8 @@ static int handle_revision_opt(struct rev_info *revs, int argc, const char **arg
 		revs->show_notes = 1;
 		revs->show_notes_given = 1;
 		revs->notes_opt.use_default_notes = 1;
+	} else if (!strcmp(arg, "--show-signature")) {
+		revs->show_signature = 1;
 	} else if (!prefixcmp(arg, "--show-notes=") ||
 		   !prefixcmp(arg, "--notes=")) {
 		struct strbuf buf = STRBUF_INIT;
@@ -1969,7 +2067,8 @@ int prepare_revision_walk(struct rev_info *revs)
 		}
 		e++;
 	}
-	free(list);
+	if (!revs->leak_pending)
+		free(list);
 
 	if (revs->no_walk)
 		return 0;
@@ -2037,7 +2136,6 @@ static int commit_match(struct commit *commit, struct rev_info *opt)
 	if (!opt->grep_filter.pattern_list && !opt->grep_filter.header_list)
 		return 1;
 	return grep_buffer(&opt->grep_filter,
-			   NULL, /* we say nothing, not even filename */
 			   commit->buffer, strlen(commit->buffer));
 }
 

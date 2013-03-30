@@ -16,7 +16,7 @@ static const char * const builtin_remote_usage[] = {
 	"git remote [-v | --verbose] show [-n] <name>",
 	"git remote prune [-n | --dry-run] <name>",
 	"git remote [-v | --verbose] update [-p | --prune] [(<group> | <remote>)...]",
-	"git remote set-branches <name> [--add] <branch>...",
+	"git remote set-branches [--add] <name> <branch>...",
 	"git remote set-url <name> <newurl> [<oldurl>]",
 	"git remote set-url --add <name> <newurl>",
 	"git remote set-url --delete <name> <url>",
@@ -86,16 +86,6 @@ static inline int postfixcmp(const char *string, const char *postfix)
 	if (len1 < len2)
 		return 1;
 	return strcmp(string + len1 - len2, postfix);
-}
-
-static int opt_parse_track(const struct option *opt, const char *arg, int not)
-{
-	struct string_list *list = opt->value;
-	if (not)
-		string_list_clear(list, 0);
-	else
-		string_list_append(list, arg);
-	return 0;
 }
 
 static int fetch_remote(const char *name)
@@ -176,8 +166,8 @@ static int add(int argc, const char **argv)
 			    TAGS_SET),
 		OPT_SET_INT(0, NULL, &fetch_tags,
 			    "or do not fetch any tag at all (--no-tags)", TAGS_UNSET),
-		OPT_CALLBACK('t', "track", &track, "branch",
-			"branch(es) to track", opt_parse_track),
+		OPT_STRING_LIST('t', "track", &track, "branch",
+				"branch(es) to track"),
 		OPT_STRING('m', "master", &master, "branch", "master branch"),
 		{ OPTION_CALLBACK, 0, "mirror", &mirror, "push|fetch",
 			"set up remote as a mirror to push to or fetch from",
@@ -353,13 +343,13 @@ static int get_ref_states(const struct ref *remote_refs, struct ref_states *stat
 	states->tracked.strdup_strings = 1;
 	states->stale.strdup_strings = 1;
 	for (ref = fetch_map; ref; ref = ref->next) {
-		unsigned char sha1[20];
-		if (!ref->peer_ref || read_ref(ref->peer_ref->name, sha1))
+		if (!ref->peer_ref || !ref_exists(ref->peer_ref->name))
 			string_list_append(&states->new, abbrev_branch(ref->name));
 		else
 			string_list_append(&states->tracked, abbrev_branch(ref->name));
 	}
-	stale_refs = get_stale_heads(states->remote, fetch_map);
+	stale_refs = get_stale_heads(states->remote->fetch,
+				     states->remote->fetch_refspec_nr, fetch_map);
 	for (ref = stale_refs; ref; ref = ref->next) {
 		struct string_list_item *item =
 			string_list_append(&states->stale, abbrev_branch(ref->name));
@@ -399,8 +389,8 @@ static int get_push_ref_states(const struct ref *remote_refs,
 	local_refs = get_local_heads();
 	push_map = copy_ref_list(remote_refs);
 
-	match_refs(local_refs, &push_map, remote->push_refspec_nr,
-		   remote->push_refspec, MATCH_REFS_NONE);
+	match_push_refs(local_refs, &push_map, remote->push_refspec_nr,
+			remote->push_refspec, MATCH_REFS_NONE);
 
 	states->push.strdup_strings = 1;
 	for (ref = push_map; ref; ref = ref->next) {
@@ -580,10 +570,10 @@ static int read_remote_branches(const char *refname,
 	unsigned char orig_sha1[20];
 	const char *symref;
 
-	strbuf_addf(&buf, "refs/remotes/%s", rename->old);
+	strbuf_addf(&buf, "refs/remotes/%s/", rename->old);
 	if (!prefixcmp(refname, buf.buf)) {
 		item = string_list_append(rename->remote_branches, xstrdup(refname));
-		symref = resolve_ref(refname, orig_sha1, 1, &flag);
+		symref = resolve_ref_unsafe(refname, orig_sha1, 1, &flag);
 		if (flag & REF_ISSYMREF)
 			item->util = xstrdup(symref);
 		else
@@ -631,10 +621,11 @@ static int mv(int argc, const char **argv)
 		OPT_END()
 	};
 	struct remote *oldremote, *newremote;
-	struct strbuf buf = STRBUF_INIT, buf2 = STRBUF_INIT, buf3 = STRBUF_INIT;
+	struct strbuf buf = STRBUF_INIT, buf2 = STRBUF_INIT, buf3 = STRBUF_INIT,
+		old_remote_context = STRBUF_INIT;
 	struct string_list remote_branches = STRING_LIST_INIT_NODUP;
 	struct rename_info rename;
-	int i;
+	int i, refspec_updated = 0;
 
 	if (argc != 3)
 		usage_with_options(builtin_remote_rename_usage, options);
@@ -669,15 +660,25 @@ static int mv(int argc, const char **argv)
 	strbuf_addf(&buf, "remote.%s.fetch", rename.new);
 	if (git_config_set_multivar(buf.buf, NULL, NULL, 1))
 		return error("Could not remove config section '%s'", buf.buf);
+	strbuf_addf(&old_remote_context, ":refs/remotes/%s/", rename.old);
 	for (i = 0; i < oldremote->fetch_refspec_nr; i++) {
 		char *ptr;
 
 		strbuf_reset(&buf2);
 		strbuf_addstr(&buf2, oldremote->fetch_refspec[i]);
-		ptr = strstr(buf2.buf, rename.old);
-		if (ptr)
-			strbuf_splice(&buf2, ptr-buf2.buf, strlen(rename.old),
-					rename.new, strlen(rename.new));
+		ptr = strstr(buf2.buf, old_remote_context.buf);
+		if (ptr) {
+			refspec_updated = 1;
+			strbuf_splice(&buf2,
+				      ptr-buf2.buf + strlen(":refs/remotes/"),
+				      strlen(rename.old), rename.new,
+				      strlen(rename.new));
+		} else
+			warning("Not updating non-default fetch respec\n"
+				"\t%s\n"
+				"\tPlease update the configuration manually if necessary.",
+				buf2.buf);
+
 		if (git_config_set_multivar(buf.buf, buf2.buf, "^$", 0))
 			return error("Could not append '%s'", buf.buf);
 	}
@@ -695,6 +696,9 @@ static int mv(int argc, const char **argv)
 		}
 	}
 
+	if (!refspec_updated)
+		return 0;
+
 	/*
 	 * First remove symrefs, then rename the rest, finally create
 	 * the new symrefs.
@@ -705,7 +709,7 @@ static int mv(int argc, const char **argv)
 		int flag = 0;
 		unsigned char sha1[20];
 
-		resolve_ref(item->string, sha1, 1, &flag);
+		read_ref_full(item->string, sha1, 1, &flag);
 		if (!(flag & REF_ISSYMREF))
 			continue;
 		if (delete_ref(item->string, NULL, REF_NODEREF))
@@ -1113,7 +1117,7 @@ static int show(int argc, const char **argv)
 			url = states.remote->url;
 			url_nr = states.remote->url_nr;
 		}
-		for (i=0; i < url_nr; i++)
+		for (i = 0; i < url_nr; i++)
 			printf("  Push  URL: %s\n", url[i]);
 		if (!i)
 			printf("  Push  URL: %s\n", "(no URL)");
@@ -1215,10 +1219,9 @@ static int set_head(int argc, const char **argv)
 		usage_with_options(builtin_remote_sethead_usage, options);
 
 	if (head_name) {
-		unsigned char sha1[20];
 		strbuf_addf(&buf2, "refs/remotes/%s/%s", argv[0], head_name);
 		/* make sure it's valid */
-		if (!resolve_ref(buf2.buf, sha1, 1, NULL))
+		if (!ref_exists(buf2.buf))
 			result |= error("Not a valid ref: %s", buf2.buf);
 		else if (create_symref(buf.buf, buf2.buf, "remote set-head"))
 			result |= error("Could not setup %s", buf.buf);
@@ -1394,7 +1397,7 @@ static int set_branches(int argc, const char **argv)
 			     builtin_remote_setbranches_usage, 0);
 	if (argc == 0) {
 		error("no remote specified");
-		usage_with_options(builtin_remote_seturl_usage, options);
+		usage_with_options(builtin_remote_setbranches_usage, options);
 	}
 	argv[argc] = NULL;
 
@@ -1422,7 +1425,7 @@ static int set_url(int argc, const char **argv)
 			    "delete URLs"),
 		OPT_END()
 	};
-	argc = parse_options(argc, argv, NULL, options, builtin_remote_update_usage,
+	argc = parse_options(argc, argv, NULL, options, builtin_remote_seturl_usage,
 			     PARSE_OPT_KEEP_ARGV0);
 
 	if (add_mode && delete_mode)

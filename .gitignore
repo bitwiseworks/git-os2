@@ -30,6 +30,9 @@
 /git-commit-tree
 /git-config
 /git-count-objects
+/git-credential-cache
+/git-credential-cache--daemon
+/git-credential-store
 /git-cvsexportcommit
 /git-cvsimport
 /git-cvsserver
@@ -167,10 +170,12 @@
 /gitweb/static/gitweb.js
 /gitweb/static/gitweb.min.*
 /test-chmtime
+/test-credential
 /test-ctype
 /test-date
 /test-delta
 /test-dump-cache-tree
+/test-scrap-cache-tree
 /test-genrandom
 /test-index-version
 /test-line-buffer

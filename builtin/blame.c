@@ -1598,7 +1598,7 @@ static const char *format_time(unsigned long time, const char *tz_str,
 	int tz;
 
 	if (show_raw_time) {
-		sprintf(time_buf, "%lu %s", time, tz_str);
+		snprintf(time_buf, sizeof(time_buf), "%lu %s", time, tz_str);
 	}
 	else {
 		tz = atoi(tz_str);
@@ -2096,6 +2096,7 @@ static struct commit *fake_working_tree_commit(struct diff_options *opt,
 	if (!contents_from || strcmp("-", contents_from)) {
 		struct stat st;
 		const char *read_from;
+		char *buf_ptr;
 		unsigned long buf_len;
 
 		if (contents_from) {
@@ -2113,8 +2114,8 @@ static struct commit *fake_working_tree_commit(struct diff_options *opt,
 		switch (st.st_mode & S_IFMT) {
 		case S_IFREG:
 			if (DIFF_OPT_TST(opt, ALLOW_TEXTCONV) &&
-			    textconv_object(read_from, mode, null_sha1, &buf.buf, &buf_len))
-				buf.len = buf_len;
+			    textconv_object(read_from, mode, null_sha1, &buf_ptr, &buf_len))
+				strbuf_attach(&buf, buf_ptr, buf_len, buf_len + 1);
 			else if (strbuf_read_file(&buf, read_from, st.st_size) != st.st_size)
 				die_errno("cannot open or read '%s'", read_from);
 			break;

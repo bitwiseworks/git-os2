@@ -143,6 +143,21 @@ die_with_patch () {
 	die "$2"
 }
 
+exit_with_patch () {
+	echo "$1" > "$state_dir"/stopped-sha
+	make_patch $1
+	git rev-parse --verify HEAD > "$amend"
+	warn "You can amend the commit now, with"
+	warn
+	warn "	git commit --amend"
+	warn
+	warn "Once you are satisfied with your changes, run"
+	warn
+	warn "	git rebase --continue"
+	warn
+	exit $2
+}
+
 die_abort () {
 	rm -rf "$state_dir"
 	die "$1"
@@ -159,6 +174,19 @@ do_with_author () {
 		export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_AUTHOR_DATE
 		"$@"
 	)
+}
+
+git_sequence_editor () {
+	if test -z "$GIT_SEQUENCE_EDITOR"
+	then
+		GIT_SEQUENCE_EDITOR="$(git config sequence.editor)"
+		if [ -z "$GIT_SEQUENCE_EDITOR" ]
+		then
+			GIT_SEQUENCE_EDITOR="$(git var GIT_EDITOR)" || return $?
+		fi
+	fi
+
+	eval "$GIT_SEQUENCE_EDITOR" '"$@"'
 }
 
 pick_one () {
@@ -395,7 +423,13 @@ do_next () {
 		mark_action_done
 		pick_one $sha1 ||
 			die_with_patch $sha1 "Could not apply $sha1... $rest"
-		git commit --amend --no-post-rewrite
+		git commit --amend --no-post-rewrite || {
+			warn "Could not amend commit after successfully picking $sha1... $rest"
+			warn "This is most likely due to an empty commit message, or the pre-commit hook"
+			warn "failed. If the pre-commit hook failed, you may need to resolve the issue before"
+			warn "you are able to reword the commit."
+			exit_with_patch $sha1 1
+		}
 		record_in_rewritten $sha1
 		;;
 	edit|e)
@@ -404,19 +438,8 @@ do_next () {
 		mark_action_done
 		pick_one $sha1 ||
 			die_with_patch $sha1 "Could not apply $sha1... $rest"
-		echo "$sha1" > "$state_dir"/stopped-sha
-		make_patch $sha1
-		git rev-parse --verify HEAD > "$amend"
 		warn "Stopped at $sha1... $rest"
-		warn "You can amend the commit now, with"
-		warn
-		warn "	git commit --amend"
-		warn
-		warn "Once you are satisfied with your changes, run"
-		warn
-		warn "	git rebase --continue"
-		warn
-		exit 0
+		exit_with_patch $sha1 0
 		;;
 	squash|s|fixup|f)
 		case "$command" in
@@ -472,18 +495,24 @@ do_next () {
 		git rev-parse --verify HEAD > "$state_dir"/stopped-sha
 		${SHELL:-@SHELL_PATH@} -c "$rest" # Actual execution
 		status=$?
+		# Run in subshell because require_clean_work_tree can die.
+		dirty=f
+		(require_clean_work_tree "rebase" 2>/dev/null) || dirty=t
 		if test "$status" -ne 0
 		then
 			warn "Execution failed: $rest"
+			test "$dirty" = f ||
+			warn "and made changes to the index and/or the working tree"
+
 			warn "You can fix the problem, and then run"
 			warn
 			warn "	git rebase --continue"
 			warn
 			exit "$status"
-		fi
-		# Run in subshell because require_clean_work_tree can die.
-		if ! (require_clean_work_tree "rebase")
+		elif test "$dirty" = t
 		then
+			warn "Execution succeeded: $rest"
+			warn "but left changes to the index and/or the working tree"
 			warn "Commit or stash your changes, and then run"
 			warn
 			warn "	git rebase --continue"
@@ -647,8 +676,24 @@ continue)
 	then
 		: Nothing to commit -- skip this
 	else
+		if ! test -f "$author_script"
+		then
+			die "You have staged changes in your working tree. If these changes are meant to be
+squashed into the previous commit, run:
+
+  git commit --amend
+
+If they are meant to go into a new commit, run:
+
+  git commit
+
+In both case, once you're done, continue with:
+
+  git rebase --continue
+"
+		fi
 		. "$author_script" ||
-			die "Cannot find the author identity"
+			die "Error trying to find the author identity to amend commit"
 		current_head=
 		if test -f "$amend"
 		then
@@ -810,7 +855,7 @@ has_action "$todo" ||
 	die_abort "Nothing to do"
 
 cp "$todo" "$todo".backup
-git_editor "$todo" ||
+git_sequence_editor "$todo" ||
 	die_abort "Could not execute editor"
 
 has_action "$todo" ||

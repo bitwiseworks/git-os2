@@ -172,7 +172,9 @@ static void show_name(const struct object *obj,
 }
 
 static char const * const name_rev_usage[] = {
-	"git name-rev [options] ( --all | --stdin | <commit>... )",
+	"git name-rev [options] <commit>...",
+	"git name-rev [options] --all",
+	"git name-rev [options] --stdin",
 	NULL
 };
 
@@ -289,7 +291,7 @@ int cmd_name_rev(int argc, const char **argv, const char *prefix)
 		max = get_max_object_index();
 		for (i = 0; i < max; i++) {
 			struct object *obj = get_indexed_object(i);
-			if (!obj)
+			if (!obj || obj->type != OBJ_COMMIT)
 				continue;
 			show_name(obj, NULL,
 				  always, allow_undefined, data.name_only);

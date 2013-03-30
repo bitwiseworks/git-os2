@@ -22,7 +22,7 @@ currently checked out branch is used.
 
 Example:       git-rebase master~1 topic
 
-        A---B---C topic                   A'\''--B'\''--C'\'' topic
+	A---B---C topic                   A'\''--B'\''--C'\'' topic
        /                   -->           /
   D---E---F---G master          D---E---F---G master
 '
@@ -63,7 +63,7 @@ skip!              skip current patch and continue
 "
 . git-sh-setup
 set_reflog_action rebase
-require_work_tree
+require_work_tree_exists
 cd_to_toplevel
 
 LF='
@@ -441,8 +441,7 @@ case "$#" in
 	then
 		head_name="detached HEAD"
 	else
-		echo >&2 "fatal: no such branch: $1"
-		usage
+		die "fatal: no such branch: $1"
 	fi
 	;;
 *)

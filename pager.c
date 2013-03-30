@@ -11,8 +11,6 @@
  * something different on Windows.
  */
 
-static int spawned_pager;
-
 #ifndef WIN32
 static void pager_preexec(void)
 {
@@ -78,7 +76,13 @@ void setup_pager(void)
 	if (!pager)
 		return;
 
-	spawned_pager = 1; /* means we are emitting to terminal */
+	/*
+	 * force computing the width of the terminal before we redirect
+	 * the standard output to the pager.
+	 */
+	(void) term_columns();
+
+	setenv("GIT_PAGER_IN_USE", "true", 1);
 
 	/* spawn the pager */
 	pager_argv[0] = pager;
@@ -109,10 +113,37 @@ void setup_pager(void)
 int pager_in_use(void)
 {
 	const char *env;
-
-	if (spawned_pager)
-		return 1;
-
 	env = getenv("GIT_PAGER_IN_USE");
 	return env ? git_config_bool("GIT_PAGER_IN_USE", env) : 0;
+}
+
+/*
+ * Return cached value (if set) or $COLUMNS environment variable (if
+ * set and positive) or ioctl(1, TIOCGWINSZ).ws_col (if positive),
+ * and default to 80 if all else fails.
+ */
+int term_columns(void)
+{
+	static int term_columns_at_startup;
+
+	char *col_string;
+	int n_cols;
+
+	if (term_columns_at_startup)
+		return term_columns_at_startup;
+
+	term_columns_at_startup = 80;
+
+	col_string = getenv("COLUMNS");
+	if (col_string && (n_cols = atoi(col_string)) > 0)
+		term_columns_at_startup = n_cols;
+#ifdef TIOCGWINSZ
+	else {
+		struct winsize ws;
+		if (!ioctl(1, TIOCGWINSZ, &ws) && ws.ws_col)
+			term_columns_at_startup = ws.ws_col;
+	}
+#endif
+
+	return term_columns_at_startup;
 }
