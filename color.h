@@ -79,9 +79,9 @@ int git_config_colorbool(const char *var, const char *value);
 int want_color(int var);
 void color_parse(const char *value, const char *var, char *dst);
 void color_parse_mem(const char *value, int len, const char *var, char *dst);
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 int color_fprintf(FILE *fp, const char *color, const char *fmt, ...);
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 int color_fprintf_ln(FILE *fp, const char *color, const char *fmt, ...);
 void color_print_strbuf(FILE *fp, const char *color, const struct strbuf *sb);
 

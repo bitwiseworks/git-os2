@@ -55,7 +55,7 @@ static const char *get_parameter(const char *name)
 	return i ? i->util : NULL;
 }
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 static void format_write(int fd, const char *fmt, ...)
 {
 	static char buffer[1024];
@@ -113,7 +113,7 @@ static void end_headers(void)
 	safe_write(1, "\r\n", 2);
 }
 
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 static NORETURN void not_found(const char *err, ...)
 {
 	va_list params;
@@ -129,7 +129,7 @@ static NORETURN void not_found(const char *err, ...)
 	exit(0);
 }
 
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 static NORETURN void forbidden(const char *err, ...)
 {
 	va_list params;

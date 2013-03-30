@@ -183,8 +183,8 @@ struct command {
 static const char pre_receive_hook[] = "hooks/pre-receive";
 static const char post_receive_hook[] = "hooks/post-receive";
 
-static void rp_error(const char *err, ...) __attribute__((format (printf, 1, 2)));
-static void rp_warning(const char *err, ...) __attribute__((format (printf, 1, 2)));
+static void rp_error(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
+static void rp_warning(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
 
 static void report_message(const char *prefix, const char *err, va_list params)
 {

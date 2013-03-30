@@ -291,8 +291,8 @@ sig_handler_t mingw_signal(int sig, sig_handler_t handler);
  */
 
 int winansi_fputs(const char *str, FILE *stream);
-int winansi_printf(const char *format, ...) __attribute__((format (printf, 1, 2)));
-int winansi_fprintf(FILE *stream, const char *format, ...) __attribute__((format (printf, 2, 3)));
+int winansi_printf(const char *format, ...) __attribute__((__format__ (__printf__, 1, 2)));
+int winansi_fprintf(FILE *stream, const char *format, ...) __attribute__((__format__ (__printf__, 2, 3)));
 #define fputs winansi_fputs
 #define printf(...) winansi_printf(__VA_ARGS__)
 #define fprintf(...) winansi_fprintf(__VA_ARGS__)

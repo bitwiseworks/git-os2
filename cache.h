@@ -656,17 +656,17 @@ extern int check_repository_format(void);
 #define TYPE_CHANGED    0x0040
 
 extern char *mksnpath(char *buf, size_t n, const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 extern char *git_snpath(char *buf, size_t n, const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 extern char *git_pathdup(const char *fmt, ...)
-	__attribute__((format (printf, 1, 2)));
+	__attribute__((__format__ (__printf__, 1, 2)));
 
 /* Return a statically allocated filename matching the sha1 signature */
-extern char *mkpath(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
-extern char *git_path(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
+extern char *mkpath(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
+extern char *git_path(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
 extern char *git_path_submodule(const char *path, const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 
 extern char *sha1_file_name(const unsigned char *sha1);
 extern char *sha1_pack_name(const unsigned char *sha1);
@@ -1196,10 +1196,10 @@ extern void *alloc_object_node(void);
 extern void alloc_report(void);
 
 /* trace.c */
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 extern void trace_printf(const char *format, ...);
 extern void trace_vprintf(const char *key, const char *format, va_list ap);
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 extern void trace_argv_printf(const char **argv, const char *format, ...);
 extern void trace_repo_setup(const char *prefix);
 extern int trace_want(const char *key);

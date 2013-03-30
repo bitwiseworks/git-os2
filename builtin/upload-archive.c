@@ -65,7 +65,7 @@ int cmd_upload_archive_writer(int argc, const char **argv, const char *prefix)
 	return write_archive(sent_argc, sent_argv, prefix, 0, NULL, 1);
 }
 
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 static void error_clnt(const char *fmt, ...)
 {
 	char buf[1024];

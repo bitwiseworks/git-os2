@@ -30,7 +30,7 @@ static int mark_skip_worktree_only;
 #define MARK_FLAG 1
 #define UNMARK_FLAG 2
 
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 static void report(const char *fmt, ...)
 {
 	va_list vp;

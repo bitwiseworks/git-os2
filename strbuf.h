@@ -95,9 +95,9 @@ struct strbuf_expand_dict_entry {
 extern size_t strbuf_expand_dict_cb(struct strbuf *sb, const char *placeholder, void *context);
 extern void strbuf_addbuf_percentquote(struct strbuf *dst, const struct strbuf *src);
 
-__attribute__((format (printf,2,3)))
+__attribute__((__format__ (__printf__,2,3)))
 extern void strbuf_addf(struct strbuf *sb, const char *fmt, ...);
-__attribute__((format (printf,2,0)))
+__attribute__((__format__ (__printf__,2,0)))
 extern void strbuf_vaddf(struct strbuf *sb, const char *fmt, va_list ap);
 
 extern void strbuf_add_lines(struct strbuf *sb, const char *prefix, const char *buf, size_t size);
