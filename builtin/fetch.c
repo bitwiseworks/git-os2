@@ -13,6 +13,7 @@
 #include "sigchain.h"
 #include "transport.h"
 #include "submodule.h"
+#include "connected.h"
 
 static const char * const builtin_fetch_usage[] = {
 	"git fetch [<options>] [<repository> [<refspec>...]]",
@@ -29,7 +30,7 @@ enum {
 };
 
 static int all, append, dry_run, force, keep, multiple, prune, update_head_ok, verbosity;
-static int progress, recurse_submodules = RECURSE_SUBMODULES_DEFAULT;
+static int progress = -1, recurse_submodules = RECURSE_SUBMODULES_DEFAULT;
 static int tags = TAGS_DEFAULT;
 static const char *depth;
 static const char *upload_pack;
@@ -77,7 +78,7 @@ static struct option builtin_fetch_options[] = {
 	OPT_BOOLEAN('k', "keep", &keep, "keep downloaded pack"),
 	OPT_BOOLEAN('u', "update-head-ok", &update_head_ok,
 		    "allow updating of HEAD ref"),
-	OPT_BOOLEAN(0, "progress", &progress, "force progress reporting"),
+	OPT_BOOL(0, "progress", &progress, "force progress reporting"),
 	OPT_STRING(0, "depth", &depth, "depth",
 		   "deepen history of shallow clone"),
 	{ OPTION_STRING, 0, "submodule-prefix", &submodule_prefix, "dir",
@@ -239,23 +240,23 @@ static int s_update_ref(const char *action,
 
 static int update_local_ref(struct ref *ref,
 			    const char *remote,
-			    char *display)
+			    struct strbuf *display)
 {
 	struct commit *current = NULL, *updated;
 	enum object_type type;
 	struct branch *current_branch = branch_get(NULL);
 	const char *pretty_ref = prettify_refname(ref->name);
 
-	*display = 0;
 	type = sha1_object_info(ref->new_sha1, NULL);
 	if (type < 0)
 		die(_("object %s not found"), sha1_to_hex(ref->new_sha1));
 
 	if (!hashcmp(ref->old_sha1, ref->new_sha1)) {
 		if (verbosity > 0)
-			sprintf(display, "= %-*s %-*s -> %s", TRANSPORT_SUMMARY_WIDTH,
-				_("[up to date]"), REFCOL_WIDTH, remote,
-				pretty_ref);
+			strbuf_addf(display, "= %-*s %-*s -> %s",
+				    TRANSPORT_SUMMARY_WIDTH,
+				    _("[up to date]"), REFCOL_WIDTH,
+				    remote, pretty_ref);
 		return 0;
 	}
 
@@ -267,9 +268,10 @@ static int update_local_ref(struct ref *ref,
 		 * If this is the head, and it's not okay to update
 		 * the head, and the old value of the head isn't empty...
 		 */
-		sprintf(display, _("! %-*s %-*s -> %s  (can't fetch in current branch)"),
-			TRANSPORT_SUMMARY_WIDTH, _("[rejected]"), REFCOL_WIDTH, remote,
-			pretty_ref);
+		strbuf_addf(display,
+			    _("! %-*s %-*s -> %s  (can't fetch in current branch)"),
+			    TRANSPORT_SUMMARY_WIDTH, _("[rejected]"),
+			    REFCOL_WIDTH, remote, pretty_ref);
 		return 1;
 	}
 
@@ -277,9 +279,11 @@ static int update_local_ref(struct ref *ref,
 	    !prefixcmp(ref->name, "refs/tags/")) {
 		int r;
 		r = s_update_ref("updating tag", ref, 0);
-		sprintf(display, "%c %-*s %-*s -> %s%s", r ? '!' : '-',
-			TRANSPORT_SUMMARY_WIDTH, _("[tag update]"), REFCOL_WIDTH, remote,
-			pretty_ref, r ? _("  (unable to update local ref)") : "");
+		strbuf_addf(display, "%c %-*s %-*s -> %s%s",
+			    r ? '!' : '-',
+			    TRANSPORT_SUMMARY_WIDTH, _("[tag update]"),
+			    REFCOL_WIDTH, remote, pretty_ref,
+			    r ? _("  (unable to update local ref)") : "");
 		return r;
 	}
 
@@ -302,9 +306,11 @@ static int update_local_ref(struct ref *ref,
 		}
 
 		r = s_update_ref(msg, ref, 0);
-		sprintf(display, "%c %-*s %-*s -> %s%s", r ? '!' : '*',
-			TRANSPORT_SUMMARY_WIDTH, what, REFCOL_WIDTH, remote, pretty_ref,
-			r ? _("  (unable to update local ref)") : "");
+		strbuf_addf(display, "%c %-*s %-*s -> %s%s",
+			    r ? '!' : '*',
+			    TRANSPORT_SUMMARY_WIDTH, what,
+			    REFCOL_WIDTH, remote, pretty_ref,
+			    r ? _("  (unable to update local ref)") : "");
 		return r;
 	}
 
@@ -318,9 +324,11 @@ static int update_local_ref(struct ref *ref,
 		    (recurse_submodules != RECURSE_SUBMODULES_ON))
 			check_for_new_submodule_commits(ref->new_sha1);
 		r = s_update_ref("fast-forward", ref, 1);
-		sprintf(display, "%c %-*s %-*s -> %s%s", r ? '!' : ' ',
-			TRANSPORT_SUMMARY_WIDTH, quickref, REFCOL_WIDTH, remote,
-			pretty_ref, r ? _("  (unable to update local ref)") : "");
+		strbuf_addf(display, "%c %-*s %-*s -> %s%s",
+			    r ? '!' : ' ',
+			    TRANSPORT_SUMMARY_WIDTH, quickref,
+			    REFCOL_WIDTH, remote, pretty_ref,
+			    r ? _("  (unable to update local ref)") : "");
 		return r;
 	} else if (force || ref->force) {
 		char quickref[84];
@@ -332,17 +340,31 @@ static int update_local_ref(struct ref *ref,
 		    (recurse_submodules != RECURSE_SUBMODULES_ON))
 			check_for_new_submodule_commits(ref->new_sha1);
 		r = s_update_ref("forced-update", ref, 1);
-		sprintf(display, "%c %-*s %-*s -> %s  (%s)", r ? '!' : '+',
-			TRANSPORT_SUMMARY_WIDTH, quickref, REFCOL_WIDTH, remote,
-			pretty_ref,
-			r ? _("unable to update local ref") : _("forced update"));
+		strbuf_addf(display, "%c %-*s %-*s -> %s  (%s)",
+			    r ? '!' : '+',
+			    TRANSPORT_SUMMARY_WIDTH, quickref,
+			    REFCOL_WIDTH, remote, pretty_ref,
+			    r ? _("unable to update local ref") : _("forced update"));
 		return r;
 	} else {
-		sprintf(display, "! %-*s %-*s -> %s  %s",
-			TRANSPORT_SUMMARY_WIDTH, _("[rejected]"), REFCOL_WIDTH, remote,
-			pretty_ref, _("(non-fast-forward)"));
+		strbuf_addf(display, "! %-*s %-*s -> %s  %s",
+			    TRANSPORT_SUMMARY_WIDTH, _("[rejected]"),
+			    REFCOL_WIDTH, remote, pretty_ref,
+			    _("(non-fast-forward)"));
 		return 1;
 	}
+}
+
+static int iterate_ref_map(void *cb_data, unsigned char sha1[20])
+{
+	struct ref **rm = cb_data;
+	struct ref *ref = *rm;
+
+	if (!ref)
+		return -1; /* end of the list */
+	*rm = ref->next;
+	hashcpy(sha1, ref->old_sha1);
+	return 0;
 }
 
 static int store_updated_refs(const char *raw_url, const char *remote_name,
@@ -350,11 +372,12 @@ static int store_updated_refs(const char *raw_url, const char *remote_name,
 {
 	FILE *fp;
 	struct commit *commit;
-	int url_len, i, note_len, shown_url = 0, rc = 0;
-	char note[1024];
+	int url_len, i, shown_url = 0, rc = 0;
+	struct strbuf note = STRBUF_INIT;
 	const char *what, *kind;
 	struct ref *rm;
 	char *url, *filename = dry_run ? "/dev/null" : git_path("FETCH_HEAD");
+	int want_merge;
 
 	fp = fopen(filename, "a");
 	if (!fp)
@@ -364,92 +387,114 @@ static int store_updated_refs(const char *raw_url, const char *remote_name,
 		url = transport_anonymize_url(raw_url);
 	else
 		url = xstrdup("foreign");
-	for (rm = ref_map; rm; rm = rm->next) {
-		struct ref *ref = NULL;
 
-		if (rm->peer_ref) {
-			ref = xcalloc(1, sizeof(*ref) + strlen(rm->peer_ref->name) + 1);
-			strcpy(ref->name, rm->peer_ref->name);
-			hashcpy(ref->old_sha1, rm->peer_ref->old_sha1);
-			hashcpy(ref->new_sha1, rm->old_sha1);
-			ref->force = rm->peer_ref->force;
-		}
+	rm = ref_map;
+	if (check_everything_connected(iterate_ref_map, 0, &rm)) {
+		rc = error(_("%s did not send all necessary objects\n"), url);
+		goto abort;
+	}
 
-		commit = lookup_commit_reference_gently(rm->old_sha1, 1);
-		if (!commit)
-			rm->merge = 0;
+	/*
+	 * The first pass writes objects to be merged and then the
+	 * second pass writes the rest, in order to allow using
+	 * FETCH_HEAD as a refname to refer to the ref to be merged.
+	 */
+	for (want_merge = 1; 0 <= want_merge; want_merge--) {
+		for (rm = ref_map; rm; rm = rm->next) {
+			struct ref *ref = NULL;
 
-		if (!strcmp(rm->name, "HEAD")) {
-			kind = "";
-			what = "";
-		}
-		else if (!prefixcmp(rm->name, "refs/heads/")) {
-			kind = "branch";
-			what = rm->name + 11;
-		}
-		else if (!prefixcmp(rm->name, "refs/tags/")) {
-			kind = "tag";
-			what = rm->name + 10;
-		}
-		else if (!prefixcmp(rm->name, "refs/remotes/")) {
-			kind = "remote-tracking branch";
-			what = rm->name + 13;
-		}
-		else {
-			kind = "";
-			what = rm->name;
-		}
+			commit = lookup_commit_reference_gently(rm->old_sha1, 1);
+			if (!commit)
+				rm->merge = 0;
 
-		url_len = strlen(url);
-		for (i = url_len - 1; url[i] == '/' && 0 <= i; i--)
-			;
-		url_len = i + 1;
-		if (4 < i && !strncmp(".git", url + i - 3, 4))
-			url_len = i - 3;
+			if (rm->merge != want_merge)
+				continue;
 
-		note_len = 0;
-		if (*what) {
-			if (*kind)
-				note_len += sprintf(note + note_len, "%s ",
-						    kind);
-			note_len += sprintf(note + note_len, "'%s' of ", what);
-		}
-		note[note_len] = '\0';
-		fprintf(fp, "%s\t%s\t%s",
-			sha1_to_hex(commit ? commit->object.sha1 :
-				    rm->old_sha1),
-			rm->merge ? "" : "not-for-merge",
-			note);
-		for (i = 0; i < url_len; ++i)
-			if ('\n' == url[i])
-				fputs("\\n", fp);
-			else
-				fputc(url[i], fp);
-		fputc('\n', fp);
-
-		if (ref) {
-			rc |= update_local_ref(ref, what, note);
-			free(ref);
-		} else
-			sprintf(note, "* %-*s %-*s -> FETCH_HEAD",
-				TRANSPORT_SUMMARY_WIDTH, *kind ? kind : "branch",
-				 REFCOL_WIDTH, *what ? what : "HEAD");
-		if (*note) {
-			if (verbosity >= 0 && !shown_url) {
-				fprintf(stderr, _("From %.*s\n"),
-						url_len, url);
-				shown_url = 1;
+			if (rm->peer_ref) {
+				ref = xcalloc(1, sizeof(*ref) + strlen(rm->peer_ref->name) + 1);
+				strcpy(ref->name, rm->peer_ref->name);
+				hashcpy(ref->old_sha1, rm->peer_ref->old_sha1);
+				hashcpy(ref->new_sha1, rm->old_sha1);
+				ref->force = rm->peer_ref->force;
 			}
-			if (verbosity >= 0)
-				fprintf(stderr, " %s\n", note);
+
+
+			if (!strcmp(rm->name, "HEAD")) {
+				kind = "";
+				what = "";
+			}
+			else if (!prefixcmp(rm->name, "refs/heads/")) {
+				kind = "branch";
+				what = rm->name + 11;
+			}
+			else if (!prefixcmp(rm->name, "refs/tags/")) {
+				kind = "tag";
+				what = rm->name + 10;
+			}
+			else if (!prefixcmp(rm->name, "refs/remotes/")) {
+				kind = "remote-tracking branch";
+				what = rm->name + 13;
+			}
+			else {
+				kind = "";
+				what = rm->name;
+			}
+
+			url_len = strlen(url);
+			for (i = url_len - 1; url[i] == '/' && 0 <= i; i--)
+				;
+			url_len = i + 1;
+			if (4 < i && !strncmp(".git", url + i - 3, 4))
+				url_len = i - 3;
+
+			strbuf_reset(&note);
+			if (*what) {
+				if (*kind)
+					strbuf_addf(&note, "%s ", kind);
+				strbuf_addf(&note, "'%s' of ", what);
+			}
+			fprintf(fp, "%s\t%s\t%s",
+				sha1_to_hex(rm->old_sha1),
+				rm->merge ? "" : "not-for-merge",
+				note.buf);
+			for (i = 0; i < url_len; ++i)
+				if ('\n' == url[i])
+					fputs("\\n", fp);
+				else
+					fputc(url[i], fp);
+			fputc('\n', fp);
+
+			strbuf_reset(&note);
+			if (ref) {
+				rc |= update_local_ref(ref, what, &note);
+				free(ref);
+			} else
+				strbuf_addf(&note, "* %-*s %-*s -> FETCH_HEAD",
+					    TRANSPORT_SUMMARY_WIDTH,
+					    *kind ? kind : "branch",
+					    REFCOL_WIDTH,
+					    *what ? what : "HEAD");
+			if (note.len) {
+				if (verbosity >= 0 && !shown_url) {
+					fprintf(stderr, _("From %.*s\n"),
+							url_len, url);
+					shown_url = 1;
+				}
+				if (verbosity >= 0)
+					fprintf(stderr, " %s\n", note.buf);
+			}
 		}
 	}
-	free(url);
-	fclose(fp);
+
 	if (rc & STORE_REF_ERROR_DF_CONFLICT)
 		error(_("some local refs could not be updated; try running\n"
 		      " 'git remote prune %s' to remove any old, conflicting "
 		      "branches"), remote_name);
+
+ abort:
+	strbuf_release(&note);
+	free(url);
+	fclose(fp);
 	return rc;
 }
 
@@ -457,23 +502,10 @@ static int store_updated_refs(const char *raw_url, const char *remote_name,
  * We would want to bypass the object transfer altogether if
  * everything we are going to fetch already exists and is connected
  * locally.
- *
- * The refs we are going to fetch are in ref_map.  If running
- *
- *  $ git rev-list --objects --stdin --not --all
- *
- * (feeding all the refs in ref_map on its standard input)
- * does not error out, that means everything reachable from the
- * refs we are going to fetch exists and is connected to some of
- * our existing refs.
  */
 static int quickfetch(struct ref *ref_map)
 {
-	struct child_process revlist;
-	struct ref *ref;
-	int err;
-	const char *argv[] = {"rev-list",
-		"--quiet", "--objects", "--stdin", "--not", "--all", NULL};
+	struct ref *rm = ref_map;
 
 	/*
 	 * If we are deepening a shallow clone we already have these
@@ -484,47 +516,7 @@ static int quickfetch(struct ref *ref_map)
 	 */
 	if (depth)
 		return -1;
-
-	if (!ref_map)
-		return 0;
-
-	memset(&revlist, 0, sizeof(revlist));
-	revlist.argv = argv;
-	revlist.git_cmd = 1;
-	revlist.no_stdout = 1;
-	revlist.no_stderr = 1;
-	revlist.in = -1;
-
-	err = start_command(&revlist);
-	if (err) {
-		error(_("could not run rev-list"));
-		return err;
-	}
-
-	/*
-	 * If rev-list --stdin encounters an unknown commit, it terminates,
-	 * which will cause SIGPIPE in the write loop below.
-	 */
-	sigchain_push(SIGPIPE, SIG_IGN);
-
-	for (ref = ref_map; ref; ref = ref->next) {
-		if (write_in_full(revlist.in, sha1_to_hex(ref->old_sha1), 40) < 0 ||
-		    write_str_in_full(revlist.in, "\n") < 0) {
-			if (errno != EPIPE && errno != EINVAL)
-				error(_("failed write to rev-list: %s"), strerror(errno));
-			err = -1;
-			break;
-		}
-	}
-
-	if (close(revlist.in)) {
-		error(_("failed to close rev-list's stdin: %s"), strerror(errno));
-		err = -1;
-	}
-
-	sigchain_pop(SIGPIPE);
-
-	return finish_command(&revlist) || err;
+	return check_everything_connected(iterate_ref_map, 1, &rm);
 }
 
 static int fetch_refs(struct transport *transport, struct ref *ref_map)
@@ -540,10 +532,10 @@ static int fetch_refs(struct transport *transport, struct ref *ref_map)
 	return ret;
 }
 
-static int prune_refs(struct transport *transport, struct ref *ref_map)
+static int prune_refs(struct refspec *refs, int ref_count, struct ref *ref_map)
 {
 	int result = 0;
-	struct ref *ref, *stale_refs = get_stale_heads(transport->remote, ref_map);
+	struct ref *ref, *stale_refs = get_stale_heads(refs, ref_count, ref_map);
 	const char *dangling_msg = dry_run
 		? _("   (%s will become dangling)\n")
 		: _("   (%s has become dangling)\n");
@@ -734,8 +726,31 @@ static int do_fetch(struct transport *transport,
 		free_refs(ref_map);
 		return 1;
 	}
-	if (prune)
-		prune_refs(transport, ref_map);
+	if (prune) {
+		/* If --tags was specified, pretend the user gave us the canonical tags refspec */
+		if (tags == TAGS_SET) {
+			const char *tags_str = "refs/tags/*:refs/tags/*";
+			struct refspec *tags_refspec, *refspec;
+
+			/* Copy the refspec and add the tags to it */
+			refspec = xcalloc(ref_count + 1, sizeof(struct refspec));
+			tags_refspec = parse_fetch_refspec(1, &tags_str);
+			memcpy(refspec, refs, ref_count * sizeof(struct refspec));
+			memcpy(&refspec[ref_count], tags_refspec, sizeof(struct refspec));
+			ref_count++;
+
+			prune_refs(refspec, ref_count, ref_map);
+
+			ref_count--;
+			/* The rest of the strings belong to fetch_one */
+			free_refspec(1, tags_refspec);
+			free(refspec);
+		} else if (ref_count) {
+			prune_refs(refs, ref_count, ref_map);
+		} else {
+			prune_refs(transport->remote->fetch, transport->remote->fetch_refspec_nr, ref_map);
+		}
+	}
 	free_refs(ref_map);
 
 	/* if neither --no-tags nor --tags was specified, do automated tag
@@ -918,7 +933,7 @@ static int fetch_one(struct remote *remote, int argc, const char **argv)
 	atexit(unlock_pack);
 	refspec = parse_fetch_refspec(ref_nr, refs);
 	exit_code = do_fetch(transport, refspec, ref_nr);
-	free(refspec);
+	free_refspec(ref_nr, refspec);
 	transport_disconnect(transport);
 	transport = NULL;
 	return exit_code;
@@ -940,6 +955,15 @@ int cmd_fetch(int argc, const char **argv, const char *prefix)
 
 	argc = parse_options(argc, argv, prefix,
 			     builtin_fetch_options, builtin_fetch_usage, 0);
+
+	if (recurse_submodules != RECURSE_SUBMODULES_OFF) {
+		if (recurse_submodules_default) {
+			int arg = parse_fetch_recurse_submodules_arg("--recurse-submodules-default", recurse_submodules_default);
+			set_config_fetch_recurse_submodules(arg);
+		}
+		gitmodules_config();
+		git_config(submodule_config, NULL);
+	}
 
 	if (all) {
 		if (argc == 1)
@@ -976,12 +1000,6 @@ int cmd_fetch(int argc, const char **argv, const char *prefix)
 	if (!result && (recurse_submodules != RECURSE_SUBMODULES_OFF)) {
 		const char *options[10];
 		int num_options = 0;
-		if (recurse_submodules_default) {
-			int arg = parse_fetch_recurse_submodules_arg("--recurse-submodules-default", recurse_submodules_default);
-			set_config_fetch_recurse_submodules(arg);
-		}
-		gitmodules_config();
-		git_config(submodule_config, NULL);
 		add_options_to_argv(&num_options, options);
 		result = fetch_populated_submodules(num_options, options,
 						    submodule_prefix,

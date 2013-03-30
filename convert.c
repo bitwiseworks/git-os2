@@ -2,6 +2,7 @@
 #include "attr.h"
 #include "run-command.h"
 #include "quote.h"
+#include "sigchain.h"
 
 /*
  * convert.c - convert a file when checking it out and checking it in.
@@ -195,8 +196,16 @@ static int crlf_to_git(const char *path, const char *src, size_t len,
 	char *dst;
 
 	if (crlf_action == CRLF_BINARY ||
-	    (crlf_action == CRLF_GUESS && auto_crlf == AUTO_CRLF_FALSE) || !len)
+	    (crlf_action == CRLF_GUESS && auto_crlf == AUTO_CRLF_FALSE) ||
+	    (src && !len))
 		return 0;
+
+	/*
+	 * If we are doing a dry-run and have no source buffer, there is
+	 * nothing to analyze; we must assume we would convert.
+	 */
+	if (!buf && !src)
+		return 1;
 
 	gather_stats(src, len, &stats);
 
@@ -230,6 +239,13 @@ static int crlf_to_git(const char *path, const char *src, size_t len,
 	/* Optimization: No CR? Nothing to convert, regardless. */
 	if (!stats.cr)
 		return 0;
+
+	/*
+	 * At this point all of our source analysis is done, and we are sure we
+	 * would convert. If we are in dry-run mode, we can give an answer.
+	 */
+	if (!buf)
+		return 1;
 
 	/* only grow if not in place */
 	if (strbuf_avail(buf) + buf->len < len)
@@ -360,11 +376,15 @@ static int filter_buffer(int in, int out, void *data)
 	if (start_command(&child_process))
 		return error("cannot fork to run external filter %s", params->cmd);
 
+	sigchain_push(SIGPIPE, SIG_IGN);
+
 	write_err = (write_in_full(child_process.in, params->src, params->size) < 0);
 	if (close(child_process.in))
 		write_err = 1;
 	if (write_err)
 		error("cannot feed the input to external filter %s", params->cmd);
+
+	sigchain_pop(SIGPIPE);
 
 	status = finish_command(&child_process);
 	if (status)
@@ -390,6 +410,9 @@ static int apply_filter(const char *path, const char *src, size_t len,
 
 	if (!cmd)
 		return 0;
+
+	if (!dst)
+		return 1;
 
 	memset(&async, 0, sizeof(async));
 	async.proc = filter_buffer;
@@ -522,8 +545,11 @@ static int ident_to_git(const char *path, const char *src, size_t len,
 {
 	char *dst, *dollar;
 
-	if (!ident || !count_ident(src, len))
+	if (!ident || (src && !count_ident(src, len)))
 		return 0;
+
+	if (!buf)
+		return 1;
 
 	/* only grow if not in place */
 	if (strbuf_avail(buf) + buf->len < len)
@@ -533,7 +559,7 @@ static int ident_to_git(const char *path, const char *src, size_t len,
 		dollar = memchr(src, '$', len);
 		if (!dollar)
 			break;
-		memcpy(dst, src, dollar + 1 - src);
+		memmove(dst, src, dollar + 1 - src);
 		dst += dollar + 1 - src;
 		len -= dollar + 1 - src;
 		src  = dollar + 1;
@@ -553,7 +579,7 @@ static int ident_to_git(const char *path, const char *src, size_t len,
 			src  = dollar + 1;
 		}
 	}
-	memcpy(dst, src, len);
+	memmove(dst, src, len);
 	strbuf_setlen(buf, dst + len - buf->buf);
 	return 1;
 }
@@ -641,7 +667,7 @@ static int ident_to_worktree(const char *path, const char *src, size_t len,
 	return 1;
 }
 
-static int git_path_check_crlf(const char *path, struct git_attr_check *check)
+static enum crlf_action git_path_check_crlf(const char *path, struct git_attr_check *check)
 {
 	const char *value = check->value;
 
@@ -658,7 +684,7 @@ static int git_path_check_crlf(const char *path, struct git_attr_check *check)
 	return CRLF_GUESS;
 }
 
-static int git_path_check_eol(const char *path, struct git_attr_check *check)
+static enum eol git_path_check_eol(const char *path, struct git_attr_check *check)
 {
 	const char *value = check->value;
 
@@ -727,7 +753,7 @@ static void convert_attrs(struct conv_attrs *ca, const char *path)
 		git_config(read_convert_config, NULL);
 	}
 
-	if (!git_checkattr(path, NUM_CONV_ATTRS, ccheck)) {
+	if (!git_check_attr(path, NUM_CONV_ATTRS, ccheck)) {
 		ca->crlf_action = git_path_check_crlf(path, ccheck + 4);
 		if (ca->crlf_action == CRLF_GUESS)
 			ca->crlf_action = git_path_check_crlf(path, ccheck + 0);
@@ -754,13 +780,13 @@ int convert_to_git(const char *path, const char *src, size_t len,
 		filter = ca.drv->clean;
 
 	ret |= apply_filter(path, src, len, dst, filter);
-	if (ret) {
+	if (ret && dst) {
 		src = dst->buf;
 		len = dst->len;
 	}
 	ca.crlf_action = input_crlf_action(ca.crlf_action, ca.eol_attr);
 	ret |= crlf_to_git(path, src, len, dst, ca.crlf_action, checksafe);
-	if (ret) {
+	if (ret && dst) {
 		src = dst->buf;
 		len = dst->len;
 	}
@@ -811,5 +837,468 @@ int renormalize_buffer(const char *path, const char *src, size_t len, struct str
 		src = dst->buf;
 		len = dst->len;
 	}
-	return ret | convert_to_git(path, src, len, dst, 0);
+	return ret | convert_to_git(path, src, len, dst, SAFE_CRLF_FALSE);
+}
+
+/*****************************************************************
+ *
+ * Streaming converison support
+ *
+ *****************************************************************/
+
+typedef int (*filter_fn)(struct stream_filter *,
+			 const char *input, size_t *isize_p,
+			 char *output, size_t *osize_p);
+typedef void (*free_fn)(struct stream_filter *);
+
+struct stream_filter_vtbl {
+	filter_fn filter;
+	free_fn free;
+};
+
+struct stream_filter {
+	struct stream_filter_vtbl *vtbl;
+};
+
+static int null_filter_fn(struct stream_filter *filter,
+			  const char *input, size_t *isize_p,
+			  char *output, size_t *osize_p)
+{
+	size_t count;
+
+	if (!input)
+		return 0; /* we do not keep any states */
+	count = *isize_p;
+	if (*osize_p < count)
+		count = *osize_p;
+	if (count) {
+		memmove(output, input, count);
+		*isize_p -= count;
+		*osize_p -= count;
+	}
+	return 0;
+}
+
+static void null_free_fn(struct stream_filter *filter)
+{
+	; /* nothing -- null instances are shared */
+}
+
+static struct stream_filter_vtbl null_vtbl = {
+	null_filter_fn,
+	null_free_fn,
+};
+
+static struct stream_filter null_filter_singleton = {
+	&null_vtbl,
+};
+
+int is_null_stream_filter(struct stream_filter *filter)
+{
+	return filter == &null_filter_singleton;
+}
+
+
+/*
+ * LF-to-CRLF filter
+ */
+
+struct lf_to_crlf_filter {
+	struct stream_filter filter;
+	unsigned has_held:1;
+	char held;
+};
+
+static int lf_to_crlf_filter_fn(struct stream_filter *filter,
+				const char *input, size_t *isize_p,
+				char *output, size_t *osize_p)
+{
+	size_t count, o = 0;
+	struct lf_to_crlf_filter *lf_to_crlf = (struct lf_to_crlf_filter *)filter;
+
+	/*
+	 * We may be holding onto the CR to see if it is followed by a
+	 * LF, in which case we would need to go to the main loop.
+	 * Otherwise, just emit it to the output stream.
+	 */
+	if (lf_to_crlf->has_held && (lf_to_crlf->held != '\r' || !input)) {
+		output[o++] = lf_to_crlf->held;
+		lf_to_crlf->has_held = 0;
+	}
+
+	/* We are told to drain */
+	if (!input) {
+		*osize_p -= o;
+		return 0;
+	}
+
+	count = *isize_p;
+	if (count || lf_to_crlf->has_held) {
+		size_t i;
+		int was_cr = 0;
+
+		if (lf_to_crlf->has_held) {
+			was_cr = 1;
+			lf_to_crlf->has_held = 0;
+		}
+
+		for (i = 0; o < *osize_p && i < count; i++) {
+			char ch = input[i];
+
+			if (ch == '\n') {
+				output[o++] = '\r';
+			} else if (was_cr) {
+				/*
+				 * Previous round saw CR and it is not followed
+				 * by a LF; emit the CR before processing the
+				 * current character.
+				 */
+				output[o++] = '\r';
+			}
+
+			/*
+			 * We may have consumed the last output slot,
+			 * in which case we need to break out of this
+			 * loop; hold the current character before
+			 * returning.
+			 */
+			if (*osize_p <= o) {
+				lf_to_crlf->has_held = 1;
+				lf_to_crlf->held = ch;
+				continue; /* break but increment i */
+			}
+
+			if (ch == '\r') {
+				was_cr = 1;
+				continue;
+			}
+
+			was_cr = 0;
+			output[o++] = ch;
+		}
+
+		*osize_p -= o;
+		*isize_p -= i;
+
+		if (!lf_to_crlf->has_held && was_cr) {
+			lf_to_crlf->has_held = 1;
+			lf_to_crlf->held = '\r';
+		}
+	}
+	return 0;
+}
+
+static void lf_to_crlf_free_fn(struct stream_filter *filter)
+{
+	free(filter);
+}
+
+static struct stream_filter_vtbl lf_to_crlf_vtbl = {
+	lf_to_crlf_filter_fn,
+	lf_to_crlf_free_fn,
+};
+
+static struct stream_filter *lf_to_crlf_filter(void)
+{
+	struct lf_to_crlf_filter *lf_to_crlf = xcalloc(1, sizeof(*lf_to_crlf));
+
+	lf_to_crlf->filter.vtbl = &lf_to_crlf_vtbl;
+	return (struct stream_filter *)lf_to_crlf;
+}
+
+/*
+ * Cascade filter
+ */
+#define FILTER_BUFFER 1024
+struct cascade_filter {
+	struct stream_filter filter;
+	struct stream_filter *one;
+	struct stream_filter *two;
+	char buf[FILTER_BUFFER];
+	int end, ptr;
+};
+
+static int cascade_filter_fn(struct stream_filter *filter,
+			     const char *input, size_t *isize_p,
+			     char *output, size_t *osize_p)
+{
+	struct cascade_filter *cas = (struct cascade_filter *) filter;
+	size_t filled = 0;
+	size_t sz = *osize_p;
+	size_t to_feed, remaining;
+
+	/*
+	 * input -- (one) --> buf -- (two) --> output
+	 */
+	while (filled < sz) {
+		remaining = sz - filled;
+
+		/* do we already have something to feed two with? */
+		if (cas->ptr < cas->end) {
+			to_feed = cas->end - cas->ptr;
+			if (stream_filter(cas->two,
+					  cas->buf + cas->ptr, &to_feed,
+					  output + filled, &remaining))
+				return -1;
+			cas->ptr += (cas->end - cas->ptr) - to_feed;
+			filled = sz - remaining;
+			continue;
+		}
+
+		/* feed one from upstream and have it emit into our buffer */
+		to_feed = input ? *isize_p : 0;
+		if (input && !to_feed)
+			break;
+		remaining = sizeof(cas->buf);
+		if (stream_filter(cas->one,
+				  input, &to_feed,
+				  cas->buf, &remaining))
+			return -1;
+		cas->end = sizeof(cas->buf) - remaining;
+		cas->ptr = 0;
+		if (input) {
+			size_t fed = *isize_p - to_feed;
+			*isize_p -= fed;
+			input += fed;
+		}
+
+		/* do we know that we drained one completely? */
+		if (input || cas->end)
+			continue;
+
+		/* tell two to drain; we have nothing more to give it */
+		to_feed = 0;
+		remaining = sz - filled;
+		if (stream_filter(cas->two,
+				  NULL, &to_feed,
+				  output + filled, &remaining))
+			return -1;
+		if (remaining == (sz - filled))
+			break; /* completely drained two */
+		filled = sz - remaining;
+	}
+	*osize_p -= filled;
+	return 0;
+}
+
+static void cascade_free_fn(struct stream_filter *filter)
+{
+	struct cascade_filter *cas = (struct cascade_filter *)filter;
+	free_stream_filter(cas->one);
+	free_stream_filter(cas->two);
+	free(filter);
+}
+
+static struct stream_filter_vtbl cascade_vtbl = {
+	cascade_filter_fn,
+	cascade_free_fn,
+};
+
+static struct stream_filter *cascade_filter(struct stream_filter *one,
+					    struct stream_filter *two)
+{
+	struct cascade_filter *cascade;
+
+	if (!one || is_null_stream_filter(one))
+		return two;
+	if (!two || is_null_stream_filter(two))
+		return one;
+
+	cascade = xmalloc(sizeof(*cascade));
+	cascade->one = one;
+	cascade->two = two;
+	cascade->end = cascade->ptr = 0;
+	cascade->filter.vtbl = &cascade_vtbl;
+	return (struct stream_filter *)cascade;
+}
+
+/*
+ * ident filter
+ */
+#define IDENT_DRAINING (-1)
+#define IDENT_SKIPPING (-2)
+struct ident_filter {
+	struct stream_filter filter;
+	struct strbuf left;
+	int state;
+	char ident[45]; /* ": x40 $" */
+};
+
+static int is_foreign_ident(const char *str)
+{
+	int i;
+
+	if (prefixcmp(str, "$Id: "))
+		return 0;
+	for (i = 5; str[i]; i++) {
+		if (isspace(str[i]) && str[i+1] != '$')
+			return 1;
+	}
+	return 0;
+}
+
+static void ident_drain(struct ident_filter *ident, char **output_p, size_t *osize_p)
+{
+	size_t to_drain = ident->left.len;
+
+	if (*osize_p < to_drain)
+		to_drain = *osize_p;
+	if (to_drain) {
+		memcpy(*output_p, ident->left.buf, to_drain);
+		strbuf_remove(&ident->left, 0, to_drain);
+		*output_p += to_drain;
+		*osize_p -= to_drain;
+	}
+	if (!ident->left.len)
+		ident->state = 0;
+}
+
+static int ident_filter_fn(struct stream_filter *filter,
+			   const char *input, size_t *isize_p,
+			   char *output, size_t *osize_p)
+{
+	struct ident_filter *ident = (struct ident_filter *)filter;
+	static const char head[] = "$Id";
+
+	if (!input) {
+		/* drain upon eof */
+		switch (ident->state) {
+		default:
+			strbuf_add(&ident->left, head, ident->state);
+		case IDENT_SKIPPING:
+			/* fallthru */
+		case IDENT_DRAINING:
+			ident_drain(ident, &output, osize_p);
+		}
+		return 0;
+	}
+
+	while (*isize_p || (ident->state == IDENT_DRAINING)) {
+		int ch;
+
+		if (ident->state == IDENT_DRAINING) {
+			ident_drain(ident, &output, osize_p);
+			if (!*osize_p)
+				break;
+			continue;
+		}
+
+		ch = *(input++);
+		(*isize_p)--;
+
+		if (ident->state == IDENT_SKIPPING) {
+			/*
+			 * Skipping until '$' or LF, but keeping them
+			 * in case it is a foreign ident.
+			 */
+			strbuf_addch(&ident->left, ch);
+			if (ch != '\n' && ch != '$')
+				continue;
+			if (ch == '$' && !is_foreign_ident(ident->left.buf)) {
+				strbuf_setlen(&ident->left, sizeof(head) - 1);
+				strbuf_addstr(&ident->left, ident->ident);
+			}
+			ident->state = IDENT_DRAINING;
+			continue;
+		}
+
+		if (ident->state < sizeof(head) &&
+		    head[ident->state] == ch) {
+			ident->state++;
+			continue;
+		}
+
+		if (ident->state)
+			strbuf_add(&ident->left, head, ident->state);
+		if (ident->state == sizeof(head) - 1) {
+			if (ch != ':' && ch != '$') {
+				strbuf_addch(&ident->left, ch);
+				ident->state = 0;
+				continue;
+			}
+
+			if (ch == ':') {
+				strbuf_addch(&ident->left, ch);
+				ident->state = IDENT_SKIPPING;
+			} else {
+				strbuf_addstr(&ident->left, ident->ident);
+				ident->state = IDENT_DRAINING;
+			}
+			continue;
+		}
+
+		strbuf_addch(&ident->left, ch);
+		ident->state = IDENT_DRAINING;
+	}
+	return 0;
+}
+
+static void ident_free_fn(struct stream_filter *filter)
+{
+	struct ident_filter *ident = (struct ident_filter *)filter;
+	strbuf_release(&ident->left);
+	free(filter);
+}
+
+static struct stream_filter_vtbl ident_vtbl = {
+	ident_filter_fn,
+	ident_free_fn,
+};
+
+static struct stream_filter *ident_filter(const unsigned char *sha1)
+{
+	struct ident_filter *ident = xmalloc(sizeof(*ident));
+
+	sprintf(ident->ident, ": %s $", sha1_to_hex(sha1));
+	strbuf_init(&ident->left, 0);
+	ident->filter.vtbl = &ident_vtbl;
+	ident->state = 0;
+	return (struct stream_filter *)ident;
+}
+
+/*
+ * Return an appropriately constructed filter for the path, or NULL if
+ * the contents cannot be filtered without reading the whole thing
+ * in-core.
+ *
+ * Note that you would be crazy to set CRLF, smuge/clean or ident to a
+ * large binary blob you would want us not to slurp into the memory!
+ */
+struct stream_filter *get_stream_filter(const char *path, const unsigned char *sha1)
+{
+	struct conv_attrs ca;
+	enum crlf_action crlf_action;
+	struct stream_filter *filter = NULL;
+
+	convert_attrs(&ca, path);
+
+	if (ca.drv && (ca.drv->smudge || ca.drv->clean))
+		return filter;
+
+	if (ca.ident)
+		filter = ident_filter(sha1);
+
+	crlf_action = input_crlf_action(ca.crlf_action, ca.eol_attr);
+
+	if ((crlf_action == CRLF_BINARY) || (crlf_action == CRLF_INPUT) ||
+	    (crlf_action == CRLF_GUESS && auto_crlf == AUTO_CRLF_FALSE))
+		filter = cascade_filter(filter, &null_filter_singleton);
+
+	else if (output_eol(crlf_action) == EOL_CRLF &&
+		 !(crlf_action == CRLF_AUTO || crlf_action == CRLF_GUESS))
+		filter = cascade_filter(filter, lf_to_crlf_filter());
+
+	return filter;
+}
+
+void free_stream_filter(struct stream_filter *filter)
+{
+	filter->vtbl->free(filter);
+}
+
+int stream_filter(struct stream_filter *filter,
+		  const char *input, size_t *isize_p,
+		  char *output, size_t *osize_p)
+{
+	return filter->vtbl->filter(filter, input, isize_p, output, osize_p);
 }

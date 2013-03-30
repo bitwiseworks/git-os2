@@ -8,6 +8,7 @@
 #include "log-tree.h"
 #include "refs.h"
 #include "userdiff.h"
+#include "sha1-array.h"
 
 static struct combine_diff_path *intersect_paths(struct combine_diff_path *curr, int n, int num_parent)
 {
@@ -702,9 +703,8 @@ static void show_combined_header(struct combine_diff_path *elem,
 	int abbrev = DIFF_OPT_TST(opt, FULL_INDEX) ? 40 : DEFAULT_ABBREV;
 	const char *a_prefix = opt->a_prefix ? opt->a_prefix : "a/";
 	const char *b_prefix = opt->b_prefix ? opt->b_prefix : "b/";
-	int use_color = DIFF_OPT_TST(opt, COLOR_DIFF);
-	const char *c_meta = diff_get_color(use_color, DIFF_METAINFO);
-	const char *c_reset = diff_get_color(use_color, DIFF_RESET);
+	const char *c_meta = diff_get_color_opt(opt, DIFF_METAINFO);
+	const char *c_reset = diff_get_color_opt(opt, DIFF_RESET);
 	const char *abb;
 	int added = 0;
 	int deleted = 0;
@@ -964,7 +964,7 @@ static void show_patch_diff(struct combine_diff_path *elem, int num_parent,
 		show_combined_header(elem, num_parent, dense, rev,
 				     mode_differs, 1);
 		dump_sline(sline, cnt, num_parent,
-			   DIFF_OPT_TST(opt, COLOR_DIFF), result_deleted);
+			   opt->use_color, result_deleted);
 	}
 	free(result);
 
@@ -1050,16 +1050,81 @@ void show_combined_diff(struct combine_diff_path *p,
 		show_patch_diff(p, num_parent, dense, 1, rev);
 }
 
+static void free_combined_pair(struct diff_filepair *pair)
+{
+	free(pair->two);
+	free(pair);
+}
+
+/*
+ * A combine_diff_path expresses N parents on the LHS against 1 merge
+ * result. Synthesize a diff_filepair that has N entries on the "one"
+ * side and 1 entry on the "two" side.
+ *
+ * In the future, we might want to add more data to combine_diff_path
+ * so that we can fill fields we are ignoring (most notably, size) here,
+ * but currently nobody uses it, so this should suffice for now.
+ */
+static struct diff_filepair *combined_pair(struct combine_diff_path *p,
+					   int num_parent)
+{
+	int i;
+	struct diff_filepair *pair;
+	struct diff_filespec *pool;
+
+	pair = xmalloc(sizeof(*pair));
+	pool = xcalloc(num_parent + 1, sizeof(struct diff_filespec));
+	pair->one = pool + 1;
+	pair->two = pool;
+
+	for (i = 0; i < num_parent; i++) {
+		pair->one[i].path = p->path;
+		pair->one[i].mode = p->parent[i].mode;
+		hashcpy(pair->one[i].sha1, p->parent[i].sha1);
+		pair->one[i].sha1_valid = !is_null_sha1(p->parent[i].sha1);
+		pair->one[i].has_more_entries = 1;
+	}
+	pair->one[num_parent - 1].has_more_entries = 0;
+
+	pair->two->path = p->path;
+	pair->two->mode = p->mode;
+	hashcpy(pair->two->sha1, p->sha1);
+	pair->two->sha1_valid = !is_null_sha1(p->sha1);
+	return pair;
+}
+
+static void handle_combined_callback(struct diff_options *opt,
+				     struct combine_diff_path *paths,
+				     int num_parent,
+				     int num_paths)
+{
+	struct combine_diff_path *p;
+	struct diff_queue_struct q;
+	int i;
+
+	q.queue = xcalloc(num_paths, sizeof(struct diff_filepair *));
+	q.alloc = num_paths;
+	q.nr = num_paths;
+	for (i = 0, p = paths; p; p = p->next) {
+		if (!p->len)
+			continue;
+		q.queue[i++] = combined_pair(p, num_parent);
+	}
+	opt->format_callback(&q, opt, opt->format_callback_data);
+	for (i = 0; i < num_paths; i++)
+		free_combined_pair(q.queue[i]);
+	free(q.queue);
+}
+
 void diff_tree_combined(const unsigned char *sha1,
-			const unsigned char parent[][20],
-			int num_parent,
+			const struct sha1_array *parents,
 			int dense,
 			struct rev_info *rev)
 {
 	struct diff_options *opt = &rev->diffopt;
 	struct diff_options diffopts;
 	struct combine_diff_path *p, *paths = NULL;
-	int i, num_paths, needsep, show_log_first;
+	int i, num_paths, needsep, show_log_first, num_parent = parents->nr;
 
 	diffopts = *opt;
 	diffopts.output_format = DIFF_FORMAT_NO_OUTPUT;
@@ -1079,7 +1144,7 @@ void diff_tree_combined(const unsigned char *sha1,
 			diffopts.output_format = stat_opt;
 		else
 			diffopts.output_format = DIFF_FORMAT_NO_OUTPUT;
-		diff_tree_sha1(parent[i], sha1, "", &diffopts);
+		diff_tree_sha1(parents->sha1[i], sha1, "", &diffopts);
 		diffcore_std(&diffopts);
 		paths = intersect_paths(paths, i, num_parent);
 
@@ -1109,6 +1174,9 @@ void diff_tree_combined(const unsigned char *sha1,
 		else if (opt->output_format &
 			 (DIFF_FORMAT_NUMSTAT|DIFF_FORMAT_DIFFSTAT))
 			needsep = 1;
+		else if (opt->output_format & DIFF_FORMAT_CALLBACK)
+			handle_combined_callback(opt, paths, num_parent, num_paths);
+
 		if (opt->output_format & DIFF_FORMAT_PATCH) {
 			if (needsep)
 				putchar(opt->line_termination);
@@ -1128,25 +1196,16 @@ void diff_tree_combined(const unsigned char *sha1,
 	}
 }
 
-void diff_tree_combined_merge(const unsigned char *sha1,
-			     int dense, struct rev_info *rev)
+void diff_tree_combined_merge(const struct commit *commit, int dense,
+			      struct rev_info *rev)
 {
-	int num_parent;
-	const unsigned char (*parent)[20];
-	struct commit *commit = lookup_commit(sha1);
-	struct commit_list *parents;
+	struct commit_list *parent = commit->parents;
+	struct sha1_array parents = SHA1_ARRAY_INIT;
 
-	/* count parents */
-	for (parents = commit->parents, num_parent = 0;
-	     parents;
-	     parents = parents->next, num_parent++)
-		; /* nothing */
-
-	parent = xmalloc(num_parent * sizeof(*parent));
-	for (parents = commit->parents, num_parent = 0;
-	     parents;
-	     parents = parents->next, num_parent++)
-		hashcpy((unsigned char *)(parent + num_parent),
-			parents->item->object.sha1);
-	diff_tree_combined(sha1, parent, num_parent, dense, rev);
+	while (parent) {
+		sha1_array_append(&parents, parent->item->object.sha1);
+		parent = parent->next;
+	}
+	diff_tree_combined(commit->object.sha1, &parents, dense, rev);
+	sha1_array_clear(&parents);
 }

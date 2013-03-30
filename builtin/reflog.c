@@ -647,7 +647,7 @@ static int cmd_reflog_expire(int argc, const char **argv, const char *prefix)
 		init_revisions(&cb.revs, prefix);
 		if (cb.verbose)
 			printf("Marking reachable objects...");
-		mark_reachable_objects(&cb.revs, 0);
+		mark_reachable_objects(&cb.revs, 0, NULL);
 		if (cb.verbose)
 			putchar('\n');
 	}
@@ -777,6 +777,5 @@ int cmd_reflog(int argc, const char **argv, const char *prefix)
 	if (!strcmp(argv[1], "delete"))
 		return cmd_reflog_delete(argc - 1, argv + 1, prefix);
 
-	/* Not a recognized reflog command..*/
-	usage(reflog_usage);
+	return cmd_log_reflog(argc, argv, prefix);
 }

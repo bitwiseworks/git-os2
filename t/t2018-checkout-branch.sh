@@ -118,6 +118,15 @@ test_expect_success 'checkout -b to an existing branch fails' '
 	test_must_fail do_checkout branch2 $HEAD2
 '
 
+test_expect_success 'checkout -b to @{-1} fails with the right branch name' '
+	git reset --hard HEAD &&
+	git checkout branch1 &&
+	git checkout branch2 &&
+	echo  >expect "fatal: A branch named '\''branch1'\'' already exists." &&
+	test_must_fail git checkout -b @{-1} 2>actual &&
+	test_cmp expect actual
+'
+
 test_expect_success 'checkout -B to an existing branch resets branch to HEAD' '
 	git checkout branch1 &&
 
@@ -178,6 +187,15 @@ test_expect_success 'checkout -b <describe>' '
 	echo "refs/heads/$name" >expect &&
 	git symbolic-ref HEAD >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'checkout -B to the current branch works' '
+	git checkout branch1 &&
+	git checkout -B branch1-scratch &&
+
+	setup_dirty_mergeable &&
+	git checkout -B branch1-scratch initial &&
+	test_dirty_mergeable
 '
 
 test_done

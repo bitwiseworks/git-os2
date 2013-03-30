@@ -84,7 +84,7 @@ test_expect_success 'git grep -Fi Y<NUL>f a' "
 	git grep -f f -Fi a
 "
 
-test_expect_failure 'git grep -Fi Y<NUL>x a' "
+test_expect_success 'git grep -Fi Y<NUL>x a' "
 	printf 'YQx' | q_to_nul >f &&
 	test_must_fail git grep -f f -Fi a
 "
@@ -94,9 +94,33 @@ test_expect_success 'git grep y<NUL>f a' "
 	git grep -f f a
 "
 
-test_expect_failure 'git grep y<NUL>x a' "
+test_expect_success 'git grep y<NUL>x a' "
 	printf 'yQx' | q_to_nul >f &&
 	test_must_fail git grep -f f a
 "
+
+test_expect_success 'grep respects binary diff attribute' '
+	echo text >t &&
+	git add t &&
+	echo t:text >expect &&
+	git grep text t >actual &&
+	test_cmp expect actual &&
+	echo "t -diff" >.gitattributes &&
+	echo "Binary file t matches" >expect &&
+	git grep text t >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'grep respects not-binary diff attribute' '
+	echo binQary | q_to_nul >b &&
+	git add b &&
+	echo "Binary file b matches" >expect &&
+	git grep bin b >actual &&
+	test_cmp expect actual &&
+	echo "b diff" >.gitattributes &&
+	echo "b:binQary" >expect &&
+	git grep bin b | nul_to_q >actual &&
+	test_cmp expect actual
+'
 
 test_done

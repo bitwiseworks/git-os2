@@ -96,6 +96,13 @@ test_expect_success setup '
 		echo "X-Fake-Field: Line Three" &&
 		git format-patch --stdout first | sed -e "1d"
 	} | append_cr >patch1-crlf.eml &&
+	{
+		printf "%255s\\n" ""
+		echo "X-Fake-Field: Line One" &&
+		echo "X-Fake-Field: Line Two" &&
+		echo "X-Fake-Field: Line Three" &&
+		git format-patch --stdout first | sed -e "1d"
+	} > patch1-ws.eml &&
 
 	sed -n -e "3,\$p" msg >file &&
 	git add file &&
@@ -116,6 +123,7 @@ test_expect_success setup '
 	git commit -m "added another file" &&
 
 	git format-patch --stdout master >lorem-move.patch &&
+	git format-patch --no-prefix --stdout master >lorem-zero.patch &&
 
 	git checkout -b rename &&
 	git mv file renamed &&
@@ -129,7 +137,7 @@ test_expect_success setup '
 	git format-patch -M --stdout lorem^ >rename-add.patch &&
 
 	# reset time
-	unset test_tick &&
+	sane_unset test_tick &&
 	test_tick
 '
 
@@ -161,6 +169,17 @@ test_expect_success 'am applies patch e-mail not in a mbox with CRLF' '
 	git reset --hard &&
 	git checkout first &&
 	git am patch1-crlf.eml &&
+	! test -d .git/rebase-apply &&
+	git diff --exit-code second &&
+	test "$(git rev-parse second)" = "$(git rev-parse HEAD)" &&
+	test "$(git rev-parse second^)" = "$(git rev-parse HEAD^)"
+'
+
+test_expect_success 'am applies patch e-mail with preceding whitespace' '
+	rm -fr .git/rebase-apply &&
+	git reset --hard &&
+	git checkout first &&
+	git am patch1-ws.eml &&
 	! test -d .git/rebase-apply &&
 	git diff --exit-code second &&
 	test "$(git rev-parse second)" = "$(git rev-parse HEAD)" &&
@@ -254,6 +273,20 @@ test_expect_success 'am -3 falls back to 3-way merge' '
 	test_tick &&
 	git commit -m "copied stuff" &&
 	git am -3 lorem-move.patch &&
+	! test -d .git/rebase-apply &&
+	git diff --exit-code lorem
+'
+
+test_expect_success 'am -3 -p0 can read --no-prefix patch' '
+	rm -fr .git/rebase-apply &&
+	git reset --hard &&
+	git checkout -b lorem3 master2 &&
+	sed -n -e "3,\$p" msg >file &&
+	head -n 9 msg >>file &&
+	git add file &&
+	test_tick &&
+	git commit -m "copied stuff" &&
+	git am -3 -p0 lorem-zero.patch &&
 	! test -d .git/rebase-apply &&
 	git diff --exit-code lorem
 '
@@ -465,7 +498,7 @@ test_expect_success 'am newline in subject' '
 	test_tick &&
 	sed -e "s/second/second \\\n foo/" patch1 >patchnl &&
 	git am <patchnl >output.out 2>&1 &&
-	grep "^Applying: second \\\n foo$" output.out
+	test_i18ngrep "^Applying: second \\\n foo$" output.out
 '
 
 test_expect_success 'am -q is quiet' '
@@ -475,6 +508,16 @@ test_expect_success 'am -q is quiet' '
 	test_tick &&
 	git am -q <patch1 >output.out 2>&1 &&
 	! test -s output.out
+'
+
+test_expect_success 'am empty-file does not infloop' '
+	rm -fr .git/rebase-apply &&
+	git reset --hard &&
+	touch empty-file &&
+	test_tick &&
+	{ git am empty-file > actual 2>&1 && false || :; } &&
+	echo Patch format detection failed. >expected &&
+	test_cmp expected actual
 '
 
 test_done

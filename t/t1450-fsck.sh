@@ -110,6 +110,42 @@ test_expect_success 'email with embedded > is not okay' '
 	grep "error in commit $new" out
 '
 
+test_expect_success 'missing < email delimiter is reported nicely' '
+	git cat-file commit HEAD >basis &&
+	sed "s/<//" basis >bad-email-2 &&
+	new=$(git hash-object -t commit -w --stdin <bad-email-2) &&
+	test_when_finished "remove_object $new" &&
+	git update-ref refs/heads/bogus "$new" &&
+	test_when_finished "git update-ref -d refs/heads/bogus" &&
+	git fsck 2>out &&
+	cat out &&
+	grep "error in commit $new.* - bad name" out
+'
+
+test_expect_success 'missing email is reported nicely' '
+	git cat-file commit HEAD >basis &&
+	sed "s/[a-z]* <[^>]*>//" basis >bad-email-3 &&
+	new=$(git hash-object -t commit -w --stdin <bad-email-3) &&
+	test_when_finished "remove_object $new" &&
+	git update-ref refs/heads/bogus "$new" &&
+	test_when_finished "git update-ref -d refs/heads/bogus" &&
+	git fsck 2>out &&
+	cat out &&
+	grep "error in commit $new.* - missing email" out
+'
+
+test_expect_success '> in name is reported' '
+	git cat-file commit HEAD >basis &&
+	sed "s/ </> </" basis >bad-email-4 &&
+	new=$(git hash-object -t commit -w --stdin <bad-email-4) &&
+	test_when_finished "remove_object $new" &&
+	git update-ref refs/heads/bogus "$new" &&
+	test_when_finished "git update-ref -d refs/heads/bogus" &&
+	git fsck 2>out &&
+	cat out &&
+	grep "error in commit $new" out
+'
+
 test_expect_success 'tag pointing to nonexistent' '
 	cat >invalid-tag <<-\EOF &&
 	object ffffffffffffffffffffffffffffffffffffffff
@@ -153,6 +189,32 @@ test_expect_success 'tag pointing to something else than its type' '
 test_expect_success 'cleaned up' '
 	git fsck >actual 2>&1 &&
 	test_cmp empty actual
+'
+
+test_expect_success 'rev-list --verify-objects' '
+	git rev-list --verify-objects --all >/dev/null 2>out &&
+	test_cmp empty out
+'
+
+test_expect_success 'rev-list --verify-objects with bad sha1' '
+	sha=$(echo blob | git hash-object -w --stdin) &&
+	old=$(echo $sha | sed "s+^..+&/+") &&
+	new=$(dirname $old)/ffffffffffffffffffffffffffffffffffffff &&
+	sha="$(dirname $new)$(basename $new)" &&
+	mv .git/objects/$old .git/objects/$new &&
+	test_when_finished "remove_object $sha" &&
+	git update-index --add --cacheinfo 100644 $sha foo &&
+	test_when_finished "git read-tree -u --reset HEAD" &&
+	tree=$(git write-tree) &&
+	test_when_finished "remove_object $tree" &&
+	cmt=$(echo bogus | git commit-tree $tree) &&
+	test_when_finished "remove_object $cmt" &&
+	git update-ref refs/heads/bogus $cmt &&
+	test_when_finished "git update-ref -d refs/heads/bogus" &&
+
+	test_might_fail git rev-list --verify-objects refs/heads/bogus >/dev/null 2>out &&
+	cat out &&
+	grep -q "error: sha1 mismatch 63ffffffffffffffffffffffffffffffffffffff" out
 '
 
 test_done

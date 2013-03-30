@@ -40,7 +40,7 @@ const char *real_path(const char *path)
 
 	while (depth--) {
 		if (!is_directory(buf)) {
-			char *last_slash = strrchr(buf, '/');
+			char *last_slash = find_last_dir_sep(buf);
 			if (last_slash) {
 				*last_slash = '\0';
 				last_elem = xstrdup(last_slash + 1);
@@ -65,7 +65,7 @@ const char *real_path(const char *path)
 			if (len + strlen(last_elem) + 2 > PATH_MAX)
 				die ("Too long path name: '%s/%s'",
 						buf, last_elem);
-			if (len && buf[len-1] != '/')
+			if (len && !is_dir_sep(buf[len-1]))
 				buf[len++] = '/';
 			strcpy(buf + len, last_elem);
 			free(last_elem);
@@ -138,4 +138,32 @@ const char *absolute_path(const char *path)
 			die("Too long path: %.*s", 60, path);
 	}
 	return buf;
+}
+
+/*
+ * Unlike prefix_path, this should be used if the named file does
+ * not have to interact with index entry; i.e. name of a random file
+ * on the filesystem.
+ */
+const char *prefix_filename(const char *pfx, int pfx_len, const char *arg)
+{
+	static char path[PATH_MAX];
+#ifndef WIN32
+	if (!pfx_len || is_absolute_path(arg))
+		return arg;
+	memcpy(path, pfx, pfx_len);
+	strcpy(path + pfx_len, arg);
+#else
+	char *p;
+	/* don't add prefix to absolute paths, but still replace '\' by '/' */
+	if (is_absolute_path(arg))
+		pfx_len = 0;
+	else if (pfx_len)
+		memcpy(path, pfx, pfx_len);
+	strcpy(path + pfx_len, arg);
+	for (p = path + pfx_len; *p; p++)
+		if (*p == '\\')
+			*p = '/';
+#endif
+	return path;
 }

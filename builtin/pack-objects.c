@@ -51,6 +51,8 @@ struct object_entry {
 				       * objects against.
 				       */
 	unsigned char no_try_delta;
+	unsigned char tagged; /* near the very tip of refs */
+	unsigned char filled; /* assigned write-order */
 };
 
 /*
@@ -70,10 +72,11 @@ static int local;
 static int incremental;
 static int ignore_packed_keep;
 static int allow_ofs_delta;
+static struct pack_idx_option pack_idx_opts;
 static const char *base_name;
 static int progress = 1;
 static int window = 10;
-static unsigned long pack_size_limit, pack_size_limit_cfg;
+static unsigned long pack_size_limit;
 static int depth = 50;
 static int delta_search_threads;
 static int pack_to_stdout;
@@ -95,6 +98,7 @@ static unsigned long window_memory_limit = 0;
  */
 static int *object_ix;
 static int object_ix_hashsz;
+static struct object_entry *locate_object_entry(const unsigned char *sha1);
 
 /*
  * stats
@@ -199,6 +203,7 @@ static void copy_pack_data(struct sha1file *f,
 	}
 }
 
+/* Return 0 if we will bust the pack-size limit */
 static unsigned long write_object(struct sha1file *f,
 				  struct object_entry *entry,
 				  off_t write_offset)
@@ -404,25 +409,56 @@ static unsigned long write_object(struct sha1file *f,
 	return hdrlen + datalen;
 }
 
-static int write_one(struct sha1file *f,
-			       struct object_entry *e,
-			       off_t *offset)
+enum write_one_status {
+	WRITE_ONE_SKIP = -1, /* already written */
+	WRITE_ONE_BREAK = 0, /* writing this will bust the limit; not written */
+	WRITE_ONE_WRITTEN = 1, /* normal */
+	WRITE_ONE_RECURSIVE = 2 /* already scheduled to be written */
+};
+
+static enum write_one_status write_one(struct sha1file *f,
+				       struct object_entry *e,
+				       off_t *offset)
 {
 	unsigned long size;
+	int recursing;
 
-	/* offset is non zero if object is written already. */
-	if (e->idx.offset || e->preferred_base)
-		return -1;
+	/*
+	 * we set offset to 1 (which is an impossible value) to mark
+	 * the fact that this object is involved in "write its base
+	 * first before writing a deltified object" recursion.
+	 */
+	recursing = (e->idx.offset == 1);
+	if (recursing) {
+		warning("recursive delta detected for object %s",
+			sha1_to_hex(e->idx.sha1));
+		return WRITE_ONE_RECURSIVE;
+	} else if (e->idx.offset || e->preferred_base) {
+		/* offset is non zero if object is written already. */
+		return WRITE_ONE_SKIP;
+	}
 
 	/* if we are deltified, write out base object first. */
-	if (e->delta && !write_one(f, e->delta, offset))
-		return 0;
+	if (e->delta) {
+		e->idx.offset = 1; /* now recurse */
+		switch (write_one(f, e->delta, offset)) {
+		case WRITE_ONE_RECURSIVE:
+			/* we cannot depend on this one */
+			e->delta = NULL;
+			break;
+		default:
+			break;
+		case WRITE_ONE_BREAK:
+			e->idx.offset = recursing;
+			return WRITE_ONE_BREAK;
+		}
+	}
 
 	e->idx.offset = *offset;
 	size = write_object(f, e, *offset);
 	if (!size) {
-		e->idx.offset = 0;
-		return 0;
+		e->idx.offset = recursing;
+		return WRITE_ONE_BREAK;
 	}
 	written_list[nr_written++] = &e->idx;
 
@@ -430,7 +466,171 @@ static int write_one(struct sha1file *f,
 	if (signed_add_overflows(*offset, size))
 		die("pack too large for current definition of off_t");
 	*offset += size;
-	return 1;
+	return WRITE_ONE_WRITTEN;
+}
+
+static int mark_tagged(const char *path, const unsigned char *sha1, int flag,
+		       void *cb_data)
+{
+	unsigned char peeled[20];
+	struct object_entry *entry = locate_object_entry(sha1);
+
+	if (entry)
+		entry->tagged = 1;
+	if (!peel_ref(path, peeled)) {
+		entry = locate_object_entry(peeled);
+		if (entry)
+			entry->tagged = 1;
+	}
+	return 0;
+}
+
+static inline void add_to_write_order(struct object_entry **wo,
+			       unsigned int *endp,
+			       struct object_entry *e)
+{
+	if (e->filled)
+		return;
+	wo[(*endp)++] = e;
+	e->filled = 1;
+}
+
+static void add_descendants_to_write_order(struct object_entry **wo,
+					   unsigned int *endp,
+					   struct object_entry *e)
+{
+	int add_to_order = 1;
+	while (e) {
+		if (add_to_order) {
+			struct object_entry *s;
+			/* add this node... */
+			add_to_write_order(wo, endp, e);
+			/* all its siblings... */
+			for (s = e->delta_sibling; s; s = s->delta_sibling) {
+				add_to_write_order(wo, endp, s);
+			}
+		}
+		/* drop down a level to add left subtree nodes if possible */
+		if (e->delta_child) {
+			add_to_order = 1;
+			e = e->delta_child;
+		} else {
+			add_to_order = 0;
+			/* our sibling might have some children, it is next */
+			if (e->delta_sibling) {
+				e = e->delta_sibling;
+				continue;
+			}
+			/* go back to our parent node */
+			e = e->delta;
+			while (e && !e->delta_sibling) {
+				/* we're on the right side of a subtree, keep
+				 * going up until we can go right again */
+				e = e->delta;
+			}
+			if (!e) {
+				/* done- we hit our original root node */
+				return;
+			}
+			/* pass it off to sibling at this level */
+			e = e->delta_sibling;
+		}
+	};
+}
+
+static void add_family_to_write_order(struct object_entry **wo,
+				      unsigned int *endp,
+				      struct object_entry *e)
+{
+	struct object_entry *root;
+
+	for (root = e; root->delta; root = root->delta)
+		; /* nothing */
+	add_descendants_to_write_order(wo, endp, root);
+}
+
+static struct object_entry **compute_write_order(void)
+{
+	unsigned int i, wo_end, last_untagged;
+
+	struct object_entry **wo = xmalloc(nr_objects * sizeof(*wo));
+
+	for (i = 0; i < nr_objects; i++) {
+		objects[i].tagged = 0;
+		objects[i].filled = 0;
+		objects[i].delta_child = NULL;
+		objects[i].delta_sibling = NULL;
+	}
+
+	/*
+	 * Fully connect delta_child/delta_sibling network.
+	 * Make sure delta_sibling is sorted in the original
+	 * recency order.
+	 */
+	for (i = nr_objects; i > 0;) {
+		struct object_entry *e = &objects[--i];
+		if (!e->delta)
+			continue;
+		/* Mark me as the first child */
+		e->delta_sibling = e->delta->delta_child;
+		e->delta->delta_child = e;
+	}
+
+	/*
+	 * Mark objects that are at the tip of tags.
+	 */
+	for_each_tag_ref(mark_tagged, NULL);
+
+	/*
+	 * Give the objects in the original recency order until
+	 * we see a tagged tip.
+	 */
+	for (i = wo_end = 0; i < nr_objects; i++) {
+		if (objects[i].tagged)
+			break;
+		add_to_write_order(wo, &wo_end, &objects[i]);
+	}
+	last_untagged = i;
+
+	/*
+	 * Then fill all the tagged tips.
+	 */
+	for (; i < nr_objects; i++) {
+		if (objects[i].tagged)
+			add_to_write_order(wo, &wo_end, &objects[i]);
+	}
+
+	/*
+	 * And then all remaining commits and tags.
+	 */
+	for (i = last_untagged; i < nr_objects; i++) {
+		if (objects[i].type != OBJ_COMMIT &&
+		    objects[i].type != OBJ_TAG)
+			continue;
+		add_to_write_order(wo, &wo_end, &objects[i]);
+	}
+
+	/*
+	 * And then all the trees.
+	 */
+	for (i = last_untagged; i < nr_objects; i++) {
+		if (objects[i].type != OBJ_TREE)
+			continue;
+		add_to_write_order(wo, &wo_end, &objects[i]);
+	}
+
+	/*
+	 * Finally all the rest in really tight order
+	 */
+	for (i = last_untagged; i < nr_objects; i++) {
+		if (!objects[i].filled)
+			add_family_to_write_order(wo, &wo_end, &objects[i]);
+	}
+
+	if (wo_end != nr_objects)
+		die("ordered %u objects, expected %"PRIu32, wo_end, nr_objects);
+
+	return wo;
 }
 
 static void write_pack_file(void)
@@ -438,37 +638,31 @@ static void write_pack_file(void)
 	uint32_t i = 0, j;
 	struct sha1file *f;
 	off_t offset;
-	struct pack_header hdr;
 	uint32_t nr_remaining = nr_result;
 	time_t last_mtime = 0;
+	struct object_entry **write_order;
 
 	if (progress > pack_to_stdout)
 		progress_state = start_progress("Writing objects", nr_result);
 	written_list = xmalloc(nr_objects * sizeof(*written_list));
+	write_order = compute_write_order();
 
 	do {
 		unsigned char sha1[20];
 		char *pack_tmp_name = NULL;
 
-		if (pack_to_stdout) {
+		if (pack_to_stdout)
 			f = sha1fd_throughput(1, "<stdout>", progress_state);
-		} else {
-			char tmpname[PATH_MAX];
-			int fd;
-			fd = odb_mkstemp(tmpname, sizeof(tmpname),
-					 "pack/tmp_pack_XXXXXX");
-			pack_tmp_name = xstrdup(tmpname);
-			f = sha1fd(fd, pack_tmp_name);
-		}
+		else
+			f = create_tmp_packfile(&pack_tmp_name);
 
-		hdr.hdr_signature = htonl(PACK_SIGNATURE);
-		hdr.hdr_version = htonl(PACK_VERSION);
-		hdr.hdr_entries = htonl(nr_remaining);
-		sha1write(f, &hdr, sizeof(hdr));
-		offset = sizeof(hdr);
+		offset = write_pack_header(f, nr_remaining);
+		if (!offset)
+			die_errno("unable to write pack header");
 		nr_written = 0;
 		for (; i < nr_objects; i++) {
-			if (!write_one(f, objects + i, &offset))
+			struct object_entry *e = write_order[i];
+			if (write_one(f, e, &offset) == WRITE_ONE_BREAK)
 				break;
 			display_progress(progress_state, written);
 		}
@@ -490,19 +684,7 @@ static void write_pack_file(void)
 
 		if (!pack_to_stdout) {
 			struct stat st;
-			const char *idx_tmp_name;
 			char tmpname[PATH_MAX];
-
-			idx_tmp_name = write_idx_file(NULL, written_list,
-						      nr_written, sha1);
-
-			snprintf(tmpname, sizeof(tmpname), "%s-%s.pack",
-				 base_name, sha1_to_hex(sha1));
-			free_pack_by_name(tmpname);
-			if (adjust_shared_perm(pack_tmp_name))
-				die_errno("unable to make temporary pack file readable");
-			if (rename(pack_tmp_name, tmpname))
-				die_errno("unable to rename temporary pack file");
 
 			/*
 			 * Packs are runtime accessed in their mtime
@@ -511,28 +693,27 @@ static void write_pack_file(void)
 			 * packs then we should modify the mtime of later ones
 			 * to preserve this property.
 			 */
-			if (stat(tmpname, &st) < 0) {
+			if (stat(pack_tmp_name, &st) < 0) {
 				warning("failed to stat %s: %s",
-					tmpname, strerror(errno));
+					pack_tmp_name, strerror(errno));
 			} else if (!last_mtime) {
 				last_mtime = st.st_mtime;
 			} else {
 				struct utimbuf utb;
 				utb.actime = st.st_atime;
 				utb.modtime = --last_mtime;
-				if (utime(tmpname, &utb) < 0)
+				if (utime(pack_tmp_name, &utb) < 0)
 					warning("failed utime() on %s: %s",
 						tmpname, strerror(errno));
 			}
 
-			snprintf(tmpname, sizeof(tmpname), "%s-%s.idx",
-				 base_name, sha1_to_hex(sha1));
-			if (adjust_shared_perm(idx_tmp_name))
-				die_errno("unable to make temporary index file readable");
-			if (rename(idx_tmp_name, tmpname))
-				die_errno("unable to rename temporary index file");
-
-			free((void *) idx_tmp_name);
+			/* Enough space for "-<sha-1>.pack"? */
+			if (sizeof(tmpname) <= strlen(base_name) + 50)
+				die("pack base name '%s' too long", base_name);
+			snprintf(tmpname, sizeof(tmpname), "%s-", base_name);
+			finish_tmp_packfile(tmpname, pack_tmp_name,
+					    written_list, nr_written,
+					    &pack_idx_opts, sha1);
 			free(pack_tmp_name);
 			puts(sha1_to_hex(sha1));
 		}
@@ -545,6 +726,7 @@ static void write_pack_file(void)
 	} while (nr_remaining && i < nr_objects);
 
 	free(written_list);
+	free(write_order);
 	stop_progress(&progress_state);
 	if (written != nr_result)
 		die("wrote %"PRIu32" objects while expecting %"PRIu32,
@@ -633,7 +815,7 @@ static int no_try_delta(const char *path)
 	struct git_attr_check check[1];
 
 	setup_delta_attr_check(check);
-	if (git_checkattr(path, ARRAY_SIZE(check), check))
+	if (git_check_attr(path, ARRAY_SIZE(check), check))
 		return 0;
 	if (ATTR_FALSE(check->value))
 		return 1;
@@ -667,6 +849,10 @@ static int add_object_entry(const unsigned char *sha1, enum object_type type,
 		off_t offset = find_pack_entry_one(sha1, p);
 		if (offset) {
 			if (!found_pack) {
+				if (!is_pack_valid(p)) {
+					warning("packfile %s cannot be accessed", p->pack_name);
+					continue;
+				}
 				found_offset = offset;
 				found_pack = p;
 			}
@@ -838,7 +1024,7 @@ static void add_pbase_object(struct tree_desc *tree,
 	while (tree_entry(tree,&entry)) {
 		if (S_ISGITLINK(entry.mode))
 			continue;
-		cmp = tree_entry_len(entry.path, entry.sha1) != cmplen ? 1 :
+		cmp = tree_entry_len(&entry) != cmplen ? 1 :
 		      memcmp(name, entry.path, cmplen);
 		if (cmp > 0)
 			continue;
@@ -1248,11 +1434,16 @@ static int try_delta(struct unpacked *trg, struct unpacked *src,
 		return -1;
 
 	/*
-	 * We do not bother to try a delta that we discarded
-	 * on an earlier try, but only when reusing delta data.
+	 * We do not bother to try a delta that we discarded on an
+	 * earlier try, but only when reusing delta data.  Note that
+	 * src_entry that is marked as the preferred_base should always
+	 * be considered, as even if we produce a suboptimal delta against
+	 * it, we will still save the transfer cost, as we already know
+	 * the other side has it and we won't send src_entry at all.
 	 */
 	if (reuse_delta && trg_entry->in_pack &&
 	    trg_entry->in_pack == src_entry->in_pack &&
+	    !src_entry->preferred_base &&
 	    trg_entry->in_pack_type != OBJ_REF_DELTA &&
 	    trg_entry->in_pack_type != OBJ_OFS_DELTA)
 		return 0;
@@ -1884,14 +2075,10 @@ static int git_pack_config(const char *k, const char *v, void *cb)
 		return 0;
 	}
 	if (!strcmp(k, "pack.indexversion")) {
-		pack_idx_default_version = git_config_int(k, v);
-		if (pack_idx_default_version > 2)
+		pack_idx_opts.version = git_config_int(k, v);
+		if (pack_idx_opts.version > 2)
 			die("bad pack.indexversion=%"PRIu32,
-				pack_idx_default_version);
-		return 0;
-	}
-	if (!strcmp(k, "pack.packsizelimit")) {
-		pack_size_limit_cfg = git_config_ulong(k, v);
+			    pack_idx_opts.version);
 		return 0;
 	}
 	return git_default_config(k, v, cb);
@@ -1936,7 +2123,9 @@ static void show_commit(struct commit *commit, void *data)
 	commit->object.flags |= OBJECT_ADDED;
 }
 
-static void show_object(struct object *obj, const struct name_path *path, const char *last)
+static void show_object(struct object *obj,
+			const struct name_path *path, const char *last,
+			void *data)
 {
 	char *name = path_name(path, last);
 
@@ -2134,6 +2323,7 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	rp_av[1] = "--objects"; /* --thin will make it --objects-edge */
 	rp_ac = 2;
 
+	reset_pack_idx_option(&pack_idx_opts);
 	git_config(git_pack_config, NULL);
 	if (!pack_compression_seen && core_compression_seen)
 		pack_compression_level = core_compression_level;
@@ -2278,12 +2468,12 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		}
 		if (!prefixcmp(arg, "--index-version=")) {
 			char *c;
-			pack_idx_default_version = strtoul(arg + 16, &c, 10);
-			if (pack_idx_default_version > 2)
+			pack_idx_opts.version = strtoul(arg + 16, &c, 10);
+			if (pack_idx_opts.version > 2)
 				die("bad %s", arg);
 			if (*c == ',')
-				pack_idx_off32_limit = strtoul(c+1, &c, 0);
-			if (*c || pack_idx_off32_limit & 0x80000000)
+				pack_idx_opts.off32_limit = strtoul(c+1, &c, 0);
+			if (*c || pack_idx_opts.off32_limit & 0x80000000)
 				die("bad %s", arg);
 			continue;
 		}

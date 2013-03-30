@@ -26,7 +26,9 @@ static char default_wt_status_colors[][COLOR_MAXLEN] = {
 
 static const char *color(int slot, struct wt_status *s)
 {
-	const char *c = s->use_color > 0 ? s->color_palette[slot] : "";
+	const char *c = "";
+	if (want_color(s->use_color))
+		c = s->color_palette[slot];
 	if (slot == WT_STATUS_ONBRANCH && color_is_nil(c))
 		c = s->color_palette[WT_STATUS_HEADER];
 	return c;
@@ -109,7 +111,6 @@ void status_printf_more(struct wt_status *s, const char *color,
 void wt_status_prepare(struct wt_status *s)
 {
 	unsigned char sha1[20];
-	const char *head;
 
 	memset(s, 0, sizeof(*s));
 	memcpy(s->color_palette, default_wt_status_colors,
@@ -117,8 +118,7 @@ void wt_status_prepare(struct wt_status *s)
 	s->show_untracked_files = SHOW_NORMAL_UNTRACKED_FILES;
 	s->use_color = -1;
 	s->relative_paths = 1;
-	head = resolve_ref("HEAD", sha1, 0, NULL);
-	s->branch = head ? xstrdup(head) : NULL;
+	s->branch = resolve_refdup("HEAD", sha1, 0, NULL);
 	s->reference = "HEAD";
 	s->fp = stdout;
 	s->index_file = get_index_file();
@@ -394,7 +394,7 @@ static void wt_status_collect_changes_worktree(struct wt_status *s)
 	if (s->ignore_submodule_arg) {
 		DIFF_OPT_SET(&rev.diffopt, OVERRIDE_SUBMODULE_CONFIG);
 		handle_ignore_submodules_arg(&rev.diffopt, s->ignore_submodule_arg);
-    }
+	}
 	rev.diffopt.format_callback = wt_status_collect_changed_cb;
 	rev.diffopt.format_callback_data = s;
 	init_pathspec(&rev.prune_data, s->pathspec);
@@ -642,7 +642,7 @@ static void wt_status_print_other(struct wt_status *s,
 	int i;
 	struct strbuf buf = STRBUF_INIT;
 
-	if (!s->untracked.nr)
+	if (!l->nr)
 		return;
 
 	wt_status_print_other_header(s, what, how);
@@ -681,7 +681,7 @@ static void wt_status_print_verbose(struct wt_status *s)
 	 * will have checked isatty on stdout).
 	 */
 	if (s->fp != stdout)
-		DIFF_OPT_CLR(&rev.diffopt, COLOR_DIFF);
+		rev.diffopt.use_color = 0;
 	run_diff_index(&rev, 1);
 }
 

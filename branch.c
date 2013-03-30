@@ -135,9 +135,63 @@ static int setup_tracking(const char *new_ref, const char *orig_ref,
 	return 0;
 }
 
+struct branch_desc_cb {
+	const char *config_name;
+	const char *value;
+};
+
+static int read_branch_desc_cb(const char *var, const char *value, void *cb)
+{
+	struct branch_desc_cb *desc = cb;
+	if (strcmp(desc->config_name, var))
+		return 0;
+	free((char *)desc->value);
+	return git_config_string(&desc->value, var, value);
+}
+
+int read_branch_desc(struct strbuf *buf, const char *branch_name)
+{
+	struct branch_desc_cb cb;
+	struct strbuf name = STRBUF_INIT;
+	strbuf_addf(&name, "branch.%s.description", branch_name);
+	cb.config_name = name.buf;
+	cb.value = NULL;
+	if (git_config(read_branch_desc_cb, &cb) < 0) {
+		strbuf_release(&name);
+		return -1;
+	}
+	if (cb.value)
+		strbuf_addstr(buf, cb.value);
+	strbuf_release(&name);
+	return 0;
+}
+
+int validate_new_branchname(const char *name, struct strbuf *ref,
+			    int force, int attr_only)
+{
+	if (strbuf_check_branch_ref(ref, name))
+		die("'%s' is not a valid branch name.", name);
+
+	if (!ref_exists(ref->buf))
+		return 0;
+	else if (!force && !attr_only)
+		die("A branch named '%s' already exists.", ref->buf + strlen("refs/heads/"));
+
+	if (!attr_only) {
+		const char *head;
+		unsigned char sha1[20];
+
+		head = resolve_ref_unsafe("HEAD", sha1, 0, NULL);
+		if (!is_bare_repository() && head && !strcmp(head, ref->buf))
+			die("Cannot force update the current branch.");
+	}
+	return 1;
+}
+
 void create_branch(const char *head,
 		   const char *name, const char *start_name,
-		   int force, int reflog, enum branch_track track)
+		   int force, int reflog, int clobber_head,
+		   enum branch_track track)
 {
 	struct ref_lock *lock = NULL;
 	struct commit *commit;
@@ -151,17 +205,13 @@ void create_branch(const char *head,
 	if (track == BRANCH_TRACK_EXPLICIT || track == BRANCH_TRACK_OVERRIDE)
 		explicit_tracking = 1;
 
-	if (strbuf_check_branch_ref(&ref, name))
-		die("'%s' is not a valid branch name.", name);
-
-	if (resolve_ref(ref.buf, sha1, 1, NULL)) {
-		if (!force && track == BRANCH_TRACK_OVERRIDE)
+	if (validate_new_branchname(name, &ref, force,
+				    track == BRANCH_TRACK_OVERRIDE ||
+				    clobber_head)) {
+		if (!force)
 			dont_change_ref = 1;
-		else if (!force)
-			die("A branch named '%s' already exists.", name);
-		else if (!is_bare_repository() && head && !strcmp(head, name))
-			die("Cannot force update the current branch.");
-		forcing = 1;
+		else
+			forcing = 1;
 	}
 
 	real_ref = NULL;
@@ -210,7 +260,7 @@ void create_branch(const char *head,
 			 start_name);
 
 	if (real_ref && track)
-		setup_tracking(name, real_ref, track);
+		setup_tracking(ref.buf+11, real_ref, track);
 
 	if (!dont_change_ref)
 		if (write_ref_sha1(lock, sha1, msg) < 0)
@@ -223,6 +273,7 @@ void create_branch(const char *head,
 void remove_branch_state(void)
 {
 	unlink(git_path("CHERRY_PICK_HEAD"));
+	unlink(git_path("REVERT_HEAD"));
 	unlink(git_path("MERGE_HEAD"));
 	unlink(git_path("MERGE_RR"));
 	unlink(git_path("MERGE_MSG"));

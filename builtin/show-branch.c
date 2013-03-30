@@ -26,14 +26,14 @@ static const char **default_arg;
 
 static const char *get_color_code(int idx)
 {
-	if (showbranch_use_color)
+	if (want_color(showbranch_use_color))
 		return column_colors_ansi[idx % column_colors_ansi_max];
 	return "";
 }
 
 static const char *get_color_reset_code(void)
 {
-	if (showbranch_use_color)
+	if (want_color(showbranch_use_color))
 		return GIT_COLOR_RESET;
 	return "";
 }
@@ -573,7 +573,7 @@ static int git_show_branch_config(const char *var, const char *value, void *cb)
 	}
 
 	if (!strcmp(var, "color.showbranch")) {
-		showbranch_use_color = git_config_colorbool(var, value, -1);
+		showbranch_use_color = git_config_colorbool(var, value);
 		return 0;
 	}
 
@@ -685,9 +685,6 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 
 	git_config(git_show_branch_config, NULL);
 
-	if (showbranch_use_color == -1)
-		showbranch_use_color = git_use_color_default;
-
 	/* If nothing is specified, try the default first */
 	if (ac == 1 && default_num) {
 		ac = default_num;
@@ -729,10 +726,8 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 
 		if (ac == 0) {
 			static const char *fake_av[2];
-			const char *refname;
 
-			refname = resolve_ref("HEAD", sha1, 1, NULL);
-			fake_av[0] = xstrdup(refname);
+			fake_av[0] = resolve_refdup("HEAD", sha1, 1, NULL);
 			fake_av[1] = NULL;
 			av = fake_av;
 			ac = 1;
@@ -794,7 +789,7 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 		}
 	}
 
-	head_p = resolve_ref("HEAD", head_sha1, 1, NULL);
+	head_p = resolve_ref_unsafe("HEAD", head_sha1, 1, NULL);
 	if (head_p) {
 		head_len = strlen(head_p);
 		memcpy(head, head_p, head_len + 1);

@@ -5,28 +5,6 @@
 #include "help.h"
 #include "common-cmds.h"
 
-/* most GUI terminals set COLUMNS (although some don't export it) */
-static int term_columns(void)
-{
-	char *col_string = getenv("COLUMNS");
-	int n_cols;
-
-	if (col_string && (n_cols = atoi(col_string)) > 0)
-		return n_cols;
-
-#ifdef TIOCGWINSZ
-	{
-		struct winsize ws;
-		if (!ioctl(1, TIOCGWINSZ, &ws)) {
-			if (ws.ws_col)
-				return ws.ws_col;
-		}
-	}
-#endif
-
-	return 80;
-}
-
 void add_cmdname(struct cmdnames *cmds, const char *name, int len)
 {
 	struct cmdname *ent = xmalloc(sizeof(*ent) + len + 1);
@@ -127,7 +105,10 @@ static int is_executable(const char *name)
 	    !S_ISREG(st.st_mode))
 		return 0;
 
-#ifdef WIN32
+#if defined(WIN32) || defined(__CYGWIN__)
+#if defined(__CYGWIN__)
+if ((st.st_mode & S_IXUSR) == 0)
+#endif
 {	/* cannot trust the executable bit, peek into the file instead */
 	char buf[3] = { 0 };
 	int n;

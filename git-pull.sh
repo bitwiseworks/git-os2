@@ -9,28 +9,29 @@ LONG_USAGE='Fetch one or more remote refs and merge it/them into the current HEA
 SUBDIRECTORY_OK=Yes
 OPTIONS_SPEC=
 . git-sh-setup
+. git-sh-i18n
 set_reflog_action "pull${1+ $*}"
-require_work_tree
+require_work_tree_exists
 cd_to_toplevel
 
 
 die_conflict () {
     git diff-index --cached --name-status -r --ignore-submodules HEAD --
     if [ $(git config --bool --get advice.resolveConflict || echo true) = "true" ]; then
-	die "Pull is not possible because you have unmerged files.
+	die "$(gettext "Pull is not possible because you have unmerged files.
 Please, fix them up in the work tree, and then use 'git add/rm <file>'
-as appropriate to mark resolution, or use 'git commit -a'."
+as appropriate to mark resolution, or use 'git commit -a'.")"
     else
-	die "Pull is not possible because you have unmerged files."
+	die "$(gettext "Pull is not possible because you have unmerged files.")"
     fi
 }
 
 die_merge () {
     if [ $(git config --bool --get advice.resolveConflict || echo true) = "true" ]; then
-	die "You have not concluded your merge (MERGE_HEAD exists).
-Please, commit your changes before you can merge."
+	die "$(gettext "You have not concluded your merge (MERGE_HEAD exists).
+Please, commit your changes before you can merge.")"
     else
-	die "You have not concluded your merge (MERGE_HEAD exists)."
+	die "$(gettext "You have not concluded your merge (MERGE_HEAD exists).")"
     fi
 }
 
@@ -43,6 +44,10 @@ merge_args=
 curr_branch=$(git symbolic-ref -q HEAD)
 curr_branch_short="${curr_branch#refs/heads/}"
 rebase=$(git config --bool branch.$curr_branch_short.rebase)
+if test -z "$rebase"
+then
+	rebase=$(git config --bool pull.rebase)
+fi
 dry_run=
 while :
 do
@@ -119,7 +124,7 @@ do
 	--d|--dr|--dry|--dry-|--dry-r|--dry-ru|--dry-run)
 		dry_run=--dry-run
 		;;
-	-h|--h|--he|--hel|--help|--help-|--help-a|--help-al|--help-all)
+	-h|--help-all)
 		usage
 		;;
 	*)
@@ -185,7 +190,7 @@ test true = "$rebase" && {
 		# On an unborn branch
 		if test -f "$GIT_DIR/index"
 		then
-			die "updating an unborn branch with changes added to the index"
+			die "$(gettext "updating an unborn branch with changes added to the index")"
 		fi
 	else
 		require_clean_work_tree "pull with rebase" "Please commit or stash them."
@@ -216,17 +221,17 @@ then
 	# $orig_head commit, but we are merging into $curr_head.
 	# First update the working tree to match $curr_head.
 
-	echo >&2 "Warning: fetch updated the current branch head."
-	echo >&2 "Warning: fast-forwarding your working tree from"
-	echo >&2 "Warning: commit $orig_head."
+	eval_gettextln "Warning: fetch updated the current branch head.
+Warning: fast-forwarding your working tree from
+Warning: commit \$orig_head." >&2
 	git update-index -q --refresh
 	git read-tree -u -m "$orig_head" "$curr_head" ||
-		die 'Cannot fast-forward your working tree.
+		die "$(eval_gettext "Cannot fast-forward your working tree.
 After making sure that you saved anything precious from
-$ git diff '$orig_head'
+$ git diff \$orig_head
 output, run
 $ git reset --hard
-to recover.'
+to recover.")"
 
 fi
 
@@ -241,11 +246,11 @@ case "$merge_head" in
 ?*' '?*)
 	if test -z "$orig_head"
 	then
-		die "Cannot merge multiple branches into empty head"
+		die "$(gettext "Cannot merge multiple branches into empty head")"
 	fi
 	if test true = "$rebase"
 	then
-		die "Cannot rebase onto multiple branches"
+		die "$(gettext "Cannot rebase onto multiple branches")"
 	fi
 	;;
 esac

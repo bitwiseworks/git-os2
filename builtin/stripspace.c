@@ -22,8 +22,6 @@ static size_t cleanup(char *line, size_t len)
  * Remove empty lines from the beginning and end
  * and also trailing spaces from every line.
  *
- * Note that the buffer will not be NUL-terminated.
- *
  * Turn multiple consecutive empty lines between paragraphs
  * into just one empty line.
  *
@@ -77,7 +75,7 @@ int cmd_stripspace(int argc, const char **argv, const char *prefix)
 				!strcmp(argv[1], "--strip-comments")))
 		strip_comments = 1;
 	else if (argc > 1)
-		usage("git stripspace [-s | --strip-comments] < <stream>");
+		usage("git stripspace [-s | --strip-comments] < input");
 
 	if (strbuf_read(&buf, 0, 1024) < 0)
 		die_errno("could not read the input");

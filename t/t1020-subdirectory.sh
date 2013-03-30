@@ -17,8 +17,6 @@ test_expect_success setup '
 	cp one original.one &&
 	cp dir/two original.two
 '
-LF='
-'
 
 test_expect_success 'update-index and ls-files' '
 	git update-index --add one &&
@@ -120,7 +118,7 @@ test_expect_success 'alias expansion' '
 	)
 '
 
-test_expect_success '!alias expansion' '
+test_expect_success NOT_MINGW '!alias expansion' '
 	pwd >expect &&
 	(
 		git config alias.test !pwd &&
@@ -136,6 +134,22 @@ test_expect_success 'GIT_PREFIX for !alias' '
 		git config alias.test "!sh -c \"printf \$GIT_PREFIX\"" &&
 		cd dir &&
 		git test >../actual
+	) &&
+	test_cmp expect actual
+'
+
+test_expect_success 'GIT_PREFIX for built-ins' '
+	# Use GIT_EXTERNAL_DIFF to test that the "diff" built-in
+	# receives the GIT_PREFIX variable.
+	printf "dir/" >expect &&
+	printf "#!/bin/sh\n" >diff &&
+	printf "printf \"\$GIT_PREFIX\"" >>diff &&
+	chmod +x diff &&
+	(
+		cd dir &&
+		printf "change" >two &&
+		env GIT_EXTERNAL_DIFF=./diff git diff >../actual
+		git checkout -- two
 	) &&
 	test_cmp expect actual
 '

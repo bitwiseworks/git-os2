@@ -45,14 +45,27 @@ ifndef::git-format-patch[]
 	Synonym for `-p --raw`.
 endif::git-format-patch[]
 
+--minimal::
+	Spend extra time to make sure the smallest possible
+	diff is produced.
+
 --patience::
 	Generate a diff using the "patience diff" algorithm.
 
---stat[=<width>[,<name-width>]]::
+--histogram::
+	Generate a diff using the "histogram diff" algorithm.
+
+--stat[=<width>[,<name-width>[,<count>]]]::
 	Generate a diffstat.  You can override the default
 	output width for 80-column terminal by `--stat=<width>`.
 	The width of the filename part can be controlled by
 	giving another width to it separated by a comma.
+	By giving a third parameter `<count>`, you can limit the
+	output to the first `<count>` lines, followed by
+	`...` if there are more.
++
+These parameters can also be set individually with `--stat-width=<width>`,
+`--stat-name-width=<name-width>` and `--stat-count=<count>`.
 
 --numstat::
 	Similar to `\--stat`, but shows number of added and
@@ -398,7 +411,12 @@ endif::git-format-patch[]
 	Show the context between diff hunks, up to the specified number
 	of lines, thereby fusing hunks that are close to each other.
 
+-W::
+--function-context::
+	Show whole surrounding functions of changes.
+
 ifndef::git-format-patch[]
+ifndef::git-log[]
 --exit-code::
 	Make the program exit with codes similar to diff(1).
 	That is, it exits with 1 if there were differences and
@@ -406,6 +424,7 @@ ifndef::git-format-patch[]
 
 --quiet::
 	Disable all output of the program. Implies `--exit-code`.
+endif::git-log[]
 endif::git-format-patch[]
 
 --ext-diff::

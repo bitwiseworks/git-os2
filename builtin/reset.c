@@ -33,25 +33,6 @@ static const char *reset_type_names[] = {
 	N_("mixed"), N_("soft"), N_("hard"), N_("merge"), N_("keep"), NULL
 };
 
-static char *args_to_str(const char **argv)
-{
-	char *buf = NULL;
-	unsigned long len, space = 0, nr = 0;
-
-	for (; *argv; argv++) {
-		len = strlen(*argv);
-		ALLOC_GROW(buf, nr + 1 + len, space);
-		if (nr)
-			buf[nr++] = ' ';
-		memcpy(buf + nr, *argv, len);
-		nr += len;
-	}
-	ALLOC_GROW(buf, nr + 1, space);
-	buf[nr] = '\0';
-
-	return buf;
-}
-
 static inline int is_merge(void)
 {
 	return !access(git_path("MERGE_HEAD"), F_OK);
@@ -62,6 +43,7 @@ static int reset_index_file(const unsigned char *sha1, int reset_type, int quiet
 	int nr = 1;
 	int newfd;
 	struct tree_desc desc[2];
+	struct tree *tree;
 	struct unpack_trees_options opts;
 	struct lock_file *lock = xcalloc(1, sizeof(struct lock_file));
 
@@ -103,6 +85,12 @@ static int reset_index_file(const unsigned char *sha1, int reset_type, int quiet
 		return error(_("Failed to find tree of %s."), sha1_to_hex(sha1));
 	if (unpack_trees(nr, desc, &opts))
 		return -1;
+
+	if (reset_type == MIXED || reset_type == HARD) {
+		tree = parse_tree_indirect(sha1);
+		prime_cache_tree(&active_cache_tree, tree);
+	}
+
 	if (write_cache(newfd, active_cache, active_nr) ||
 	    commit_locked_index(lock))
 		return error(_("Could not write new index file."));
@@ -215,14 +203,18 @@ static int read_from_tree(const char *prefix, const char **argv,
 	return update_index_refresh(index_fd, lock, refresh_flags);
 }
 
-static void prepend_reflog_action(const char *action, char *buf, size_t size)
+static void set_reflog_message(struct strbuf *sb, const char *action,
+			       const char *rev)
 {
-	const char *sep = ": ";
 	const char *rla = getenv("GIT_REFLOG_ACTION");
-	if (!rla)
-		rla = sep = "";
-	if (snprintf(buf, size, "%s%s%s", rla, sep, action) >= size)
-		warning(_("Reflog action message too long: %.*s..."), 50, buf);
+
+	strbuf_reset(sb);
+	if (rla)
+		strbuf_addf(sb, "%s: %s", rla, action);
+	else if (rev)
+		strbuf_addf(sb, "reset: moving to %s", rev);
+	else
+		strbuf_addf(sb, "reset: %s", action);
 }
 
 static void die_if_unmerged_cache(int reset_type)
@@ -241,7 +233,7 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 	unsigned char sha1[20], *orig = NULL, sha1_orig[20],
 				*old_orig = NULL, sha1_old_orig[20];
 	struct commit *commit;
-	char *reflog_action, msg[1024];
+	struct strbuf msg = STRBUF_INIT;
 	const struct option options[] = {
 		OPT__QUIET(&quiet, "be quiet, only report errors"),
 		OPT_SET_INT(0, "mixed", &reset_type,
@@ -261,8 +253,6 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 
 	argc = parse_options(argc, argv, prefix, options, git_reset_usage,
 						PARSE_OPT_KEEP_DASHDASH);
-	reflog_action = args_to_str(argv);
-	setenv("GIT_REFLOG_ACTION", reflog_action, 0);
 
 	/*
 	 * Possible arguments are:
@@ -357,13 +347,13 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 		old_orig = sha1_old_orig;
 	if (!get_sha1("HEAD", sha1_orig)) {
 		orig = sha1_orig;
-		prepend_reflog_action("updating ORIG_HEAD", msg, sizeof(msg));
-		update_ref(msg, "ORIG_HEAD", orig, old_orig, 0, MSG_ON_ERR);
+		set_reflog_message(&msg, "updating ORIG_HEAD", NULL);
+		update_ref(msg.buf, "ORIG_HEAD", orig, old_orig, 0, MSG_ON_ERR);
 	}
 	else if (old_orig)
 		delete_ref("ORIG_HEAD", old_orig, 0);
-	prepend_reflog_action("updating HEAD", msg, sizeof(msg));
-	update_ref_status = update_ref(msg, "HEAD", sha1, orig, 0, MSG_ON_ERR);
+	set_reflog_message(&msg, "updating HEAD", rev);
+	update_ref_status = update_ref(msg.buf, "HEAD", sha1, orig, 0, MSG_ON_ERR);
 
 	switch (reset_type) {
 	case HARD:
@@ -380,7 +370,7 @@ int cmd_reset(int argc, const char **argv, const char *prefix)
 
 	remove_branch_state();
 
-	free(reflog_action);
+	strbuf_release(&msg);
 
 	return update_ref_status;
 }

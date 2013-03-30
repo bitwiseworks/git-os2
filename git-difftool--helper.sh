@@ -13,7 +13,8 @@ TOOL_MODE=diff
 should_prompt () {
 	prompt_merge=$(git config --bool mergetool.prompt || echo true)
 	prompt=$(git config --bool difftool.prompt || echo $prompt_merge)
-	if test "$prompt" = true; then
+	if test "$prompt" = true
+	then
 		test -z "$GIT_DIFFTOOL_NO_PROMPT"
 	else
 		test -n "$GIT_DIFFTOOL_PROMPT"
@@ -37,18 +38,24 @@ launch_merge_tool () {
 
 	# $LOCAL and $REMOTE are temporary files so prompt
 	# the user with the real $MERGED name before launching $merge_tool.
-	if should_prompt; then
+	if should_prompt
+	then
 		printf "\nViewing: '$MERGED'\n"
-		if use_ext_cmd; then
-			printf "Hit return to launch '%s': " \
+		if use_ext_cmd
+		then
+			printf "Launch '%s' [Y/n]: " \
 				"$GIT_DIFFTOOL_EXTCMD"
 		else
-			printf "Hit return to launch '%s': " "$merge_tool"
+			printf "Launch '%s' [Y/n]: " "$merge_tool"
 		fi
-		read ans
+		if read ans && test "$ans" = n
+		then
+			return
+		fi
 	fi
 
-	if use_ext_cmd; then
+	if use_ext_cmd
+	then
 		export BASE
 		eval $GIT_DIFFTOOL_EXTCMD '"$LOCAL"' '"$REMOTE"'
 	else
@@ -56,8 +63,10 @@ launch_merge_tool () {
 	fi
 }
 
-if ! use_ext_cmd; then
-	if test -n "$GIT_DIFF_TOOL"; then
+if ! use_ext_cmd
+then
+	if test -n "$GIT_DIFF_TOOL"
+	then
 		merge_tool="$GIT_DIFF_TOOL"
 	else
 		merge_tool="$(get_merge_tool)" || exit

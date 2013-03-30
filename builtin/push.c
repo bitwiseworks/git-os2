@@ -8,6 +8,7 @@
 #include "remote.h"
 #include "transport.h"
 #include "parse-options.h"
+#include "submodule.h"
 
 static const char * const push_usage[] = {
 	"git push [<options>] [<repository> [<refspec>...]]",
@@ -18,7 +19,7 @@ static int thin;
 static int deleterefs;
 static const char *receivepack;
 static int verbosity;
-static int progress;
+static int progress = -1;
 
 static const char **refspec;
 static int refspec_nr;
@@ -219,6 +220,21 @@ static int do_push(const char *repo, int flags)
 	return !!errs;
 }
 
+static int option_parse_recurse_submodules(const struct option *opt,
+				   const char *arg, int unset)
+{
+	int *flags = opt->value;
+	if (arg) {
+		if (!strcmp(arg, "check"))
+			*flags |= TRANSPORT_RECURSE_SUBMODULES_CHECK;
+		else
+			die("bad %s argument: %s", opt->long_name, arg);
+	} else
+		die("option %s needs an argument (check)", opt->long_name);
+
+	return 0;
+}
+
 int cmd_push(int argc, const char **argv, const char *prefix)
 {
 	int flags = 0;
@@ -236,12 +252,15 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 		OPT_BIT('n' , "dry-run", &flags, "dry run", TRANSPORT_PUSH_DRY_RUN),
 		OPT_BIT( 0,  "porcelain", &flags, "machine-readable output", TRANSPORT_PUSH_PORCELAIN),
 		OPT_BIT('f', "force", &flags, "force updates", TRANSPORT_PUSH_FORCE),
+		{ OPTION_CALLBACK, 0, "recurse-submodules", &flags, "check",
+			"controls recursive pushing of submodules",
+			PARSE_OPT_OPTARG, option_parse_recurse_submodules },
 		OPT_BOOLEAN( 0 , "thin", &thin, "use thin pack"),
 		OPT_STRING( 0 , "receive-pack", &receivepack, "receive-pack", "receive pack program"),
 		OPT_STRING( 0 , "exec", &receivepack, "receive-pack", "receive pack program"),
 		OPT_BIT('u', "set-upstream", &flags, "set upstream for git pull/status",
 			TRANSPORT_PUSH_SET_UPSTREAM),
-		OPT_BOOLEAN(0, "progress", &progress, "force progress reporting"),
+		OPT_BOOL(0, "progress", &progress, "force progress reporting"),
 		OPT_END()
 	};
 

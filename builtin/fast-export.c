@@ -25,8 +25,9 @@ static const char *fast_export_usage[] = {
 
 static int progress;
 static enum { ABORT, VERBATIM, WARN, STRIP } signed_tag_mode = ABORT;
-static enum { ERROR, DROP, REWRITE } tag_of_filtered_mode = ABORT;
+static enum { ERROR, DROP, REWRITE } tag_of_filtered_mode = ERROR;
 static int fake_missing_tagger;
+static int use_done_feature;
 static int no_data;
 static int full_tree;
 
@@ -50,7 +51,7 @@ static int parse_opt_tag_of_filtered_mode(const struct option *opt,
 					  const char *arg, int unset)
 {
 	if (unset || !strcmp(arg, "abort"))
-		tag_of_filtered_mode = ABORT;
+		tag_of_filtered_mode = ERROR;
 	else if (!strcmp(arg, "drop"))
 		tag_of_filtered_mode = DROP;
 	else if (!strcmp(arg, "rewrite"))
@@ -644,6 +645,8 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 			     "Fake a tagger when tags lack one"),
 		OPT_BOOLEAN(0, "full-tree", &full_tree,
 			     "Output full tree for each commit"),
+		OPT_BOOLEAN(0, "use-done-feature", &use_done_feature,
+			     "Use the done feature to terminate the stream"),
 		{ OPTION_NEGBIT, 0, "data", &no_data, NULL,
 			"Skip output of blob data",
 			PARSE_OPT_NOARG | PARSE_OPT_NEGHELP, NULL, 1 },
@@ -664,6 +667,9 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 	argc = parse_options(argc, argv, prefix, options, fast_export_usage, 0);
 	if (argc > 1)
 		usage_with_options (fast_export_usage, options);
+
+	if (use_done_feature)
+		printf("feature done\n");
 
 	if (import_filename)
 		import_marks(import_filename);
@@ -691,6 +697,9 @@ int cmd_fast_export(int argc, const char **argv, const char *prefix)
 
 	if (export_filename)
 		export_marks(export_filename);
+
+	if (use_done_feature)
+		printf("done\n");
 
 	return 0;
 }
