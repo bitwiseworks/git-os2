@@ -153,4 +153,55 @@ test_expect_success 'filter shell-escaped filenames' '
 	:
 '
 
+test_expect_success 'required filter success' '
+	git config filter.required.smudge cat &&
+	git config filter.required.clean cat &&
+	git config filter.required.required true &&
+
+	echo "*.r filter=required" >.gitattributes &&
+
+	echo test >test.r &&
+	git add test.r &&
+	rm -f test.r &&
+	git checkout -- test.r
+'
+
+test_expect_success 'required filter smudge failure' '
+	git config filter.failsmudge.smudge false &&
+	git config filter.failsmudge.clean cat &&
+	git config filter.failsmudge.required true &&
+
+	echo "*.fs filter=failsmudge" >.gitattributes &&
+
+	echo test >test.fs &&
+	git add test.fs &&
+	rm -f test.fs &&
+	test_must_fail git checkout -- test.fs
+'
+
+test_expect_success 'required filter clean failure' '
+	git config filter.failclean.smudge cat &&
+	git config filter.failclean.clean false &&
+	git config filter.failclean.required true &&
+
+	echo "*.fc filter=failclean" >.gitattributes &&
+
+	echo test >test.fc &&
+	test_must_fail git add test.fc
+'
+
+test -n "$GIT_TEST_LONG" && test_set_prereq EXPENSIVE
+
+test_expect_success EXPENSIVE 'filter large file' '
+	git config filter.largefile.smudge cat &&
+	git config filter.largefile.clean cat &&
+	for i in $(test_seq 1 2048); do printf "%1048576d" 1; done >2GB &&
+	echo "2GB filter=largefile" >.gitattributes &&
+	git add 2GB 2>err &&
+	! test -s err &&
+	rm -f 2GB &&
+	git checkout -- 2GB 2>err &&
+	! test -s err
+'
+
 test_done

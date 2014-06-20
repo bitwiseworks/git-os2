@@ -3,6 +3,7 @@
 #include "cache.h"
 #include "commit.h"
 #include "color.h"
+#include "utf8.h"
 
 static int parse_options_usage(struct parse_opt_ctx_t *ctx,
 			       const char * const *usagestr,
@@ -16,15 +17,6 @@ int optbug(const struct option *opt, const char *reason)
 	if (opt->long_name)
 		return error("BUG: option '%s' %s", opt->long_name, reason);
 	return error("BUG: switch '%c' %s", opt->short_name, reason);
-}
-
-int opterror(const struct option *opt, const char *reason, int flags)
-{
-	if (flags & OPT_SHORT)
-		return error("switch `%c' %s", opt->short_name, reason);
-	if (flags & OPT_UNSET)
-		return error("option `no-%s' %s", opt->long_name, reason);
-	return error("option `%s' %s", opt->long_name, reason);
 }
 
 static int get_arg(struct parse_opt_ctx_t *p, const struct option *opt,
@@ -51,8 +43,42 @@ static void fix_filename(const char *prefix, const char **file)
 	*file = xstrdup(prefix_filename(prefix, strlen(prefix), *file));
 }
 
+static int opt_command_mode_error(const struct option *opt,
+				  const struct option *all_opts,
+				  int flags)
+{
+	const struct option *that;
+	struct strbuf message = STRBUF_INIT;
+	struct strbuf that_name = STRBUF_INIT;
+
+	/*
+	 * Find the other option that was used to set the variable
+	 * already, and report that this is not compatible with it.
+	 */
+	for (that = all_opts; that->type != OPTION_END; that++) {
+		if (that == opt ||
+		    that->type != OPTION_CMDMODE ||
+		    that->value != opt->value ||
+		    that->defval != *(int *)opt->value)
+			continue;
+
+		if (that->long_name)
+			strbuf_addf(&that_name, "--%s", that->long_name);
+		else
+			strbuf_addf(&that_name, "-%c", that->short_name);
+		strbuf_addf(&message, ": incompatible with %s", that_name.buf);
+		strbuf_release(&that_name);
+		opterror(opt, message.buf, flags);
+		strbuf_release(&message);
+		return -1;
+	}
+	return opterror(opt, ": incompatible with something else", flags);
+}
+
 static int get_value(struct parse_opt_ctx_t *p,
-		     const struct option *opt, int flags)
+		     const struct option *opt,
+		     const struct option *all_opts,
+		     int flags)
 {
 	const char *s, *arg;
 	const int unset = flags & OPT_UNSET;
@@ -89,6 +115,16 @@ static int get_value(struct parse_opt_ctx_t *p,
 
 	case OPTION_SET_INT:
 		*(int *)opt->value = unset ? 0 : opt->defval;
+		return 0;
+
+	case OPTION_CMDMODE:
+		/*
+		 * Giving the same mode option twice, although is unnecessary,
+		 * is not a grave error, so let it pass.
+		 */
+		if (*(int *)opt->value && *(int *)opt->value != opt->defval)
+			return opt_command_mode_error(opt, all_opts, flags);
+		*(int *)opt->value = opt->defval;
 		return 0;
 
 	case OPTION_SET_PTR:
@@ -151,12 +187,13 @@ static int get_value(struct parse_opt_ctx_t *p,
 
 static int parse_short_opt(struct parse_opt_ctx_t *p, const struct option *options)
 {
+	const struct option *all_opts = options;
 	const struct option *numopt = NULL;
 
 	for (; options->type != OPTION_END; options++) {
 		if (options->short_name == *p->opt) {
 			p->opt = p->opt[1] ? p->opt + 1 : NULL;
-			return get_value(p, options, OPT_SHORT);
+			return get_value(p, options, all_opts, OPT_SHORT);
 		}
 
 		/*
@@ -185,6 +222,7 @@ static int parse_short_opt(struct parse_opt_ctx_t *p, const struct option *optio
 static int parse_long_opt(struct parse_opt_ctx_t *p, const char *arg,
                           const struct option *options)
 {
+	const struct option *all_opts = options;
 	const char *arg_end = strchr(arg, '=');
 	const struct option *abbrev_option = NULL, *ambiguous_option = NULL;
 	int abbrev_flags = 0, ambiguous_flags = 0;
@@ -193,13 +231,14 @@ static int parse_long_opt(struct parse_opt_ctx_t *p, const char *arg,
 		arg_end = arg + strlen(arg);
 
 	for (; options->type != OPTION_END; options++) {
-		const char *rest;
-		int flags = 0;
+		const char *rest, *long_name = options->long_name;
+		int flags = 0, opt_flags = 0;
 
-		if (!options->long_name)
+		if (!long_name)
 			continue;
 
-		rest = skip_prefix(arg, options->long_name);
+again:
+		rest = skip_prefix(arg, long_name);
 		if (options->type == OPTION_ARGUMENT) {
 			if (!rest)
 				continue;
@@ -212,7 +251,7 @@ static int parse_long_opt(struct parse_opt_ctx_t *p, const char *arg,
 		}
 		if (!rest) {
 			/* abbreviated? */
-			if (!strncmp(options->long_name, arg, arg_end - arg)) {
+			if (!strncmp(long_name, arg, arg_end - arg)) {
 is_abbreviated:
 				if (abbrev_option) {
 					/*
@@ -227,7 +266,7 @@ is_abbreviated:
 				if (!(flags & OPT_UNSET) && *arg_end)
 					p->opt = arg_end + 1;
 				abbrev_option = options;
-				abbrev_flags = flags;
+				abbrev_flags = flags ^ opt_flags;
 				continue;
 			}
 			/* negation allowed? */
@@ -239,12 +278,18 @@ is_abbreviated:
 				goto is_abbreviated;
 			}
 			/* negated? */
-			if (strncmp(arg, "no-", 3))
+			if (prefixcmp(arg, "no-")) {
+				if (!prefixcmp(long_name, "no-")) {
+					long_name += 3;
+					opt_flags |= OPT_UNSET;
+					goto again;
+				}
 				continue;
+			}
 			flags |= OPT_UNSET;
-			rest = skip_prefix(arg + 3, options->long_name);
+			rest = skip_prefix(arg + 3, long_name);
 			/* abbreviated and negated? */
-			if (!rest && !prefixcmp(options->long_name, arg + 3))
+			if (!rest && !prefixcmp(long_name, arg + 3))
 				goto is_abbreviated;
 			if (!rest)
 				continue;
@@ -254,7 +299,7 @@ is_abbreviated:
 				continue;
 			p->opt = rest + 1;
 		}
-		return get_value(p, options, flags);
+		return get_value(p, options, all_opts, flags ^ opt_flags);
 	}
 
 	if (ambiguous_option)
@@ -266,18 +311,20 @@ is_abbreviated:
 			(abbrev_flags & OPT_UNSET) ?  "no-" : "",
 			abbrev_option->long_name);
 	if (abbrev_option)
-		return get_value(p, abbrev_option, abbrev_flags);
+		return get_value(p, abbrev_option, all_opts, abbrev_flags);
 	return -2;
 }
 
 static int parse_nodash_opt(struct parse_opt_ctx_t *p, const char *arg,
 			    const struct option *options)
 {
+	const struct option *all_opts = options;
+
 	for (; options->type != OPTION_END; options++) {
 		if (!(options->flags & PARSE_OPT_NODASH))
 			continue;
 		if (options->short_name == arg[0] && arg[1] == '\0')
-			return get_value(p, options, OPT_SHORT);
+			return get_value(p, options, all_opts, OPT_SHORT);
 	}
 	return -2;
 }
@@ -386,6 +433,8 @@ int parse_options_step(struct parse_opt_ctx_t *ctx,
 			case -1:
 				return parse_options_usage(ctx, usagestr, options, 1);
 			case -2:
+				if (ctx->opt)
+					check_typos(arg + 1, options);
 				goto unknown;
 			}
 			if (ctx->opt)
@@ -461,12 +510,16 @@ int parse_options(int argc, const char **argv, const char *prefix,
 	default: /* PARSE_OPT_UNKNOWN */
 		if (ctx.argv[0][1] == '-') {
 			error("unknown option `%s'", ctx.argv[0] + 2);
-		} else {
+		} else if (isascii(*ctx.opt)) {
 			error("unknown switch `%c'", *ctx.opt);
+		} else {
+			error("unknown non-ascii option in string: `%s'",
+			      ctx.argv[0]);
 		}
 		usage_with_options(usagestr, options);
 	}
 
+	precompose_argv(argc, argv);
 	return parse_options_end(&ctx);
 }
 
@@ -481,7 +534,7 @@ static int usage_argh(const struct option *opts, FILE *outfile)
 			s = literal ? "[%s]" : "[<%s>]";
 	else
 		s = literal ? " %s" : " <%s>";
-	return fprintf(outfile, s, opts->argh ? opts->argh : "...");
+	return utf8_fprintf(outfile, s, opts->argh ? _(opts->argh) : _("..."));
 }
 
 #define USAGE_OPTS_WIDTH 24
@@ -499,13 +552,16 @@ static int usage_with_options_internal(struct parse_opt_ctx_t *ctx,
 	if (!err && ctx && ctx->flags & PARSE_OPT_SHELL_EVAL)
 		fprintf(outfile, "cat <<\\EOF\n");
 
-	fprintf(outfile, "usage: %s\n", *usagestr++);
+	fprintf_ln(outfile, _("usage: %s"), _(*usagestr++));
 	while (*usagestr && **usagestr)
-		fprintf(outfile, "   or: %s\n", *usagestr++);
+		/* TRANSLATORS: the colon here should align with the
+		   one in "usage: %s" translation */
+		fprintf_ln(outfile, _("   or: %s"), _(*usagestr++));
 	while (*usagestr) {
-		fprintf(outfile, "%s%s\n",
-				**usagestr ? "    " : "",
-				*usagestr);
+		if (**usagestr)
+			fprintf_ln(outfile, _("    %s"), _(*usagestr));
+		else
+			putchar('\n');
 		usagestr++;
 	}
 
@@ -519,14 +575,14 @@ static int usage_with_options_internal(struct parse_opt_ctx_t *ctx,
 		if (opts->type == OPTION_GROUP) {
 			fputc('\n', outfile);
 			if (*opts->help)
-				fprintf(outfile, "%s\n", opts->help);
+				fprintf(outfile, "%s\n", _(opts->help));
 			continue;
 		}
 		if (!full && (opts->flags & PARSE_OPT_HIDDEN))
 			continue;
 
 		pos = fprintf(outfile, "    ");
-		if (opts->short_name && !(opts->flags & PARSE_OPT_NEGHELP)) {
+		if (opts->short_name) {
 			if (opts->flags & PARSE_OPT_NODASH)
 				pos += fprintf(outfile, "%c", opts->short_name);
 			else
@@ -535,11 +591,9 @@ static int usage_with_options_internal(struct parse_opt_ctx_t *ctx,
 		if (opts->long_name && opts->short_name)
 			pos += fprintf(outfile, ", ");
 		if (opts->long_name)
-			pos += fprintf(outfile, "--%s%s",
-				(opts->flags & PARSE_OPT_NEGHELP) ?  "no-" : "",
-				opts->long_name);
+			pos += fprintf(outfile, "--%s", opts->long_name);
 		if (opts->type == OPTION_NUMBER)
-			pos += fprintf(outfile, "-NUM");
+			pos += utf8_fprintf(outfile, _("-NUM"));
 
 		if ((opts->flags & PARSE_OPT_LITERAL_ARGHELP) ||
 		    !(opts->flags & PARSE_OPT_NOARG))
@@ -551,7 +605,7 @@ static int usage_with_options_internal(struct parse_opt_ctx_t *ctx,
 			fputc('\n', outfile);
 			pad = USAGE_OPTS_WIDTH;
 		}
-		fprintf(outfile, "%*s%s\n", pad + USAGE_GAP, "", opts->help);
+		fprintf(outfile, "%*s%s\n", pad + USAGE_GAP, "", _(opts->help));
 	}
 	fputc('\n', outfile);
 
@@ -583,3 +637,12 @@ static int parse_options_usage(struct parse_opt_ctx_t *ctx,
 	return usage_with_options_internal(ctx, usagestr, opts, 0, err);
 }
 
+#undef opterror
+int opterror(const struct option *opt, const char *reason, int flags)
+{
+	if (flags & OPT_SHORT)
+		return error("switch `%c' %s", opt->short_name, reason);
+	if (flags & OPT_UNSET)
+		return error("option `no-%s' %s", opt->long_name, reason);
+	return error("option `%s' %s", opt->long_name, reason);
+}

@@ -18,14 +18,14 @@ DESCRIPTION
 Checks if a given 'refname' is acceptable, and exits with a non-zero
 status if it is not.
 
-A reference is used in git to specify branches and tags.  A
+A reference is used in Git to specify branches and tags.  A
 branch head is stored in the `refs/heads` hierarchy, while
 a tag is stored in the `refs/tags` hierarchy of the ref namespace
 (typically in `$GIT_DIR/refs/heads` and `$GIT_DIR/refs/tags`
 directories or, as entries in file `$GIT_DIR/packed-refs`
 if refs are packed by `git gc`).
 
-git imposes the following rules on how references are named:
+Git imposes the following rules on how references are named:
 
 . They can include slash `/` for hierarchical (directory)
   grouping, but no slash-separated component can begin with a
@@ -40,9 +40,9 @@ git imposes the following rules on how references are named:
 
 . They cannot have ASCII control characters (i.e. bytes whose
   values are lower than \040, or \177 `DEL`), space, tilde `~`,
-  caret `{caret}`, or colon `:` anywhere.
+  caret `^`, or colon `:` anywhere.
 
-. They cannot have question-mark `?`, asterisk `{asterisk}`, or open
+. They cannot have question-mark `?`, asterisk `*`, or open
   bracket `[` anywhere.  See the `--refspec-pattern` option below for
   an exception to this rule.
 
@@ -54,6 +54,8 @@ git imposes the following rules on how references are named:
 
 . They cannot contain a sequence `@{`.
 
+. They cannot be the single character `@`.
+
 . They cannot contain a `\`.
 
 These rules make it easy for shell script based tools to parse
@@ -62,10 +64,10 @@ unquoted (by mistake), and also avoids ambiguities in certain
 reference name expressions (see linkgit:gitrevisions[7]):
 
 . A double-dot `..` is often used as in `ref1..ref2`, and in some
-  contexts this notation means `{caret}ref1 ref2` (i.e. not in
+  contexts this notation means `^ref1 ref2` (i.e. not in
   `ref1` and in `ref2`).
 
-. A tilde `~` and caret `{caret}` are used to introduce the postfix
+. A tilde `~` and caret `^` are used to introduce the postfix
   'nth parent' and 'peel onion' operation.
 
 . A colon `:` is used as in `srcref:dstref` to mean "use srcref\'s
@@ -83,8 +85,7 @@ typed the branch name.
 
 OPTIONS
 -------
---allow-onelevel::
---no-allow-onelevel::
+--[no-]allow-onelevel::
 	Controls whether one-level refnames are accepted (i.e.,
 	refnames that do not contain multiple `/`-separated
 	components).  The default is `--no-allow-onelevel`.
@@ -92,9 +93,9 @@ OPTIONS
 --refspec-pattern::
 	Interpret <refname> as a reference name pattern for a refspec
 	(as used with remote repositories).  If this option is
-	enabled, <refname> is allowed to contain a single `{asterisk}`
+	enabled, <refname> is allowed to contain a single `*`
 	in place of a one full pathname component (e.g.,
-	`foo/{asterisk}/bar` but not `foo/bar{asterisk}`).
+	`foo/*/bar` but not `foo/bar*`).
 
 --normalize::
 	Normalize 'refname' by removing any leading slash (`/`)

@@ -48,7 +48,7 @@ static struct diff_rename_dst *locate_rename_dst(struct diff_filespec *two,
 		memmove(rename_dst + first + 1, rename_dst + first,
 			(rename_dst_nr - first - 1) * sizeof(*rename_dst));
 	rename_dst[first].two = alloc_filespec(two->path);
-	fill_filespec(rename_dst[first].two, two->sha1, two->mode);
+	fill_filespec(rename_dst[first].two, two->sha1, two->sha1_valid, two->mode);
 	rename_dst[first].pair = NULL;
 	return &(rename_dst[first]);
 }
@@ -389,6 +389,7 @@ static int find_exact_renames(struct diff_options *options)
 	struct hash_table file_table;
 
 	init_hash(&file_table);
+	preallocate_hash(&file_table, rename_src_nr + rename_dst_nr);
 	for (i = 0; i < rename_src_nr; i++)
 		insert_file_table(&file_table, -1, i, rename_src[i].p->one);
 
@@ -512,9 +513,15 @@ void diffcore_rename(struct diff_options *options)
 			else if (options->single_follow &&
 				 strcmp(options->single_follow, p->two->path))
 				continue; /* not interested */
+			else if (!DIFF_OPT_TST(options, RENAME_EMPTY) &&
+				 is_empty_blob_sha1(p->two->sha1))
+				continue;
 			else
 				locate_rename_dst(p->two, 1);
 		}
+		else if (!DIFF_OPT_TST(options, RENAME_EMPTY) &&
+			 is_empty_blob_sha1(p->one->sha1))
+			continue;
 		else if (!DIFF_PAIR_UNMERGED(p) && !DIFF_FILE_VALID(p->two)) {
 			/*
 			 * If the source is a broken "delete", and

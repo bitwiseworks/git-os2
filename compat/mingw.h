@@ -22,16 +22,19 @@ typedef int socklen_t;
 #define S_IWOTH 0
 #define S_IXOTH 0
 #define S_IRWXO (S_IROTH | S_IWOTH | S_IXOTH)
-#define S_ISUID 0
-#define S_ISGID 0
-#define S_ISVTX 0
+
+#define S_ISUID 0004000
+#define S_ISGID 0002000
+#define S_ISVTX 0001000
 
 #define WIFEXITED(x) 1
 #define WIFSIGNALED(x) 0
 #define WEXITSTATUS(x) ((x) & 0xff)
 #define WTERMSIG(x) SIGTERM
 
+#ifndef EWOULDBLOCK
 #define EWOULDBLOCK EAGAIN
+#endif
 #define SHUT_WR SD_SEND
 
 #define SIGHUP 1
@@ -45,16 +48,18 @@ typedef int socklen_t;
 #define F_SETFD 2
 #define FD_CLOEXEC 0x1
 
+#ifndef EAFNOSUPPORT
 #define EAFNOSUPPORT WSAEAFNOSUPPORT
+#endif
+#ifndef ECONNABORTED
 #define ECONNABORTED WSAECONNABORTED
+#endif
 
 struct passwd {
 	char *pw_name;
 	char *pw_gecos;
 	char *pw_dir;
 };
-
-extern char *getpass(const char *prompt);
 
 typedef void (__cdecl *sig_handler_t)(int);
 struct sigaction {
@@ -178,11 +183,17 @@ int mingw_open (const char *filename, int oflags, ...);
 ssize_t mingw_write(int fd, const void *buf, size_t count);
 #define write mingw_write
 
+int mingw_fgetc(FILE *stream);
+#define fgetc mingw_fgetc
+
 FILE *mingw_fopen (const char *filename, const char *otype);
 #define fopen mingw_fopen
 
 FILE *mingw_freopen (const char *filename, const char *otype, FILE *stream);
 #define freopen mingw_freopen
+
+int mingw_fflush(FILE *stream);
+#define fflush mingw_fflush
 
 char *mingw_getcwd(char *pointer, int len);
 #define getcwd mingw_getcwd
@@ -253,19 +264,35 @@ static inline int getrlimit(int resource, struct rlimit *rlp)
 	return 0;
 }
 
-/* Use mingw_lstat() instead of lstat()/stat() and
- * mingw_fstat() instead of fstat() on Windows.
+/*
+ * Use mingw specific stat()/lstat()/fstat() implementations on Windows.
  */
 #define off_t off64_t
 #define lseek _lseeki64
-#ifndef ALREADY_DECLARED_STAT_FUNCS
+
+/* use struct stat with 64 bit st_size */
+#ifdef stat
+#undef stat
+#endif
 #define stat _stati64
 int mingw_lstat(const char *file_name, struct stat *buf);
 int mingw_stat(const char *file_name, struct stat *buf);
 int mingw_fstat(int fd, struct stat *buf);
+#ifdef fstat
+#undef fstat
+#endif
 #define fstat mingw_fstat
+#ifdef lstat
+#undef lstat
+#endif
 #define lstat mingw_lstat
-#define _stati64(x,y) mingw_stat(x,y)
+
+#ifndef _stati64
+# define _stati64(x,y) mingw_stat(x,y)
+#elif defined (_USE_32BIT_TIME_T)
+# define _stat32i64(x,y) mingw_stat(x,y)
+#else
+# define _stat64(x,y) mingw_stat(x,y)
 #endif
 
 int mingw_utime(const char *file_name, const struct utimbuf *times);
@@ -274,9 +301,9 @@ int mingw_utime(const char *file_name, const struct utimbuf *times);
 pid_t mingw_spawnvpe(const char *cmd, const char **argv, char **env,
 		     const char *dir,
 		     int fhin, int fhout, int fherr);
-void mingw_execvp(const char *cmd, char *const *argv);
+int mingw_execvp(const char *cmd, char *const *argv);
 #define execvp mingw_execvp
-void mingw_execv(const char *cmd, char *const *argv);
+int mingw_execv(const char *cmd, char *const *argv);
 #define execv mingw_execv
 
 static inline unsigned int git_ntohl(unsigned int x)
@@ -285,6 +312,9 @@ static inline unsigned int git_ntohl(unsigned int x)
 
 sig_handler_t mingw_signal(int sig, sig_handler_t handler);
 #define signal mingw_signal
+
+int mingw_raise(int sig);
+#define raise mingw_raise
 
 /*
  * ANSI emulation wrappers
@@ -314,6 +344,7 @@ static inline char *mingw_find_last_dir_sep(const char *path)
 #define find_last_dir_sep mingw_find_last_dir_sep
 #define PATH_SEP ';'
 #define PRIuMAX "I64u"
+#define PRId64 "I64d"
 
 void mingw_open_html(const char *path);
 #define open_html mingw_open_html
@@ -326,13 +357,20 @@ char **make_augmented_environ(const char *const *vars);
 void free_environ(char **env);
 
 /*
+ * A critical section used in the implementation of the spawn
+ * functions (mingw_spawnv[p]e()) and waitpid(). Intialised in
+ * the replacement main() macro below.
+ */
+extern CRITICAL_SECTION pinfo_cs;
+
+/*
  * A replacement of main() that ensures that argv[0] has a path
  * and that default fmode and std(in|out|err) are in binary mode
  */
 
 #define main(c,v) dummy_decl_mingw_main(); \
-static int mingw_main(); \
-int main(int argc, const char **argv) \
+static int mingw_main(c,v); \
+int main(int argc, char **argv) \
 { \
 	extern CRITICAL_SECTION pinfo_cs; \
 	_fmode = _O_BINARY; \

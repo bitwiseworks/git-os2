@@ -42,6 +42,15 @@
 #define NO_CURL_IOCTL
 #endif
 
+/*
+ * CURLOPT_USE_SSL was known as CURLOPT_FTP_SSL up to 7.16.4,
+ * and the constants were known as CURLFTPSSL_*
+*/
+#if !defined(CURLOPT_USE_SSL) && defined(CURLOPT_FTP_SSL)
+#define CURLOPT_USE_SSL CURLOPT_FTP_SSL
+#define CURLUSESSL_TRY CURLFTPSSL_TRY
+#endif
+
 struct slot_results {
 	CURLcode curl_result;
 	long http_code;
@@ -78,6 +87,7 @@ extern int start_active_slot(struct active_request_slot *slot);
 extern void run_active_slot(struct active_request_slot *slot);
 extern void finish_active_slot(struct active_request_slot *slot);
 extern void finish_all_active_slots(void);
+extern int handle_curl_result(struct slot_results *results);
 
 #ifdef USE_CURL_MULTI
 extern void fill_active_slots(void);
@@ -92,6 +102,7 @@ extern void http_cleanup(void);
 extern int active_requests;
 extern int http_is_verbose;
 extern size_t http_post_buffer;
+extern struct credential http_auth;
 
 extern char curl_errorstr[CURL_ERROR_SIZE];
 
@@ -115,10 +126,30 @@ extern void append_remote_object_url(struct strbuf *buf, const char *url,
 extern char *get_remote_object_url(const char *url, const char *hex,
 				   int only_two_digit_prefix);
 
-/* Options for http_request_*() */
-#define HTTP_NO_CACHE		1
+/* Options for http_get_*() */
+struct http_get_options {
+	unsigned no_cache:1,
+		 keep_error:1;
 
-/* Return values for http_request_*() */
+	/* If non-NULL, returns the content-type of the response. */
+	struct strbuf *content_type;
+
+	/*
+	 * If non-NULL, returns the URL we ended up at, including any
+	 * redirects we followed.
+	 */
+	struct strbuf *effective_url;
+
+	/*
+	 * If both base_url and effective_url are non-NULL, the base URL will
+	 * be munged to reflect any redirections going from the requested url
+	 * to effective_url. See the definition of update_url_from_redirect
+	 * for details.
+	 */
+	struct strbuf *base_url;
+};
+
+/* Return values for http_get_*() */
 #define HTTP_OK			0
 #define HTTP_MISSING_TARGET	1
 #define HTTP_ERROR		2
@@ -127,17 +158,11 @@ extern char *get_remote_object_url(const char *url, const char *hex,
 #define HTTP_NOAUTH	5
 
 /*
- * Requests an url and stores the result in a strbuf.
+ * Requests a URL and stores the result in a strbuf.
  *
  * If the result pointer is NULL, a HTTP HEAD request is made instead of GET.
  */
-int http_get_strbuf(const char *url, struct strbuf *result, int options);
-
-/*
- * Prints an error message using error() containing url and curl_errorstr,
- * and returns ret.
- */
-int http_error(const char *url, int ret);
+int http_get_strbuf(const char *url, struct strbuf *result, struct http_get_options *options);
 
 extern int http_fetch_ref(const char *base, struct ref *ref);
 

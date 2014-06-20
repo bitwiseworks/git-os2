@@ -30,10 +30,13 @@ test_expect_success 'setup remote repository' '
 	git clone --bare test_repo test_repo.git &&
 	cd test_repo.git &&
 	git config http.receivepack true &&
+	git config core.logallrefupdates true &&
 	ORIG_HEAD=$(git rev-parse --verify HEAD) &&
 	cd - &&
 	mv test_repo.git "$HTTPD_DOCUMENT_ROOT_PATH"
 '
+
+setup_askpass_helper
 
 cat >exp <<EOF
 GET  /smart/test_repo.git/info/refs?service=git-upload-pack HTTP/1.1 200
@@ -63,7 +66,10 @@ test_expect_success 'no empty path components' '
 
 test_expect_success 'clone remote repository' '
 	rm -rf test_repo_clone &&
-	git clone $HTTPD_URL/smart/test_repo.git test_repo_clone
+	git clone $HTTPD_URL/smart/test_repo.git test_repo_clone &&
+	(
+		cd test_repo_clone && git config push.default matching
+	)
 '
 
 test_expect_success 'push to remote repository (standard)' '
@@ -147,7 +153,7 @@ test_expect_success 'used receive-pack service' '
 '
 
 test_http_push_nonff "$HTTPD_DOCUMENT_ROOT_PATH"/test_repo.git \
-	"$ROOT_PATH"/test_repo_clone master
+	"$ROOT_PATH"/test_repo_clone master 		success
 
 test_expect_success 'push fails for non-fast-forward refs unmatched by remote helper' '
 	# create a dissimilarly-named remote ref so that git is unable to match the
@@ -167,7 +173,7 @@ test_expect_success 'push fails for non-fast-forward refs unmatched by remote he
 '
 
 test_expect_success 'push fails for non-fast-forward refs unmatched by remote helper: our output' '
-	test_i18ngrep "To prevent you from losing history, non-fast-forward updates were rejected" \
+	test_i18ngrep "Updates were rejected because" \
 		output
 '
 
@@ -175,8 +181,7 @@ test_expect_success 'push (chunked)' '
 	git checkout master &&
 	test_commit commit path3 &&
 	HEAD=$(git rev-parse --verify HEAD) &&
-	git config http.postbuffer 4 &&
-	test_when_finished "git config --unset http.postbuffer" &&
+	test_config http.postbuffer 4 &&
 	git push -v -v origin $BRANCH 2>err &&
 	grep "POST git-receive-pack (chunked)" err &&
 	(cd "$HTTPD_DOCUMENT_ROOT_PATH"/test_repo.git &&
@@ -215,11 +220,108 @@ test_expect_success 'push --mirror to repo with alternates' '
 	git push --mirror "$HTTPD_URL"/smart/alternates-mirror.git
 '
 
-test_expect_success TTY 'quiet push' '
+test_expect_success TTY 'push shows progress when stderr is a tty' '
+	cd "$ROOT_PATH"/test_repo_clone &&
+	test_commit noisy &&
+	test_terminal git push >output 2>&1 &&
+	grep "^Writing objects" output
+'
+
+test_expect_success TTY 'push --quiet silences status and progress' '
 	cd "$ROOT_PATH"/test_repo_clone &&
 	test_commit quiet &&
-	test_terminal git push --quiet --no-progress 2>&1 | tee output &&
+	test_terminal git push --quiet >output 2>&1 &&
 	test_cmp /dev/null output
+'
+
+test_expect_success TTY 'push --no-progress silences progress but not status' '
+	cd "$ROOT_PATH"/test_repo_clone &&
+	test_commit no-progress &&
+	test_terminal git push --no-progress >output 2>&1 &&
+	grep "^To http" output &&
+	! grep "^Writing objects"
+'
+
+test_expect_success 'push --progress shows progress to non-tty' '
+	cd "$ROOT_PATH"/test_repo_clone &&
+	test_commit progress &&
+	git push --progress >output 2>&1 &&
+	grep "^To http" output &&
+	grep "^Writing objects" output
+'
+
+test_expect_success 'http push gives sane defaults to reflog' '
+	cd "$ROOT_PATH"/test_repo_clone &&
+	test_commit reflog-test &&
+	git push "$HTTPD_URL"/smart/test_repo.git &&
+	git --git-dir="$HTTPD_DOCUMENT_ROOT_PATH/test_repo.git" \
+		log -g -1 --format="%gn <%ge>" >actual &&
+	echo "anonymous <anonymous@http.127.0.0.1>" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'http push respects GIT_COMMITTER_* in reflog' '
+	cd "$ROOT_PATH"/test_repo_clone &&
+	test_commit custom-reflog-test &&
+	git push "$HTTPD_URL"/smart_custom_env/test_repo.git &&
+	git --git-dir="$HTTPD_DOCUMENT_ROOT_PATH/test_repo.git" \
+		log -g -1 --format="%gn <%ge>" >actual &&
+	echo "Custom User <custom@example.com>" >expect &&
+	test_cmp expect actual
+'
+
+test_expect_success 'push over smart http with auth' '
+	cd "$ROOT_PATH/test_repo_clone" &&
+	echo push-auth-test >expect &&
+	test_commit push-auth-test &&
+	set_askpass user@host &&
+	git push "$HTTPD_URL"/auth/smart/test_repo.git &&
+	git --git-dir="$HTTPD_DOCUMENT_ROOT_PATH/test_repo.git" \
+		log -1 --format=%s >actual &&
+	expect_askpass both user@host &&
+	test_cmp expect actual
+'
+
+test_expect_success 'push to auth-only-for-push repo' '
+	cd "$ROOT_PATH/test_repo_clone" &&
+	echo push-half-auth >expect &&
+	test_commit push-half-auth &&
+	set_askpass user@host &&
+	git push "$HTTPD_URL"/auth-push/smart/test_repo.git &&
+	git --git-dir="$HTTPD_DOCUMENT_ROOT_PATH/test_repo.git" \
+		log -1 --format=%s >actual &&
+	expect_askpass both user@host &&
+	test_cmp expect actual
+'
+
+test_expect_success 'create repo without http.receivepack set' '
+	cd "$ROOT_PATH" &&
+	git init half-auth &&
+	(
+		cd half-auth &&
+		test_commit one
+	) &&
+	git clone --bare half-auth "$HTTPD_DOCUMENT_ROOT_PATH/half-auth.git"
+'
+
+test_expect_success 'clone via half-auth-complete does not need password' '
+	cd "$ROOT_PATH" &&
+	set_askpass wrong &&
+	git clone "$HTTPD_URL"/half-auth-complete/smart/half-auth.git \
+		half-auth-clone &&
+	expect_askpass none
+'
+
+test_expect_success 'push into half-auth-complete requires password' '
+	cd "$ROOT_PATH/half-auth-clone" &&
+	echo two >expect &&
+	test_commit two &&
+	set_askpass user@host &&
+	git push "$HTTPD_URL/half-auth-complete/smart/half-auth.git" &&
+	git --git-dir="$HTTPD_DOCUMENT_ROOT_PATH/half-auth.git" \
+		log -1 --format=%s >actual &&
+	expect_askpass both user@host &&
+	test_cmp expect actual
 '
 
 stop_httpd

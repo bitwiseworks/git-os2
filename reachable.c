@@ -80,8 +80,7 @@ static void process_tree(struct tree *tree,
 		else
 			process_blob(lookup_blob(entry.sha1), p, &me, entry.path, cp);
 	}
-	free(tree->buffer);
-	tree->buffer = NULL;
+	free_tree_buffer(tree);
 }
 
 static void process_tag(struct tag *tag, struct object_array *p,
@@ -152,11 +151,9 @@ static int add_one_reflog_ent(unsigned char *osha1, unsigned char *nsha1,
 
 static int add_one_ref(const char *path, const unsigned char *sha1, int flag, void *cb_data)
 {
-	struct object *object = parse_object(sha1);
+	struct object *object = parse_object_or_die(sha1, path);
 	struct rev_info *revs = (struct rev_info *)cb_data;
 
-	if (!object)
-		die("bad object ref: %s:%s", path, sha1_to_hex(sha1));
 	add_pending_object(revs, object, "");
 
 	return 0;

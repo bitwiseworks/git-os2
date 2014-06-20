@@ -89,7 +89,7 @@ static struct {
  */
 static const char **used_atom;
 static cmp_type *used_atom_type;
-static int used_atom_cnt, sort_atom_limit, need_tagged, need_symref;
+static int used_atom_cnt, need_tagged, need_symref;
 
 /*
  * Used to parse format string and sort specifiers
@@ -205,6 +205,22 @@ static void *get_obj(const unsigned char *sha1, struct object **obj, unsigned lo
 	return buf;
 }
 
+static int grab_objectname(const char *name, const unsigned char *sha1,
+			    struct atom_value *v)
+{
+	if (!strcmp(name, "objectname")) {
+		char *s = xmalloc(41);
+		strcpy(s, sha1_to_hex(sha1));
+		v->s = s;
+		return 1;
+	}
+	if (!strcmp(name, "objectname:short")) {
+		v->s = xstrdup(find_unique_abbrev(sha1, DEFAULT_ABBREV));
+		return 1;
+	}
+	return 0;
+}
+
 /* See grab_values */
 static void grab_common_values(struct atom_value *val, int deref, struct object *obj, void *buf, unsigned long sz)
 {
@@ -225,15 +241,8 @@ static void grab_common_values(struct atom_value *val, int deref, struct object 
 			v->ul = sz;
 			v->s = s;
 		}
-		else if (!strcmp(name, "objectname")) {
-			char *s = xmalloc(41);
-			strcpy(s, sha1_to_hex(obj->sha1));
-			v->s = s;
-		}
-		else if (!strcmp(name, "objectname:short")) {
-			v->s = xstrdup(find_unique_abbrev(obj->sha1,
-							  DEFAULT_ABBREV));
-		}
+		else if (deref)
+			grab_objectname(name, obj->sha1, v);
 	}
 }
 
@@ -676,6 +685,8 @@ static void populate_value(struct refinfo *ref)
 			}
 			continue;
 		}
+		else if (!deref && grab_objectname(name, ref->objectname, v))
+			continue;
 		else
 			continue;
 
@@ -867,23 +878,28 @@ static void sort_refs(struct ref_sort *sort, struct refinfo **refs, int num_refs
 static void print_value(struct refinfo *ref, int atom, int quote_style)
 {
 	struct atom_value *v;
+	struct strbuf sb = STRBUF_INIT;
 	get_value(ref, atom, &v);
 	switch (quote_style) {
 	case QUOTE_NONE:
 		fputs(v->s, stdout);
 		break;
 	case QUOTE_SHELL:
-		sq_quote_print(stdout, v->s);
+		sq_quote_buf(&sb, v->s);
 		break;
 	case QUOTE_PERL:
-		perl_quote_print(stdout, v->s);
+		perl_quote_buf(&sb, v->s);
 		break;
 	case QUOTE_PYTHON:
-		python_quote_print(stdout, v->s);
+		python_quote_buf(&sb, v->s);
 		break;
 	case QUOTE_TCL:
-		tcl_quote_print(stdout, v->s);
+		tcl_quote_buf(&sb, v->s);
 		break;
+	}
+	if (quote_style != QUOTE_NONE) {
+		fputs(sb.buf, stdout);
+		strbuf_release(&sb);
 	}
 }
 
@@ -962,7 +978,9 @@ static int opt_parse_sort(const struct option *opt, const char *arg, int unset)
 	if (!arg) /* should --no-sort void the list ? */
 		return -1;
 
-	*sort_tail = s = xcalloc(1, sizeof(*s));
+	s = xcalloc(1, sizeof(*s));
+	s->next = *sort_tail;
+	*sort_tail = s;
 
 	if (*arg == '-') {
 		s->reverse = 1;
@@ -974,7 +992,7 @@ static int opt_parse_sort(const struct option *opt, const char *arg, int unset)
 }
 
 static char const * const for_each_ref_usage[] = {
-	"git for-each-ref [options] [<pattern>]",
+	N_("git for-each-ref [options] [<pattern>]"),
 	NULL
 };
 
@@ -989,19 +1007,19 @@ int cmd_for_each_ref(int argc, const char **argv, const char *prefix)
 
 	struct option opts[] = {
 		OPT_BIT('s', "shell", &quote_style,
-		        "quote placeholders suitably for shells", QUOTE_SHELL),
+			N_("quote placeholders suitably for shells"), QUOTE_SHELL),
 		OPT_BIT('p', "perl",  &quote_style,
-		        "quote placeholders suitably for perl", QUOTE_PERL),
+			N_("quote placeholders suitably for perl"), QUOTE_PERL),
 		OPT_BIT(0 , "python", &quote_style,
-		        "quote placeholders suitably for python", QUOTE_PYTHON),
+			N_("quote placeholders suitably for python"), QUOTE_PYTHON),
 		OPT_BIT(0 , "tcl",  &quote_style,
-		        "quote placeholders suitably for tcl", QUOTE_TCL),
+			N_("quote placeholders suitably for tcl"), QUOTE_TCL),
 
 		OPT_GROUP(""),
-		OPT_INTEGER( 0 , "count", &maxcount, "show only <n> matched refs"),
-		OPT_STRING(  0 , "format", &format, "format", "format to use for the output"),
-		OPT_CALLBACK(0 , "sort", sort_tail, "key",
-		            "field name to sort on", &opt_parse_sort),
+		OPT_INTEGER( 0 , "count", &maxcount, N_("show only <n> matched refs")),
+		OPT_STRING(  0 , "format", &format, N_("format"), N_("format to use for the output")),
+		OPT_CALLBACK(0 , "sort", sort_tail, N_("key"),
+			    N_("field name to sort on"), &opt_parse_sort),
 		OPT_END(),
 	};
 
@@ -1019,7 +1037,6 @@ int cmd_for_each_ref(int argc, const char **argv, const char *prefix)
 
 	if (!sort)
 		sort = default_sort();
-	sort_atom_limit = used_atom_cnt;
 
 	/* for warn_ambiguous_refs */
 	git_config(git_default_config, NULL);

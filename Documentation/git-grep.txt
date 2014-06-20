@@ -9,7 +9,7 @@ git-grep - Print lines matching a pattern
 SYNOPSIS
 --------
 [verse]
-'git grep' [-a | --text] [-I] [-i | --ignore-case] [-w | --word-regexp]
+'git grep' [-a | --text] [-I] [--textconv] [-i | --ignore-case] [-w | --word-regexp]
 	   [-v | --invert-match] [-h|-H] [--full-name]
 	   [-E | --extended-regexp] [-G | --basic-regexp]
 	   [-P | --perl-regexp]
@@ -25,13 +25,15 @@ SYNOPSIS
 	   [-W | --function-context]
 	   [-f <file>] [-e] <pattern>
 	   [--and|--or|--not|(|)|-e <pattern>...]
-	   [ [--exclude-standard] [--cached | --no-index | --untracked] | <tree>...]
+	   [ [--[no-]exclude-standard] [--cached | --no-index | --untracked] | <tree>...]
 	   [--] [<pathspec>...]
 
 DESCRIPTION
 -----------
 Look for specified patterns in the tracked files in the work tree, blobs
-registered in the index file, or blobs in given tree objects.
+registered in the index file, or blobs in given tree objects.  Patterns
+are lists of one or more search expressions separated by newline
+characters.  An empty string as search expression matches all lines.
 
 
 CONFIGURATION
@@ -40,8 +42,16 @@ CONFIGURATION
 grep.lineNumber::
 	If set to true, enable '-n' option by default.
 
+grep.patternType::
+	Set the default matching behavior. Using a value of 'basic', 'extended',
+	'fixed', or 'perl' will enable the '--basic-regexp', '--extended-regexp',
+	'--fixed-strings', or '--perl-regexp' option accordingly, while the
+	value 'default' will return to the default matching behavior.
+
 grep.extendedRegexp::
-	If set to true, enable '--extended-regexp' option by default.
+	If set to true, enable '--extended-regexp' option by default. This
+	option is ignored when the 'grep.patternType' option is set to a value
+	other than 'default'.
 
 
 OPTIONS
@@ -51,7 +61,7 @@ OPTIONS
 	blobs registered in the index file.
 
 --no-index::
-	Search files in the current directory that is not managed by git.
+	Search files in the current directory that is not managed by Git.
 
 --untracked::
 	In addition to searching in the tracked files in the working
@@ -69,6 +79,13 @@ OPTIONS
 -a::
 --text::
 	Process binary files as if they were text.
+
+--textconv::
+	Honor textconv filter settings.
+
+--no-textconv::
+	Do not honor textconv filter settings.
+	This is the default.
 
 -i::
 --ignore-case::
@@ -247,11 +264,11 @@ OPTIONS
 Examples
 --------
 
-`git grep {apostrophe}time_t{apostrophe} \-- {apostrophe}*.[ch]{apostrophe}`::
+`git grep 'time_t' -- '*.[ch]'`::
 	Looks for `time_t` in all tracked .c and .h files in the working
 	directory and its subdirectories.
 
-`git grep -e {apostrophe}#define{apostrophe} --and \( -e MAX_PATH -e PATH_MAX \)`::
+`git grep -e '#define' --and \( -e MAX_PATH -e PATH_MAX \)`::
 	Looks for a line that has `#define` and either `MAX_PATH` or
 	`PATH_MAX`.
 

@@ -30,10 +30,12 @@ test_expect_success 'setup: initial commit' '
 '
 
 test_expect_success '-m and -F do not mix' '
+	git checkout HEAD file && echo >>file && git add file &&
 	test_must_fail git commit -m foo -m bar -F file
 '
 
 test_expect_success '-m and -C do not mix' '
+	git checkout HEAD file && echo >>file && git add file &&
 	test_must_fail git commit -C HEAD -m illegal
 '
 
@@ -51,7 +53,7 @@ test_expect_success PERL 'can use paths with --interactive' '
 '
 
 test_expect_success 'using invalid commit with -C' '
-	test_must_fail git commit -C bogus
+	test_must_fail git commit --allow-empty -C bogus
 '
 
 test_expect_success 'nothing to commit' '
@@ -79,7 +81,19 @@ test_expect_success 'empty commit message' '
 	test_must_fail git commit -F msg -a
 '
 
+test_expect_success 'template "emptyness" check does not kick in with -F' '
+	git checkout HEAD file && echo >>file && git add file &&
+	git commit -t file -F file
+'
+
+test_expect_success 'template "emptyness" check' '
+	git checkout HEAD file && echo >>file && git add file &&
+	test_must_fail git commit -t file 2>err &&
+	test_i18ngrep "did not edit" err
+'
+
 test_expect_success 'setup: commit message from file' '
+	git checkout HEAD file && echo >>file && git add file &&
 	echo this is the commit message, coming from a file >msg &&
 	git commit -F msg -a
 '
@@ -92,6 +106,16 @@ test_expect_success 'amend commit' '
 	EOF
 	chmod 755 editor &&
 	EDITOR=./editor git commit --amend
+'
+
+test_expect_success 'amend --only ignores staged contents' '
+	cp file file.expect &&
+	echo changed >file &&
+	git add file &&
+	git commit --no-edit --amend --only &&
+	git cat-file blob HEAD:file >file.actual &&
+	test_cmp file.expect file.actual &&
+	git diff --exit-code
 '
 
 test_expect_success 'set up editor' '
@@ -121,6 +145,21 @@ test_expect_success '--amend --edit' '
 	git add file &&
 	EDITOR=./editor git commit --edit --amend &&
 	git diff-tree -s --format=%s HEAD >msg &&
+	test_cmp expect msg
+'
+
+test_expect_success '--amend --edit of empty message' '
+	cat >replace <<-\EOF &&
+	#!/bin/sh
+	echo "amended" >"$1"
+	EOF
+	chmod 755 replace &&
+	git commit --allow-empty --allow-empty-message -m "" &&
+	echo more bongo >file &&
+	git add file &&
+	EDITOR=./replace git commit --edit --amend &&
+	git diff-tree -s --format=%s HEAD >msg &&
+	./replace expect &&
 	test_cmp expect msg
 '
 
@@ -471,6 +510,31 @@ test_expect_success 'amend can copy notes' '
 	git commit --amend -m"new foo" &&
 	test "$(git notes show)" = "a note"
 
+'
+
+test_expect_success 'commit a file whose name is a dash' '
+	git reset --hard &&
+	for i in 1 2 3 4 5
+	do
+		echo $i
+	done >./- &&
+	git add ./- &&
+	test_tick &&
+	git commit -m "add dash" >output </dev/null &&
+	test_i18ngrep " changed, 5 insertions" output
+'
+
+test_expect_success '--only works on to-be-born branch' '
+	# This test relies on having something in the index, as it
+	# would not otherwise actually prove much.  So check this.
+	test -n "$(git ls-files)" &&
+	git checkout --orphan orphan &&
+	echo foo >newfile &&
+	git add newfile &&
+	git commit --only newfile -m"--only on unborn branch" &&
+	echo newfile >expected &&
+	git ls-tree -r --name-only HEAD >actual &&
+	test_cmp expected actual
 '
 
 test_done

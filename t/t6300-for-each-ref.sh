@@ -58,6 +58,8 @@ test_atom head parent ''
 test_atom head numparent 0
 test_atom head object ''
 test_atom head type ''
+test_atom head '*objectname' ''
+test_atom head '*objecttype' ''
 test_atom head author 'A U Thor <author@example.com> 1151939924 +0200'
 test_atom head authorname 'A U Thor'
 test_atom head authoremail '<author@example.com>'
@@ -91,6 +93,8 @@ test_atom tag parent ''
 test_atom tag numparent ''
 test_atom tag object '67a36f10722846e891fbada1ba48ed035de75581'
 test_atom tag type 'commit'
+test_atom tag '*objectname' '67a36f10722846e891fbada1ba48ed035de75581'
+test_atom tag '*objecttype' 'commit'
 test_atom tag author ''
 test_atom tag authorname ''
 test_atom tag authoremail ''
@@ -456,4 +460,14 @@ test_atom refs/tags/signed-long contents "subject line
 body contents
 $sig"
 
+cat >expected <<\EOF
+408fe76d02a785a006c2e9c669b7be5589ede96d <committer@example.com> refs/tags/master
+90b5ebede4899eda64893bc2a4c8f1d6fb6dfc40 <committer@example.com> refs/tags/bogo
+EOF
+
+test_expect_success 'Verify sort with multiple keys' '
+	git for-each-ref --format="%(objectname) %(taggeremail) %(refname)" --sort=objectname --sort=taggeremail \
+		refs/tags/bogo refs/tags/master > actual &&
+	test_cmp expected actual
+'
 test_done

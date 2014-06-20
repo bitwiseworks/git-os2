@@ -1,7 +1,7 @@
 # Pass --without docs to rpmbuild if you don't want the documentation
 
 Name: 		git
-Version: 	1.7.9.6
+Version: 	1.8.5.5
 Release: 	1%{?dist}
 Summary:  	Core git tools
 License: 	GPL
@@ -101,6 +101,7 @@ Group:          Development/Libraries
 Requires:       git = %{version}-%{release}
 Requires:       perl(:MODULE_COMPAT_%(eval "`%{__perl} -V:version`"; echo $version))
 BuildRequires:  perl(Error)
+BuildRequires:  perl(ExtUtils::MakeMaker)
 
 %description -n perl-Git
 Perl interface to Git

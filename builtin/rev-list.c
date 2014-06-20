@@ -109,7 +109,9 @@ static void show_commit(struct commit *commit, void *data)
 		struct pretty_print_context ctx = {0};
 		ctx.abbrev = revs->abbrev;
 		ctx.date_mode = revs->date_mode;
+		ctx.date_mode_explicit = revs->date_mode_explicit;
 		ctx.fmt = revs->commit_format;
+		ctx.output_encoding = get_log_output_encoding();
 		pretty_print_commit(&ctx, commit, &buf);
 		if (revs->graph) {
 			if (buf.len) {
@@ -198,55 +200,6 @@ static void show_object(struct object *obj,
 static void show_edge(struct commit *commit)
 {
 	printf("-%s\n", sha1_to_hex(commit->object.sha1));
-}
-
-static inline int log2i(int n)
-{
-	int log2 = 0;
-
-	for (; n > 1; n >>= 1)
-		log2++;
-
-	return log2;
-}
-
-static inline int exp2i(int n)
-{
-	return 1 << n;
-}
-
-/*
- * Estimate the number of bisect steps left (after the current step)
- *
- * For any x between 0 included and 2^n excluded, the probability for
- * n - 1 steps left looks like:
- *
- * P(2^n + x) == (2^n - x) / (2^n + x)
- *
- * and P(2^n + x) < 0.5 means 2^n < 3x
- */
-int estimate_bisect_steps(int all)
-{
-	int n, x, e;
-
-	if (all < 3)
-		return 0;
-
-	n = log2i(all);
-	e = exp2i(n);
-	x = all - e;
-
-	return (e < 3 * x) ? n : n - 1;
-}
-
-void print_commit_list(struct commit_list *list,
-		       const char *format_cur,
-		       const char *format_last)
-{
-	for ( ; list; list = list->next) {
-		const char *format = list->next ? format_cur : format_last;
-		printf(format, sha1_to_hex(list->item->object.sha1));
-	}
 }
 
 static void print_var_str(const char *var, const char *val)
@@ -369,7 +322,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		revs.commit_format = CMIT_FMT_RAW;
 
 	if ((!revs.commits &&
-	     (!(revs.tag_objects||revs.tree_objects||revs.blob_objects) &&
+	     (!(revs.tag_objects || revs.tree_objects || revs.blob_objects) &&
 	      !revs.pending.nr)) ||
 	    revs.diff)
 		usage(rev_list_usage);
@@ -383,7 +336,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
 	if (revs.tree_objects)
-		mark_edges_uninteresting(revs.commits, &revs, show_edge);
+		mark_edges_uninteresting(&revs, show_edge);
 
 	if (bisect_list) {
 		int reaches = reaches, all = all;
