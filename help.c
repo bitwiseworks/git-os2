@@ -129,7 +129,6 @@ static void list_commands_in_dir(struct cmdnames *cmds,
 					 const char *path,
 					 const char *prefix)
 {
-	int prefix_len;
 	DIR *dir = opendir(path);
 	struct dirent *de;
 	struct strbuf buf = STRBUF_INIT;
@@ -139,15 +138,15 @@ static void list_commands_in_dir(struct cmdnames *cmds,
 		return;
 	if (!prefix)
 		prefix = "git-";
-	prefix_len = strlen(prefix);
 
 	strbuf_addf(&buf, "%s/", path);
 	len = buf.len;
 
 	while ((de = readdir(dir)) != NULL) {
-		int entlen;
+		const char *ent;
+		size_t entlen;
 
-		if (!starts_with(de->d_name, prefix))
+		if (!skip_prefix(de->d_name, prefix, &ent))
 			continue;
 
 		strbuf_setlen(&buf, len);
@@ -155,11 +154,10 @@ static void list_commands_in_dir(struct cmdnames *cmds,
 		if (!is_executable(buf.buf))
 			continue;
 
-		entlen = strlen(de->d_name) - prefix_len;
-		if (has_extension(de->d_name, ".exe"))
-			entlen -= 4;
+		entlen = strlen(ent);
+		strip_suffix(ent, ".exe", &entlen);
 
-		add_cmdname(cmds, de->d_name + prefix_len, entlen);
+		add_cmdname(cmds, ent, entlen);
 	}
 	closedir(dir);
 	strbuf_release(&buf);
@@ -251,11 +249,13 @@ static struct cmdnames aliases;
 
 static int git_unknown_cmd_config(const char *var, const char *value, void *cb)
 {
+	const char *p;
+
 	if (!strcmp(var, "help.autocorrect"))
 		autocorrect = git_config_int(var,value);
 	/* Also use aliases for command lookup */
-	if (starts_with(var, "alias."))
-		add_cmdname(&aliases, var + 6, strlen(var + 6));
+	if (skip_prefix(var, "alias.", &p))
+		add_cmdname(&aliases, p, strlen(p));
 
 	return git_default_config(var, value, cb);
 }
@@ -412,11 +412,12 @@ static int append_similar_ref(const char *refname, const unsigned char *sha1,
 {
 	struct similar_ref_cb *cb = (struct similar_ref_cb *)(cb_data);
 	char *branch = strrchr(refname, '/') + 1;
+	const char *remote;
+
 	/* A remote branch of the same name is deemed similar */
-	if (starts_with(refname, "refs/remotes/") &&
+	if (skip_prefix(refname, "refs/remotes/", &remote) &&
 	    !strcmp(branch, cb->base_ref))
-		string_list_append(cb->similar_refs,
-				   refname + strlen("refs/remotes/"));
+		string_list_append(cb->similar_refs, remote);
 	return 0;
 }
 

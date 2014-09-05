@@ -249,9 +249,7 @@ int validate_headref(const char *path)
 static struct passwd *getpw_str(const char *username, size_t len)
 {
 	struct passwd *pw;
-	char *username_z = xmalloc(len + 1);
-	memcpy(username_z, username, len);
-	username_z[len] = '\0';
+	char *username_z = xmemdupz(username, len);
 	pw = getpwnam(username_z);
 	free(username_z);
 	return pw;
@@ -277,16 +275,16 @@ char *expand_user_path(const char *path)
 			const char *home = getenv("HOME");
 			if (!home)
 				goto return_null;
-			strbuf_add(&user_path, home, strlen(home));
+			strbuf_addstr(&user_path, home);
 		} else {
 			struct passwd *pw = getpw_str(username, username_len);
 			if (!pw)
 				goto return_null;
-			strbuf_add(&user_path, pw->pw_dir, strlen(pw->pw_dir));
+			strbuf_addstr(&user_path, pw->pw_dir);
 		}
 		to_copy = first_slash;
 	}
-	strbuf_add(&user_path, to_copy, strlen(to_copy));
+	strbuf_addstr(&user_path, to_copy);
 	return strbuf_detach(&user_path, NULL);
 return_null:
 	strbuf_release(&user_path);
@@ -822,11 +820,4 @@ int daemon_avoid_alias(const char *p)
 			ndot = 0;
 		}
 	}
-}
-
-int offset_1st_component(const char *path)
-{
-	if (has_dos_drive_prefix(path))
-		return 2 + is_dir_sep(path[2]);
-	return is_dir_sep(path[0]);
 }

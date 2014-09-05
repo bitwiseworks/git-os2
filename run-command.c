@@ -279,6 +279,9 @@ int start_command(struct child_process *cmd)
 	int failed_errno;
 	char *str;
 
+	if (!cmd->argv)
+		cmd->argv = cmd->args.argv;
+
 	/*
 	 * In case of errors we must keep the promise to close FDs
 	 * that have been passed in via ->in and ->out.
@@ -328,6 +331,7 @@ int start_command(struct child_process *cmd)
 fail_pipe:
 			error("cannot create %s pipe for %s: %s",
 				str, cmd->argv[0], strerror(failed_errno));
+			argv_array_clear(&cmd->args);
 			errno = failed_errno;
 			return -1;
 		}
@@ -450,7 +454,6 @@ fail_pipe:
 {
 	int fhin = 0, fhout = 1, fherr = 2;
 	const char **sargv = cmd->argv;
-	char **env = environ;
 
 	if (cmd->no_stdin)
 		fhin = open("/dev/null", O_RDWR);
@@ -475,24 +478,19 @@ fail_pipe:
 	else if (cmd->out > 1)
 		fhout = dup(cmd->out);
 
-	if (cmd->env)
-		env = make_augmented_environ(cmd->env);
-
 	if (cmd->git_cmd)
 		cmd->argv = prepare_git_cmd(cmd->argv);
 	else if (cmd->use_shell)
 		cmd->argv = prepare_shell_cmd(cmd->argv);
 
-	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, env, cmd->dir,
-				  fhin, fhout, fherr);
+	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, (char**) cmd->env,
+			cmd->dir, fhin, fhout, fherr);
 	failed_errno = errno;
 	if (cmd->pid < 0 && (!cmd->silent_exec_failure || errno != ENOENT))
 		error("cannot spawn %s: %s", cmd->argv[0], strerror(errno));
 	if (cmd->clean_on_exit && cmd->pid >= 0)
 		mark_child_for_cleanup(cmd->pid);
 
-	if (cmd->env)
-		free_environ(env);
 	if (cmd->git_cmd)
 		free(cmd->argv);
 
@@ -519,6 +517,7 @@ fail_pipe:
 			close_pair(fderr);
 		else if (cmd->err)
 			close(cmd->err);
+		argv_array_clear(&cmd->args);
 		errno = failed_errno;
 		return -1;
 	}
@@ -543,7 +542,9 @@ fail_pipe:
 
 int finish_command(struct child_process *cmd)
 {
-	return wait_or_whine(cmd->pid, cmd->argv[0]);
+	int ret = wait_or_whine(cmd->pid, cmd->argv[0]);
+	argv_array_clear(&cmd->args);
+	return ret;
 }
 
 int run_command(struct child_process *cmd)
@@ -763,28 +764,21 @@ char *find_hook(const char *name)
 int run_hook_ve(const char *const *env, const char *name, va_list args)
 {
 	struct child_process hook;
-	struct argv_array argv = ARGV_ARRAY_INIT;
 	const char *p;
-	int ret;
 
 	p = find_hook(name);
 	if (!p)
 		return 0;
 
-	argv_array_push(&argv, p);
-
-	while ((p = va_arg(args, const char *)))
-		argv_array_push(&argv, p);
-
 	memset(&hook, 0, sizeof(hook));
-	hook.argv = argv.argv;
+	argv_array_push(&hook.args, p);
+	while ((p = va_arg(args, const char *)))
+		argv_array_push(&hook.args, p);
 	hook.env = env;
 	hook.no_stdin = 1;
 	hook.stdout_to_stderr = 1;
 
-	ret = run_command(&hook);
-	argv_array_clear(&argv);
-	return ret;
+	return run_command(&hook);
 }
 
 int run_hook_le(const char *const *env, const char *name, ...)
