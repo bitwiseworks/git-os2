@@ -200,9 +200,9 @@ char *xstrdup_tolower(const char *);
  * Create a newly allocated string using printf format. You can do this easily
  * with a strbuf, but this provides a shortcut to save a few lines.
  */
-__attribute__((format (printf, 1, 0)))
+__attribute__((__format__ (__printf__, 1, 0)))
 char *xstrvfmt(const char *fmt, va_list ap);
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 char *xstrfmt(const char *fmt, ...);
 
 #endif /* STRBUF_H */
