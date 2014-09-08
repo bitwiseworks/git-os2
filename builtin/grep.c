@@ -361,9 +361,7 @@ static void run_pager(struct grep_opt *opt, const char *prefix)
 		argv[i] = path_list->items[i].string;
 	argv[path_list->nr] = NULL;
 
-	if (prefix && chdir(prefix))
-		die(_("Failed to chdir: %s"), prefix);
-	status = run_command_v_opt(argv, RUN_USING_SHELL);
+	status = run_command_v_opt_cd_env(argv, RUN_USING_SHELL, prefix, NULL);
 	if (status)
 		exit(status);
 	free(argv);
@@ -873,6 +871,9 @@ int cmd_grep(int argc, const char **argv, const char *prefix)
 
 		if (len > 4 && is_dir_sep(pager[len - 5]))
 			pager += len - 4;
+
+		if (opt.ignore_case && !strcmp("less", pager))
+			string_list_append(&path_list, "-I");
 
 		if (!strcmp("less", pager) || !strcmp("vi", pager)) {
 			struct strbuf buf = STRBUF_INIT;

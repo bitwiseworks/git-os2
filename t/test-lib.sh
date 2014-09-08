@@ -93,6 +93,7 @@ unset VISUAL EMAIL LANGUAGE COLUMNS $("$PERL_PATH" -e '
 		VALGRIND
 		UNZIP
 		PERF_
+		CURL_VERBOSE
 	));
 	my @vars = grep(/^GIT_/ && !/^GIT_($ok)/o, @env);
 	print join("\n", @vars);
@@ -109,6 +110,10 @@ export GIT_MERGE_VERBOSITY GIT_MERGE_AUTOEDIT
 export GIT_AUTHOR_EMAIL GIT_AUTHOR_NAME
 export GIT_COMMITTER_EMAIL GIT_COMMITTER_NAME
 export EDITOR
+
+# Tests using GIT_TRACE typically don't want <timestamp> <file>:<line> output
+GIT_TRACE_BARE=1
+export GIT_TRACE_BARE
 
 if test -n "${TEST_GIT_INDEX_VERSION:+isset}"
 then
@@ -193,6 +198,14 @@ do
 		immediate=t; shift ;;
 	-l|--l|--lo|--lon|--long|--long-|--long-t|--long-te|--long-tes|--long-test|--long-tests)
 		GIT_TEST_LONG=t; export GIT_TEST_LONG; shift ;;
+	-r)
+		shift; test "$#" -ne 0 || {
+			echo 'error: -r requires an argument' >&2;
+			exit 1;
+		}
+		run_list=$1; shift ;;
+	--run=*)
+		run_list=$(expr "z$1" : 'z[^=]*=\(.*\)'); shift ;;
 	-h|--h|--he|--hel|--help)
 		help=t; shift ;;
 	-v|--v|--ve|--ver|--verb|--verbo|--verbos|--verbose)
@@ -368,6 +381,99 @@ match_pattern_list () {
 	return 1
 }
 
+match_test_selector_list () {
+	title="$1"
+	shift
+	arg="$1"
+	shift
+	test -z "$1" && return 0
+
+	# Both commas and whitespace are accepted as separators.
+	OLDIFS=$IFS
+	IFS=' 	,'
+	set -- $1
+	IFS=$OLDIFS
+
+	# If the first selector is negative we include by default.
+	include=
+	case "$1" in
+		!*) include=t ;;
+	esac
+
+	for selector
+	do
+		orig_selector=$selector
+
+		positive=t
+		case "$selector" in
+			!*)
+				positive=
+				selector=${selector##?}
+				;;
+		esac
+
+		test -z "$selector" && continue
+
+		case "$selector" in
+			*-*)
+				if expr "z${selector%%-*}" : "z[0-9]*[^0-9]" >/dev/null
+				then
+					echo "error: $title: invalid non-numeric in range" \
+						"start: '$orig_selector'" >&2
+					exit 1
+				fi
+				if expr "z${selector#*-}" : "z[0-9]*[^0-9]" >/dev/null
+				then
+					echo "error: $title: invalid non-numeric in range" \
+						"end: '$orig_selector'" >&2
+					exit 1
+				fi
+				;;
+			*)
+				if expr "z$selector" : "z[0-9]*[^0-9]" >/dev/null
+				then
+					echo "error: $title: invalid non-numeric in test" \
+						"selector: '$orig_selector'" >&2
+					exit 1
+				fi
+		esac
+
+		# Short cut for "obvious" cases
+		test -z "$include" && test -z "$positive" && continue
+		test -n "$include" && test -n "$positive" && continue
+
+		case "$selector" in
+			-*)
+				if test $arg -le ${selector#-}
+				then
+					include=$positive
+				fi
+				;;
+			*-)
+				if test $arg -ge ${selector%-}
+				then
+					include=$positive
+				fi
+				;;
+			*-*)
+				if test ${selector%%-*} -le $arg \
+					&& test $arg -le ${selector#*-}
+				then
+					include=$positive
+				fi
+				;;
+			*)
+				if test $arg -eq $selector
+				then
+					include=$positive
+				fi
+				;;
+		esac
+	done
+
+	test -n "$include"
+}
+
 maybe_teardown_verbose () {
 	test -z "$verbose_only" && return
 	exec 4>/dev/null 3>/dev/null
@@ -454,25 +560,35 @@ test_finish_ () {
 
 test_skip () {
 	to_skip=
+	skipped_reason=
 	if match_pattern_list $this_test.$test_count $GIT_SKIP_TESTS
 	then
 		to_skip=t
+		skipped_reason="GIT_SKIP_TESTS"
 	fi
 	if test -z "$to_skip" && test -n "$test_prereq" &&
 	   ! test_have_prereq "$test_prereq"
 	then
 		to_skip=t
-	fi
-	case "$to_skip" in
-	t)
+
 		of_prereq=
 		if test "$missing_prereq" != "$test_prereq"
 		then
 			of_prereq=" of $test_prereq"
 		fi
+		skipped_reason="missing $missing_prereq${of_prereq}"
+	fi
+	if test -z "$to_skip" && test -n "$run_list" &&
+		! match_test_selector_list '--run' $test_count "$run_list"
+	then
+		to_skip=t
+		skipped_reason="--run"
+	fi
 
+	case "$to_skip" in
+	t)
 		say_color skip >&3 "skipping test: $@"
-		say_color skip "ok $test_count # skip $1 (missing $missing_prereq${of_prereq})"
+		say_color skip "ok $test_count # skip $1 ($skipped_reason)"
 		: true
 		;;
 	*)
@@ -864,6 +980,14 @@ test_lazy_prereq AUTOIDENT '
 	sane_unset GIT_AUTHOR_NAME &&
 	sane_unset GIT_AUTHOR_EMAIL &&
 	git var GIT_AUTHOR_IDENT
+'
+
+test_lazy_prereq EXPENSIVE '
+	test -n "$GIT_TEST_LONG"
+'
+
+test_lazy_prereq USR_BIN_TIME '
+	test -x /usr/bin/time
 '
 
 # When the tests are run as root, permission tests will report that
