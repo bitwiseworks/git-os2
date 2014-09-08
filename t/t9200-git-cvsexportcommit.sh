@@ -5,7 +5,6 @@
 test_description='Test export of commits to CVS'
 
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/lib-prereq-FILEMODE.sh
 
 if ! test_have_prereq PERL; then
 	skip_all='skipping git cvsexportcommit tests, perl not available'
@@ -19,14 +18,15 @@ then
     test_done
 fi
 
-CVSROOT=$PWD/cvsroot
+CVSROOT=$PWD/tmpcvsroot
 CVSWORK=$PWD/cvswork
 GIT_DIR=$PWD/.git
 export CVSROOT CVSWORK GIT_DIR
 
 rm -rf "$CVSROOT" "$CVSWORK"
-mkdir "$CVSROOT" &&
+
 cvs init &&
+test -d "$CVSROOT" &&
 cvs -Q co -d "$CVSWORK" . &&
 echo >empty &&
 git add empty &&

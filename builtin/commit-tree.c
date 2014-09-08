@@ -10,7 +10,9 @@
 #include "utf8.h"
 #include "gpg-interface.h"
 
-static const char commit_tree_usage[] = "git commit-tree [(-p <sha1>)...] [-S<signer>] [-m <message>] [-F <file>] <sha1> <changelog";
+static const char commit_tree_usage[] = "git commit-tree [(-p <sha1>)...] [-S[<keyid>]] [-m <message>] [-F <file>] <sha1> <changelog";
+
+static const char *sign_commit;
 
 static void new_parent(struct commit *parent, struct commit_list **parents_p)
 {
@@ -31,6 +33,10 @@ static int commit_tree_config(const char *var, const char *value, void *cb)
 	int status = git_gpg_config(var, value, NULL);
 	if (status)
 		return status;
+	if (!strcmp(var, "commit.gpgsign")) {
+		sign_commit = git_config_bool(var, value) ? "" : NULL;
+		return 0;
+	}
 	return git_default_config(var, value, cb);
 }
 
@@ -41,15 +47,11 @@ int cmd_commit_tree(int argc, const char **argv, const char *prefix)
 	unsigned char tree_sha1[20];
 	unsigned char commit_sha1[20];
 	struct strbuf buffer = STRBUF_INIT;
-	const char *sign_commit = NULL;
 
 	git_config(commit_tree_config, NULL);
 
 	if (argc < 2 || !strcmp(argv[1], "-h"))
 		usage(commit_tree_usage);
-
-	if (get_sha1(argv[1], tree_sha1))
-		die("Not a valid object name %s", argv[1]);
 
 	for (i = 1; i < argc; i++) {
 		const char *arg = argv[i];
@@ -57,7 +59,7 @@ int cmd_commit_tree(int argc, const char **argv, const char *prefix)
 			unsigned char sha1[20];
 			if (argc <= ++i)
 				usage(commit_tree_usage);
-			if (get_sha1(argv[i], sha1))
+			if (get_sha1_commit(argv[i], sha1))
 				die("Not a valid object name %s", argv[i]);
 			assert_sha1_type(sha1, OBJ_COMMIT);
 			new_parent(lookup_commit(sha1), &parents);
@@ -66,6 +68,11 @@ int cmd_commit_tree(int argc, const char **argv, const char *prefix)
 
 		if (!memcmp(arg, "-S", 2)) {
 			sign_commit = arg + 2;
+			continue;
+		}
+
+		if (!strcmp(arg, "--no-gpg-sign")) {
+			sign_commit = NULL;
 			continue;
 		}
 
@@ -104,7 +111,7 @@ int cmd_commit_tree(int argc, const char **argv, const char *prefix)
 			continue;
 		}
 
-		if (get_sha1(arg, tree_sha1))
+		if (get_sha1_tree(arg, tree_sha1))
 			die("Not a valid object name %s", arg);
 		if (got_tree)
 			die("Cannot give more than one trees");

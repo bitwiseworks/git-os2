@@ -14,60 +14,33 @@
 #include "diff.h"
 #include "revision.h"
 #include "list-objects.h"
+#include "pack-objects.h"
 #include "progress.h"
 #include "refs.h"
+#include "streaming.h"
 #include "thread-utils.h"
+#include "pack-bitmap.h"
 
-static const char pack_usage[] =
-  "git pack-objects [ -q | --progress | --all-progress ]\n"
-  "        [--all-progress-implied]\n"
-  "        [--max-pack-size=<n>] [--local] [--incremental]\n"
-  "        [--window=<n>] [--window-memory=<n>] [--depth=<n>]\n"
-  "        [--no-reuse-delta] [--no-reuse-object] [--delta-base-offset]\n"
-  "        [--threads=<n>] [--non-empty] [--revs [--unpacked | --all]]\n"
-  "        [--reflog] [--stdout | base-name] [--include-tag]\n"
-  "        [--keep-unreachable | --unpack-unreachable]\n"
-  "        [< ref-list | < object-list]";
-
-struct object_entry {
-	struct pack_idx_entry idx;
-	unsigned long size;	/* uncompressed size */
-	struct packed_git *in_pack; 	/* already in pack */
-	off_t in_pack_offset;
-	struct object_entry *delta;	/* delta base object */
-	struct object_entry *delta_child; /* deltified objects who bases me */
-	struct object_entry *delta_sibling; /* other deltified objects who
-					     * uses the same base as me
-					     */
-	void *delta_data;	/* cached delta (uncompressed) */
-	unsigned long delta_size;	/* delta data size (uncompressed) */
-	unsigned long z_delta_size;	/* delta data size (compressed) */
-	unsigned int hash;	/* name hint hash */
-	enum object_type type;
-	enum object_type in_pack_type;	/* could be delta */
-	unsigned char in_pack_header_size;
-	unsigned char preferred_base; /* we do not pack this, but is available
-				       * to be used as the base object to delta
-				       * objects against.
-				       */
-	unsigned char no_try_delta;
-	unsigned char tagged; /* near the very tip of refs */
-	unsigned char filled; /* assigned write-order */
+static const char *pack_usage[] = {
+	N_("git pack-objects --stdout [options...] [< ref-list | < object-list]"),
+	N_("git pack-objects [options...] base-name [< ref-list | < object-list]"),
+	NULL
 };
 
 /*
- * Objects we are going to pack are collected in objects array (dynamically
- * expanded).  nr_objects & nr_alloc controls this array.  They are stored
- * in the order we see -- typically rev-list --objects order that gives us
- * nice "minimum seek" order.
+ * Objects we are going to pack are collected in the `to_pack` structure.
+ * It contains an array (dynamically expanded) of the object data, and a map
+ * that can resolve SHA1s to their position in the array.
  */
-static struct object_entry *objects;
+static struct packing_data to_pack;
+
 static struct pack_idx_entry **written_list;
-static uint32_t nr_objects, nr_alloc, nr_result, nr_written;
+static uint32_t nr_result, nr_written;
 
 static int non_empty;
 static int reuse_delta = 1, reuse_object = 1;
 static int keep_unreachable, unpack_unreachable, include_tag;
+static unsigned long unpack_unreachable_expiration;
 static int local;
 static int incremental;
 static int ignore_packed_keep;
@@ -85,6 +58,14 @@ static struct progress *progress_state;
 static int pack_compression_level = Z_DEFAULT_COMPRESSION;
 static int pack_compression_seen;
 
+static struct packed_git *reuse_packfile;
+static uint32_t reuse_packfile_objects;
+static off_t reuse_packfile_offset;
+
+static int use_bitmap_index = 1;
+static int write_bitmap_index;
+static uint16_t write_bitmap_options;
+
 static unsigned long delta_cache_size = 0;
 static unsigned long max_delta_cache_size = 256 * 1024 * 1024;
 static unsigned long cache_max_small_delta_size = 1000;
@@ -92,20 +73,28 @@ static unsigned long cache_max_small_delta_size = 1000;
 static unsigned long window_memory_limit = 0;
 
 /*
- * The object names in objects array are hashed with this hashtable,
- * to help looking up the entry by object name.
- * This hashtable is built after all the objects are seen.
- */
-static int *object_ix;
-static int object_ix_hashsz;
-static struct object_entry *locate_object_entry(const unsigned char *sha1);
-
-/*
  * stats
  */
 static uint32_t written, written_delta;
 static uint32_t reused, reused_delta;
 
+/*
+ * Indexed commits
+ */
+static struct commit **indexed_commits;
+static unsigned int indexed_commits_nr;
+static unsigned int indexed_commits_alloc;
+
+static void index_commit_for_bitmap(struct commit *commit)
+{
+	if (indexed_commits_nr >= indexed_commits_alloc) {
+		indexed_commits_alloc = (indexed_commits_alloc + 32) * 2;
+		indexed_commits = xrealloc(indexed_commits,
+			indexed_commits_alloc * sizeof(struct commit *));
+	}
+
+	indexed_commits[indexed_commits_nr++] = commit;
+}
 
 static void *get_delta(struct object_entry *entry)
 {
@@ -152,6 +141,46 @@ static unsigned long do_compress(void **pptr, unsigned long size)
 
 	free(in);
 	return stream.total_out;
+}
+
+static unsigned long write_large_blob_data(struct git_istream *st, struct sha1file *f,
+					   const unsigned char *sha1)
+{
+	git_zstream stream;
+	unsigned char ibuf[1024 * 16];
+	unsigned char obuf[1024 * 16];
+	unsigned long olen = 0;
+
+	memset(&stream, 0, sizeof(stream));
+	git_deflate_init(&stream, pack_compression_level);
+
+	for (;;) {
+		ssize_t readlen;
+		int zret = Z_OK;
+		readlen = read_istream(st, ibuf, sizeof(ibuf));
+		if (readlen == -1)
+			die(_("unable to read %s"), sha1_to_hex(sha1));
+
+		stream.next_in = ibuf;
+		stream.avail_in = readlen;
+		while ((stream.avail_in || readlen == 0) &&
+		       (zret == Z_OK || zret == Z_BUF_ERROR)) {
+			stream.next_out = obuf;
+			stream.avail_out = sizeof(obuf);
+			zret = git_deflate(&stream, readlen ? 0 : Z_FINISH);
+			sha1write(f, obuf, stream.next_out - obuf);
+			olen += stream.next_out - obuf;
+		}
+		if (stream.avail_in)
+			die(_("deflate error (%d)"), zret);
+		if (readlen == 0) {
+			if (zret != Z_STREAM_END)
+				die(_("deflate error (%d)"), zret);
+			break;
+		}
+	}
+	git_deflate_end(&stream);
+	return olen;
 }
 
 /*
@@ -204,21 +233,197 @@ static void copy_pack_data(struct sha1file *f,
 }
 
 /* Return 0 if we will bust the pack-size limit */
+static unsigned long write_no_reuse_object(struct sha1file *f, struct object_entry *entry,
+					   unsigned long limit, int usable_delta)
+{
+	unsigned long size, datalen;
+	unsigned char header[10], dheader[10];
+	unsigned hdrlen;
+	enum object_type type;
+	void *buf;
+	struct git_istream *st = NULL;
+
+	if (!usable_delta) {
+		if (entry->type == OBJ_BLOB &&
+		    entry->size > big_file_threshold &&
+		    (st = open_istream(entry->idx.sha1, &type, &size, NULL)) != NULL)
+			buf = NULL;
+		else {
+			buf = read_sha1_file(entry->idx.sha1, &type, &size);
+			if (!buf)
+				die(_("unable to read %s"), sha1_to_hex(entry->idx.sha1));
+		}
+		/*
+		 * make sure no cached delta data remains from a
+		 * previous attempt before a pack split occurred.
+		 */
+		free(entry->delta_data);
+		entry->delta_data = NULL;
+		entry->z_delta_size = 0;
+	} else if (entry->delta_data) {
+		size = entry->delta_size;
+		buf = entry->delta_data;
+		entry->delta_data = NULL;
+		type = (allow_ofs_delta && entry->delta->idx.offset) ?
+			OBJ_OFS_DELTA : OBJ_REF_DELTA;
+	} else {
+		buf = get_delta(entry);
+		size = entry->delta_size;
+		type = (allow_ofs_delta && entry->delta->idx.offset) ?
+			OBJ_OFS_DELTA : OBJ_REF_DELTA;
+	}
+
+	if (st)	/* large blob case, just assume we don't compress well */
+		datalen = size;
+	else if (entry->z_delta_size)
+		datalen = entry->z_delta_size;
+	else
+		datalen = do_compress(&buf, size);
+
+	/*
+	 * The object header is a byte of 'type' followed by zero or
+	 * more bytes of length.
+	 */
+	hdrlen = encode_in_pack_object_header(type, size, header);
+
+	if (type == OBJ_OFS_DELTA) {
+		/*
+		 * Deltas with relative base contain an additional
+		 * encoding of the relative offset for the delta
+		 * base from this object's position in the pack.
+		 */
+		off_t ofs = entry->idx.offset - entry->delta->idx.offset;
+		unsigned pos = sizeof(dheader) - 1;
+		dheader[pos] = ofs & 127;
+		while (ofs >>= 7)
+			dheader[--pos] = 128 | (--ofs & 127);
+		if (limit && hdrlen + sizeof(dheader) - pos + datalen + 20 >= limit) {
+			if (st)
+				close_istream(st);
+			free(buf);
+			return 0;
+		}
+		sha1write(f, header, hdrlen);
+		sha1write(f, dheader + pos, sizeof(dheader) - pos);
+		hdrlen += sizeof(dheader) - pos;
+	} else if (type == OBJ_REF_DELTA) {
+		/*
+		 * Deltas with a base reference contain
+		 * an additional 20 bytes for the base sha1.
+		 */
+		if (limit && hdrlen + 20 + datalen + 20 >= limit) {
+			if (st)
+				close_istream(st);
+			free(buf);
+			return 0;
+		}
+		sha1write(f, header, hdrlen);
+		sha1write(f, entry->delta->idx.sha1, 20);
+		hdrlen += 20;
+	} else {
+		if (limit && hdrlen + datalen + 20 >= limit) {
+			if (st)
+				close_istream(st);
+			free(buf);
+			return 0;
+		}
+		sha1write(f, header, hdrlen);
+	}
+	if (st) {
+		datalen = write_large_blob_data(st, f, entry->idx.sha1);
+		close_istream(st);
+	} else {
+		sha1write(f, buf, datalen);
+		free(buf);
+	}
+
+	return hdrlen + datalen;
+}
+
+/* Return 0 if we will bust the pack-size limit */
+static unsigned long write_reuse_object(struct sha1file *f, struct object_entry *entry,
+					unsigned long limit, int usable_delta)
+{
+	struct packed_git *p = entry->in_pack;
+	struct pack_window *w_curs = NULL;
+	struct revindex_entry *revidx;
+	off_t offset;
+	enum object_type type = entry->type;
+	unsigned long datalen;
+	unsigned char header[10], dheader[10];
+	unsigned hdrlen;
+
+	if (entry->delta)
+		type = (allow_ofs_delta && entry->delta->idx.offset) ?
+			OBJ_OFS_DELTA : OBJ_REF_DELTA;
+	hdrlen = encode_in_pack_object_header(type, entry->size, header);
+
+	offset = entry->in_pack_offset;
+	revidx = find_pack_revindex(p, offset);
+	datalen = revidx[1].offset - offset;
+	if (!pack_to_stdout && p->index_version > 1 &&
+	    check_pack_crc(p, &w_curs, offset, datalen, revidx->nr)) {
+		error("bad packed object CRC for %s", sha1_to_hex(entry->idx.sha1));
+		unuse_pack(&w_curs);
+		return write_no_reuse_object(f, entry, limit, usable_delta);
+	}
+
+	offset += entry->in_pack_header_size;
+	datalen -= entry->in_pack_header_size;
+
+	if (!pack_to_stdout && p->index_version == 1 &&
+	    check_pack_inflate(p, &w_curs, offset, datalen, entry->size)) {
+		error("corrupt packed object for %s", sha1_to_hex(entry->idx.sha1));
+		unuse_pack(&w_curs);
+		return write_no_reuse_object(f, entry, limit, usable_delta);
+	}
+
+	if (type == OBJ_OFS_DELTA) {
+		off_t ofs = entry->idx.offset - entry->delta->idx.offset;
+		unsigned pos = sizeof(dheader) - 1;
+		dheader[pos] = ofs & 127;
+		while (ofs >>= 7)
+			dheader[--pos] = 128 | (--ofs & 127);
+		if (limit && hdrlen + sizeof(dheader) - pos + datalen + 20 >= limit) {
+			unuse_pack(&w_curs);
+			return 0;
+		}
+		sha1write(f, header, hdrlen);
+		sha1write(f, dheader + pos, sizeof(dheader) - pos);
+		hdrlen += sizeof(dheader) - pos;
+		reused_delta++;
+	} else if (type == OBJ_REF_DELTA) {
+		if (limit && hdrlen + 20 + datalen + 20 >= limit) {
+			unuse_pack(&w_curs);
+			return 0;
+		}
+		sha1write(f, header, hdrlen);
+		sha1write(f, entry->delta->idx.sha1, 20);
+		hdrlen += 20;
+		reused_delta++;
+	} else {
+		if (limit && hdrlen + datalen + 20 >= limit) {
+			unuse_pack(&w_curs);
+			return 0;
+		}
+		sha1write(f, header, hdrlen);
+	}
+	copy_pack_data(f, p, &w_curs, offset, datalen);
+	unuse_pack(&w_curs);
+	reused++;
+	return hdrlen + datalen;
+}
+
+/* Return 0 if we will bust the pack-size limit */
 static unsigned long write_object(struct sha1file *f,
 				  struct object_entry *entry,
 				  off_t write_offset)
 {
-	unsigned long size, limit, datalen;
-	void *buf;
-	unsigned char header[10], dheader[10];
-	unsigned hdrlen;
-	enum object_type type;
+	unsigned long limit, len;
 	int usable_delta, to_reuse;
 
 	if (!pack_to_stdout)
 		crc32_begin(f);
-
-	type = entry->type;
 
 	/* apply size limit if limited packsize and not first object */
 	if (!pack_size_limit || !nr_written)
@@ -247,11 +452,11 @@ static unsigned long write_object(struct sha1file *f,
 		to_reuse = 0;	/* explicit */
 	else if (!entry->in_pack)
 		to_reuse = 0;	/* can't reuse what we don't have */
-	else if (type == OBJ_REF_DELTA || type == OBJ_OFS_DELTA)
+	else if (entry->type == OBJ_REF_DELTA || entry->type == OBJ_OFS_DELTA)
 				/* check_object() decided it for us ... */
 		to_reuse = usable_delta;
 				/* ... but pack split may override that */
-	else if (type != entry->in_pack_type)
+	else if (entry->type != entry->in_pack_type)
 		to_reuse = 0;	/* pack has delta which is unusable */
 	else if (entry->delta)
 		to_reuse = 0;	/* we want to pack afresh */
@@ -260,153 +465,19 @@ static unsigned long write_object(struct sha1file *f,
 				 * and we do not need to deltify it.
 				 */
 
-	if (!to_reuse) {
-		no_reuse:
-		if (!usable_delta) {
-			buf = read_sha1_file(entry->idx.sha1, &type, &size);
-			if (!buf)
-				die("unable to read %s", sha1_to_hex(entry->idx.sha1));
-			/*
-			 * make sure no cached delta data remains from a
-			 * previous attempt before a pack split occurred.
-			 */
-			free(entry->delta_data);
-			entry->delta_data = NULL;
-			entry->z_delta_size = 0;
-		} else if (entry->delta_data) {
-			size = entry->delta_size;
-			buf = entry->delta_data;
-			entry->delta_data = NULL;
-			type = (allow_ofs_delta && entry->delta->idx.offset) ?
-				OBJ_OFS_DELTA : OBJ_REF_DELTA;
-		} else {
-			buf = get_delta(entry);
-			size = entry->delta_size;
-			type = (allow_ofs_delta && entry->delta->idx.offset) ?
-				OBJ_OFS_DELTA : OBJ_REF_DELTA;
-		}
+	if (!to_reuse)
+		len = write_no_reuse_object(f, entry, limit, usable_delta);
+	else
+		len = write_reuse_object(f, entry, limit, usable_delta);
+	if (!len)
+		return 0;
 
-		if (entry->z_delta_size)
-			datalen = entry->z_delta_size;
-		else
-			datalen = do_compress(&buf, size);
-
-		/*
-		 * The object header is a byte of 'type' followed by zero or
-		 * more bytes of length.
-		 */
-		hdrlen = encode_in_pack_object_header(type, size, header);
-
-		if (type == OBJ_OFS_DELTA) {
-			/*
-			 * Deltas with relative base contain an additional
-			 * encoding of the relative offset for the delta
-			 * base from this object's position in the pack.
-			 */
-			off_t ofs = entry->idx.offset - entry->delta->idx.offset;
-			unsigned pos = sizeof(dheader) - 1;
-			dheader[pos] = ofs & 127;
-			while (ofs >>= 7)
-				dheader[--pos] = 128 | (--ofs & 127);
-			if (limit && hdrlen + sizeof(dheader) - pos + datalen + 20 >= limit) {
-				free(buf);
-				return 0;
-			}
-			sha1write(f, header, hdrlen);
-			sha1write(f, dheader + pos, sizeof(dheader) - pos);
-			hdrlen += sizeof(dheader) - pos;
-		} else if (type == OBJ_REF_DELTA) {
-			/*
-			 * Deltas with a base reference contain
-			 * an additional 20 bytes for the base sha1.
-			 */
-			if (limit && hdrlen + 20 + datalen + 20 >= limit) {
-				free(buf);
-				return 0;
-			}
-			sha1write(f, header, hdrlen);
-			sha1write(f, entry->delta->idx.sha1, 20);
-			hdrlen += 20;
-		} else {
-			if (limit && hdrlen + datalen + 20 >= limit) {
-				free(buf);
-				return 0;
-			}
-			sha1write(f, header, hdrlen);
-		}
-		sha1write(f, buf, datalen);
-		free(buf);
-	}
-	else {
-		struct packed_git *p = entry->in_pack;
-		struct pack_window *w_curs = NULL;
-		struct revindex_entry *revidx;
-		off_t offset;
-
-		if (entry->delta)
-			type = (allow_ofs_delta && entry->delta->idx.offset) ?
-				OBJ_OFS_DELTA : OBJ_REF_DELTA;
-		hdrlen = encode_in_pack_object_header(type, entry->size, header);
-
-		offset = entry->in_pack_offset;
-		revidx = find_pack_revindex(p, offset);
-		datalen = revidx[1].offset - offset;
-		if (!pack_to_stdout && p->index_version > 1 &&
-		    check_pack_crc(p, &w_curs, offset, datalen, revidx->nr)) {
-			error("bad packed object CRC for %s", sha1_to_hex(entry->idx.sha1));
-			unuse_pack(&w_curs);
-			goto no_reuse;
-		}
-
-		offset += entry->in_pack_header_size;
-		datalen -= entry->in_pack_header_size;
-		if (!pack_to_stdout && p->index_version == 1 &&
-		    check_pack_inflate(p, &w_curs, offset, datalen, entry->size)) {
-			error("corrupt packed object for %s", sha1_to_hex(entry->idx.sha1));
-			unuse_pack(&w_curs);
-			goto no_reuse;
-		}
-
-		if (type == OBJ_OFS_DELTA) {
-			off_t ofs = entry->idx.offset - entry->delta->idx.offset;
-			unsigned pos = sizeof(dheader) - 1;
-			dheader[pos] = ofs & 127;
-			while (ofs >>= 7)
-				dheader[--pos] = 128 | (--ofs & 127);
-			if (limit && hdrlen + sizeof(dheader) - pos + datalen + 20 >= limit) {
-				unuse_pack(&w_curs);
-				return 0;
-			}
-			sha1write(f, header, hdrlen);
-			sha1write(f, dheader + pos, sizeof(dheader) - pos);
-			hdrlen += sizeof(dheader) - pos;
-			reused_delta++;
-		} else if (type == OBJ_REF_DELTA) {
-			if (limit && hdrlen + 20 + datalen + 20 >= limit) {
-				unuse_pack(&w_curs);
-				return 0;
-			}
-			sha1write(f, header, hdrlen);
-			sha1write(f, entry->delta->idx.sha1, 20);
-			hdrlen += 20;
-			reused_delta++;
-		} else {
-			if (limit && hdrlen + datalen + 20 >= limit) {
-				unuse_pack(&w_curs);
-				return 0;
-			}
-			sha1write(f, header, hdrlen);
-		}
-		copy_pack_data(f, p, &w_curs, offset, datalen);
-		unuse_pack(&w_curs);
-		reused++;
-	}
 	if (usable_delta)
 		written_delta++;
 	written++;
 	if (!pack_to_stdout)
 		entry->idx.crc32 = crc32_end(f);
-	return hdrlen + datalen;
+	return len;
 }
 
 enum write_one_status {
@@ -473,12 +544,12 @@ static int mark_tagged(const char *path, const unsigned char *sha1, int flag,
 		       void *cb_data)
 {
 	unsigned char peeled[20];
-	struct object_entry *entry = locate_object_entry(sha1);
+	struct object_entry *entry = packlist_find(&to_pack, sha1, NULL);
 
 	if (entry)
 		entry->tagged = 1;
 	if (!peel_ref(path, peeled)) {
-		entry = locate_object_entry(peeled);
+		entry = packlist_find(&to_pack, peeled, NULL);
 		if (entry)
 			entry->tagged = 1;
 	}
@@ -553,9 +624,10 @@ static struct object_entry **compute_write_order(void)
 {
 	unsigned int i, wo_end, last_untagged;
 
-	struct object_entry **wo = xmalloc(nr_objects * sizeof(*wo));
+	struct object_entry **wo = xmalloc(to_pack.nr_objects * sizeof(*wo));
+	struct object_entry *objects = to_pack.objects;
 
-	for (i = 0; i < nr_objects; i++) {
+	for (i = 0; i < to_pack.nr_objects; i++) {
 		objects[i].tagged = 0;
 		objects[i].filled = 0;
 		objects[i].delta_child = NULL;
@@ -567,7 +639,7 @@ static struct object_entry **compute_write_order(void)
 	 * Make sure delta_sibling is sorted in the original
 	 * recency order.
 	 */
-	for (i = nr_objects; i > 0;) {
+	for (i = to_pack.nr_objects; i > 0;) {
 		struct object_entry *e = &objects[--i];
 		if (!e->delta)
 			continue;
@@ -585,7 +657,7 @@ static struct object_entry **compute_write_order(void)
 	 * Give the objects in the original recency order until
 	 * we see a tagged tip.
 	 */
-	for (i = wo_end = 0; i < nr_objects; i++) {
+	for (i = wo_end = 0; i < to_pack.nr_objects; i++) {
 		if (objects[i].tagged)
 			break;
 		add_to_write_order(wo, &wo_end, &objects[i]);
@@ -595,7 +667,7 @@ static struct object_entry **compute_write_order(void)
 	/*
 	 * Then fill all the tagged tips.
 	 */
-	for (; i < nr_objects; i++) {
+	for (; i < to_pack.nr_objects; i++) {
 		if (objects[i].tagged)
 			add_to_write_order(wo, &wo_end, &objects[i]);
 	}
@@ -603,7 +675,7 @@ static struct object_entry **compute_write_order(void)
 	/*
 	 * And then all remaining commits and tags.
 	 */
-	for (i = last_untagged; i < nr_objects; i++) {
+	for (i = last_untagged; i < to_pack.nr_objects; i++) {
 		if (objects[i].type != OBJ_COMMIT &&
 		    objects[i].type != OBJ_TAG)
 			continue;
@@ -613,7 +685,7 @@ static struct object_entry **compute_write_order(void)
 	/*
 	 * And then all the trees.
 	 */
-	for (i = last_untagged; i < nr_objects; i++) {
+	for (i = last_untagged; i < to_pack.nr_objects; i++) {
 		if (objects[i].type != OBJ_TREE)
 			continue;
 		add_to_write_order(wo, &wo_end, &objects[i]);
@@ -622,15 +694,68 @@ static struct object_entry **compute_write_order(void)
 	/*
 	 * Finally all the rest in really tight order
 	 */
-	for (i = last_untagged; i < nr_objects; i++) {
+	for (i = last_untagged; i < to_pack.nr_objects; i++) {
 		if (!objects[i].filled)
 			add_family_to_write_order(wo, &wo_end, &objects[i]);
 	}
 
-	if (wo_end != nr_objects)
-		die("ordered %u objects, expected %"PRIu32, wo_end, nr_objects);
+	if (wo_end != to_pack.nr_objects)
+		die("ordered %u objects, expected %"PRIu32, wo_end, to_pack.nr_objects);
 
 	return wo;
+}
+
+static off_t write_reused_pack(struct sha1file *f)
+{
+	unsigned char buffer[8192];
+	off_t to_write, total;
+	int fd;
+
+	if (!is_pack_valid(reuse_packfile))
+		die("packfile is invalid: %s", reuse_packfile->pack_name);
+
+	fd = git_open_noatime(reuse_packfile->pack_name);
+	if (fd < 0)
+		die_errno("unable to open packfile for reuse: %s",
+			  reuse_packfile->pack_name);
+
+	if (lseek(fd, sizeof(struct pack_header), SEEK_SET) == -1)
+		die_errno("unable to seek in reused packfile");
+
+	if (reuse_packfile_offset < 0)
+		reuse_packfile_offset = reuse_packfile->pack_size - 20;
+
+	total = to_write = reuse_packfile_offset - sizeof(struct pack_header);
+
+	while (to_write) {
+		int read_pack = xread(fd, buffer, sizeof(buffer));
+
+		if (read_pack <= 0)
+			die_errno("unable to read from reused packfile");
+
+		if (read_pack > to_write)
+			read_pack = to_write;
+
+		sha1write(f, buffer, read_pack);
+		to_write -= read_pack;
+
+		/*
+		 * We don't know the actual number of objects written,
+		 * only how many bytes written, how many bytes total, and
+		 * how many objects total. So we can fake it by pretending all
+		 * objects we are writing are the same size. This gives us a
+		 * smooth progress meter, and at the end it matches the true
+		 * answer.
+		 */
+		written = reuse_packfile_objects *
+				(((double)(total - to_write)) / total);
+		display_progress(progress_state, written);
+	}
+
+	close(fd);
+	written = reuse_packfile_objects;
+	display_progress(progress_state, written);
+	return reuse_packfile_offset - sizeof(struct pack_header);
 }
 
 static void write_pack_file(void)
@@ -643,8 +768,8 @@ static void write_pack_file(void)
 	struct object_entry **write_order;
 
 	if (progress > pack_to_stdout)
-		progress_state = start_progress("Writing objects", nr_result);
-	written_list = xmalloc(nr_objects * sizeof(*written_list));
+		progress_state = start_progress(_("Writing objects"), nr_result);
+	written_list = xmalloc(to_pack.nr_objects * sizeof(*written_list));
 	write_order = compute_write_order();
 
 	do {
@@ -657,10 +782,17 @@ static void write_pack_file(void)
 			f = create_tmp_packfile(&pack_tmp_name);
 
 		offset = write_pack_header(f, nr_remaining);
-		if (!offset)
-			die_errno("unable to write pack header");
+
+		if (reuse_packfile) {
+			off_t packfile_size;
+			assert(pack_to_stdout);
+
+			packfile_size = write_reused_pack(f);
+			offset += packfile_size;
+		}
+
 		nr_written = 0;
-		for (; i < nr_objects; i++) {
+		for (; i < to_pack.nr_objects; i++) {
 			struct object_entry *e = write_order[i];
 			if (write_one(f, e, &offset) == WRITE_ONE_BREAK)
 				break;
@@ -684,7 +816,7 @@ static void write_pack_file(void)
 
 		if (!pack_to_stdout) {
 			struct stat st;
-			char tmpname[PATH_MAX];
+			struct strbuf tmpname = STRBUF_INIT;
 
 			/*
 			 * Packs are runtime accessed in their mtime
@@ -704,16 +836,35 @@ static void write_pack_file(void)
 				utb.modtime = --last_mtime;
 				if (utime(pack_tmp_name, &utb) < 0)
 					warning("failed utime() on %s: %s",
-						tmpname, strerror(errno));
+						pack_tmp_name, strerror(errno));
 			}
 
-			/* Enough space for "-<sha-1>.pack"? */
-			if (sizeof(tmpname) <= strlen(base_name) + 50)
-				die("pack base name '%s' too long", base_name);
-			snprintf(tmpname, sizeof(tmpname), "%s-", base_name);
-			finish_tmp_packfile(tmpname, pack_tmp_name,
+			strbuf_addf(&tmpname, "%s-", base_name);
+
+			if (write_bitmap_index) {
+				bitmap_writer_set_checksum(sha1);
+				bitmap_writer_build_type_index(written_list, nr_written);
+			}
+
+			finish_tmp_packfile(&tmpname, pack_tmp_name,
 					    written_list, nr_written,
 					    &pack_idx_opts, sha1);
+
+			if (write_bitmap_index) {
+				strbuf_addf(&tmpname, "%s.bitmap", sha1_to_hex(sha1));
+
+				stop_progress(&progress_state);
+
+				bitmap_writer_show_progress(progress);
+				bitmap_writer_reuse_bitmaps(&to_pack);
+				bitmap_writer_select_commits(indexed_commits, indexed_commits_nr, -1);
+				bitmap_writer_build(&to_pack);
+				bitmap_writer_finish(written_list, nr_written,
+						     tmpname.buf, write_bitmap_options);
+				write_bitmap_index = 0;
+			}
+
+			strbuf_release(&tmpname);
 			free(pack_tmp_name);
 			puts(sha1_to_hex(sha1));
 		}
@@ -723,7 +874,7 @@ static void write_pack_file(void)
 			written_list[j]->offset = (off_t)-1;
 		}
 		nr_remaining -= nr_written;
-	} while (nr_remaining && i < nr_objects);
+	} while (nr_remaining && i < to_pack.nr_objects);
 
 	free(written_list);
 	free(write_order);
@@ -731,73 +882,6 @@ static void write_pack_file(void)
 	if (written != nr_result)
 		die("wrote %"PRIu32" objects while expecting %"PRIu32,
 			written, nr_result);
-}
-
-static int locate_object_entry_hash(const unsigned char *sha1)
-{
-	int i;
-	unsigned int ui;
-	memcpy(&ui, sha1, sizeof(unsigned int));
-	i = ui % object_ix_hashsz;
-	while (0 < object_ix[i]) {
-		if (!hashcmp(sha1, objects[object_ix[i] - 1].idx.sha1))
-			return i;
-		if (++i == object_ix_hashsz)
-			i = 0;
-	}
-	return -1 - i;
-}
-
-static struct object_entry *locate_object_entry(const unsigned char *sha1)
-{
-	int i;
-
-	if (!object_ix_hashsz)
-		return NULL;
-
-	i = locate_object_entry_hash(sha1);
-	if (0 <= i)
-		return &objects[object_ix[i]-1];
-	return NULL;
-}
-
-static void rehash_objects(void)
-{
-	uint32_t i;
-	struct object_entry *oe;
-
-	object_ix_hashsz = nr_objects * 3;
-	if (object_ix_hashsz < 1024)
-		object_ix_hashsz = 1024;
-	object_ix = xrealloc(object_ix, sizeof(int) * object_ix_hashsz);
-	memset(object_ix, 0, sizeof(int) * object_ix_hashsz);
-	for (i = 0, oe = objects; i < nr_objects; i++, oe++) {
-		int ix = locate_object_entry_hash(oe->idx.sha1);
-		if (0 <= ix)
-			continue;
-		ix = -1 - ix;
-		object_ix[ix] = i + 1;
-	}
-}
-
-static unsigned name_hash(const char *name)
-{
-	unsigned c, hash = 0;
-
-	if (!name)
-		return 0;
-
-	/*
-	 * This effectively just creates a sortable number from the
-	 * last sixteen non-whitespace characters. Last characters
-	 * count "most", so things that end in ".c" sort together.
-	 */
-	while ((c = *name++) != 0) {
-		if (isspace(c))
-			continue;
-		hash = (hash >> 2) + (c << 24);
-	}
-	return hash;
 }
 
 static void setup_delta_attr_check(struct git_attr_check *check)
@@ -822,42 +906,69 @@ static int no_try_delta(const char *path)
 	return 0;
 }
 
-static int add_object_entry(const unsigned char *sha1, enum object_type type,
-			    const char *name, int exclude)
+/*
+ * When adding an object, check whether we have already added it
+ * to our packing list. If so, we can skip. However, if we are
+ * being asked to excludei t, but the previous mention was to include
+ * it, make sure to adjust its flags and tweak our numbers accordingly.
+ *
+ * As an optimization, we pass out the index position where we would have
+ * found the item, since that saves us from having to look it up again a
+ * few lines later when we want to add the new entry.
+ */
+static int have_duplicate_entry(const unsigned char *sha1,
+				int exclude,
+				uint32_t *index_pos)
 {
 	struct object_entry *entry;
-	struct packed_git *p, *found_pack = NULL;
-	off_t found_offset = 0;
-	int ix;
-	unsigned hash = name_hash(name);
 
-	ix = nr_objects ? locate_object_entry_hash(sha1) : -1;
-	if (ix >= 0) {
-		if (exclude) {
-			entry = objects + object_ix[ix] - 1;
-			if (!entry->preferred_base)
-				nr_result--;
-			entry->preferred_base = 1;
-		}
+	entry = packlist_find(&to_pack, sha1, index_pos);
+	if (!entry)
 		return 0;
+
+	if (exclude) {
+		if (!entry->preferred_base)
+			nr_result--;
+		entry->preferred_base = 1;
 	}
+
+	return 1;
+}
+
+/*
+ * Check whether we want the object in the pack (e.g., we do not want
+ * objects found in non-local stores if the "--local" option was used).
+ *
+ * As a side effect of this check, we will find the packed version of this
+ * object, if any. We therefore pass out the pack information to avoid having
+ * to look it up again later.
+ */
+static int want_object_in_pack(const unsigned char *sha1,
+			       int exclude,
+			       struct packed_git **found_pack,
+			       off_t *found_offset)
+{
+	struct packed_git *p;
 
 	if (!exclude && local && has_loose_object_nonlocal(sha1))
 		return 0;
 
+	*found_pack = NULL;
+	*found_offset = 0;
+
 	for (p = packed_git; p; p = p->next) {
 		off_t offset = find_pack_entry_one(sha1, p);
 		if (offset) {
-			if (!found_pack) {
+			if (!*found_pack) {
 				if (!is_pack_valid(p)) {
 					warning("packfile %s cannot be accessed", p->pack_name);
 					continue;
 				}
-				found_offset = offset;
-				found_pack = p;
+				*found_offset = offset;
+				*found_pack = p;
 			}
 			if (exclude)
-				break;
+				return 1;
 			if (incremental)
 				return 0;
 			if (local && !p->pack_local)
@@ -867,14 +978,21 @@ static int add_object_entry(const unsigned char *sha1, enum object_type type,
 		}
 	}
 
-	if (nr_objects >= nr_alloc) {
-		nr_alloc = (nr_alloc  + 1024) * 3 / 2;
-		objects = xrealloc(objects, nr_alloc * sizeof(*entry));
-	}
+	return 1;
+}
 
-	entry = objects + nr_objects++;
-	memset(entry, 0, sizeof(*entry));
-	hashcpy(entry->idx.sha1, sha1);
+static void create_object_entry(const unsigned char *sha1,
+				enum object_type type,
+				uint32_t hash,
+				int exclude,
+				int no_try_delta,
+				uint32_t index_pos,
+				struct packed_git *found_pack,
+				off_t found_offset)
+{
+	struct object_entry *entry;
+
+	entry = packlist_alloc(&to_pack, sha1, index_pos);
 	entry->hash = hash;
 	if (type)
 		entry->type = type;
@@ -887,16 +1005,53 @@ static int add_object_entry(const unsigned char *sha1, enum object_type type,
 		entry->in_pack_offset = found_offset;
 	}
 
-	if (object_ix_hashsz * 3 <= nr_objects * 4)
-		rehash_objects();
-	else
-		object_ix[-1 - ix] = nr_objects;
+	entry->no_try_delta = no_try_delta;
+}
 
-	display_progress(progress_state, nr_objects);
+static const char no_closure_warning[] = N_(
+"disabling bitmap writing, as some objects are not being packed"
+);
 
-	if (name && no_try_delta(name))
-		entry->no_try_delta = 1;
+static int add_object_entry(const unsigned char *sha1, enum object_type type,
+			    const char *name, int exclude)
+{
+	struct packed_git *found_pack;
+	off_t found_offset;
+	uint32_t index_pos;
 
+	if (have_duplicate_entry(sha1, exclude, &index_pos))
+		return 0;
+
+	if (!want_object_in_pack(sha1, exclude, &found_pack, &found_offset)) {
+		/* The pack is missing an object, so it will not have closure */
+		if (write_bitmap_index) {
+			warning(_(no_closure_warning));
+			write_bitmap_index = 0;
+		}
+		return 0;
+	}
+
+	create_object_entry(sha1, type, pack_name_hash(name),
+			    exclude, name && no_try_delta(name),
+			    index_pos, found_pack, found_offset);
+
+	display_progress(progress_state, nr_result);
+	return 1;
+}
+
+static int add_object_entry_from_bitmap(const unsigned char *sha1,
+					enum object_type type,
+					int flags, uint32_t name_hash,
+					struct packed_git *pack, off_t offset)
+{
+	uint32_t index_pos;
+
+	if (have_duplicate_entry(sha1, 0, &index_pos))
+		return 0;
+
+	create_object_entry(sha1, type, name_hash, 0, 0, index_pos, pack, offset);
+
+	display_progress(progress_state, nr_result);
 	return 1;
 }
 
@@ -921,7 +1076,7 @@ static int pbase_tree_cache_ix_incr(int ix)
 static struct pbase_tree {
 	struct pbase_tree *next;
 	/* This is a phony "cache" entry; we are not
-	 * going to evict it nor find it through _get()
+	 * going to evict it or find it through _get()
 	 * mechanism -- this is for the toplevel node that
 	 * would almost always change with any commit.
 	 */
@@ -1078,12 +1233,9 @@ static int check_pbase_path(unsigned hash)
 	if (0 <= pos)
 		return 1;
 	pos = -pos - 1;
-	if (done_pbase_paths_alloc <= done_pbase_paths_num) {
-		done_pbase_paths_alloc = alloc_nr(done_pbase_paths_alloc);
-		done_pbase_paths = xrealloc(done_pbase_paths,
-					    done_pbase_paths_alloc *
-					    sizeof(unsigned));
-	}
+	ALLOC_GROW(done_pbase_paths,
+		   done_pbase_paths_num + 1,
+		   done_pbase_paths_alloc);
 	done_pbase_paths_num++;
 	if (pos < done_pbase_paths_num)
 		memmove(done_pbase_paths + pos + 1,
@@ -1097,7 +1249,7 @@ static void add_preferred_base_object(const char *name)
 {
 	struct pbase_tree *it;
 	int cmplen;
-	unsigned hash = name_hash(name);
+	unsigned hash = pack_name_hash(name);
 
 	if (!num_preferred_base || check_pbase_path(hash))
 		return;
@@ -1249,7 +1401,7 @@ static void check_object(struct object_entry *entry)
 			break;
 		}
 
-		if (base_ref && (base_entry = locate_object_entry(base_ref))) {
+		if (base_ref && (base_entry = packlist_find(&to_pack, base_ref, NULL))) {
 			/*
 			 * If base_ref was set above that means we wish to
 			 * reuse delta data, and we even found that base
@@ -1323,15 +1475,15 @@ static void get_object_details(void)
 	uint32_t i;
 	struct object_entry **sorted_by_offset;
 
-	sorted_by_offset = xcalloc(nr_objects, sizeof(struct object_entry *));
-	for (i = 0; i < nr_objects; i++)
-		sorted_by_offset[i] = objects + i;
-	qsort(sorted_by_offset, nr_objects, sizeof(*sorted_by_offset), pack_offset_sort);
+	sorted_by_offset = xcalloc(to_pack.nr_objects, sizeof(struct object_entry *));
+	for (i = 0; i < to_pack.nr_objects; i++)
+		sorted_by_offset[i] = to_pack.objects + i;
+	qsort(sorted_by_offset, to_pack.nr_objects, sizeof(*sorted_by_offset), pack_offset_sort);
 
-	for (i = 0; i < nr_objects; i++) {
+	for (i = 0; i < to_pack.nr_objects; i++) {
 		struct object_entry *entry = sorted_by_offset[i];
 		check_object(entry);
-		if (big_file_threshold <= entry->size)
+		if (big_file_threshold < entry->size)
 			entry->no_try_delta = 1;
 	}
 
@@ -1730,7 +1882,7 @@ static void find_deltas(struct object_entry **list, unsigned *list_size,
 static void try_to_free_from_threads(size_t size)
 {
 	read_lock();
-	release_pack_memory(size, -1);
+	release_pack_memory(size);
 	read_unlock();
 }
 
@@ -1952,10 +2104,9 @@ static int add_ref_tag(const char *path, const unsigned char *sha1, int flag, vo
 {
 	unsigned char peeled[20];
 
-	if (!prefixcmp(path, "refs/tags/") && /* is a tag? */
+	if (starts_with(path, "refs/tags/") && /* is a tag? */
 	    !peel_ref(path, peeled)        && /* peelable? */
-	    !is_null_sha1(peeled)          && /* annotated tag? */
-	    locate_object_entry(peeled))      /* object packed? */
+	    packlist_find(&to_pack, peeled, NULL))      /* object packed? */
 		add_object_entry(sha1, OBJ_TAG, NULL, 0);
 	return 0;
 }
@@ -1978,14 +2129,14 @@ static void prepare_pack(int window, int depth)
 	if (!pack_to_stdout)
 		do_check_packed_object_crc = 1;
 
-	if (!nr_objects || !window || !depth)
+	if (!to_pack.nr_objects || !window || !depth)
 		return;
 
-	delta_list = xmalloc(nr_objects * sizeof(*delta_list));
+	delta_list = xmalloc(to_pack.nr_objects * sizeof(*delta_list));
 	nr_deltas = n = 0;
 
-	for (i = 0; i < nr_objects; i++) {
-		struct object_entry *entry = objects + i;
+	for (i = 0; i < to_pack.nr_objects; i++) {
+		struct object_entry *entry = to_pack.objects + i;
 
 		if (entry->delta)
 			/* This happens if we decided to reuse existing
@@ -2020,7 +2171,7 @@ static void prepare_pack(int window, int depth)
 	if (nr_deltas && n > 1) {
 		unsigned nr_done = 0;
 		if (progress)
-			progress_state = start_progress("Compressing objects",
+			progress_state = start_progress(_("Compressing objects"),
 							nr_deltas);
 		qsort(delta_list, n, sizeof(*delta_list), type_size_sort);
 		ll_find_deltas(delta_list, n, window+1, depth, &nr_done);
@@ -2061,6 +2212,20 @@ static int git_pack_config(const char *k, const char *v, void *cb)
 	}
 	if (!strcmp(k, "pack.deltacachelimit")) {
 		cache_max_small_delta_size = git_config_int(k, v);
+		return 0;
+	}
+	if (!strcmp(k, "pack.writebitmaps")) {
+		write_bitmap_index = git_config_bool(k, v);
+		return 0;
+	}
+	if (!strcmp(k, "pack.writebitmaphashcache")) {
+		if (git_config_bool(k, v))
+			write_bitmap_options |= BITMAP_OPT_HASH_CACHE;
+		else
+			write_bitmap_options &= ~BITMAP_OPT_HASH_CACHE;
+	}
+	if (!strcmp(k, "pack.usebitmaps")) {
+		use_bitmap_index = git_config_bool(k, v);
 		return 0;
 	}
 	if (!strcmp(k, "pack.threads")) {
@@ -2121,6 +2286,9 @@ static void show_commit(struct commit *commit, void *data)
 {
 	add_object_entry(commit->object.sha1, OBJ_COMMIT, NULL, 0);
 	commit->object.flags |= OBJECT_ADDED;
+
+	if (write_bitmap_index)
+		index_commit_for_bitmap(commit);
 }
 
 static void show_object(struct object *obj,
@@ -2254,17 +2422,50 @@ static void loosen_unused_packed_objects(struct rev_info *revs)
 		if (!p->pack_local || p->pack_keep)
 			continue;
 
+		if (unpack_unreachable_expiration &&
+		    p->mtime < unpack_unreachable_expiration)
+			continue;
+
 		if (open_pack_index(p))
 			die("cannot open pack index");
 
 		for (i = 0; i < p->num_objects; i++) {
 			sha1 = nth_packed_object_sha1(p, i);
-			if (!locate_object_entry(sha1) &&
+			if (!packlist_find(&to_pack, sha1, NULL) &&
 				!has_sha1_pack_kept_or_nonlocal(sha1))
 				if (force_object_loose(sha1, p->mtime))
 					die("unable to force loose object");
 		}
 	}
+}
+
+/*
+ * This tracks any options which a reader of the pack might
+ * not understand, and which would therefore prevent blind reuse
+ * of what we have on disk.
+ */
+static int pack_options_allow_reuse(void)
+{
+	return allow_ofs_delta;
+}
+
+static int get_object_list_from_bitmap(struct rev_info *revs)
+{
+	if (prepare_bitmap_walk(revs) < 0)
+		return -1;
+
+	if (pack_options_allow_reuse() &&
+	    !reuse_partial_packfile_from_bitmap(
+			&reuse_packfile,
+			&reuse_packfile_objects,
+			&reuse_packfile_offset)) {
+		assert(reuse_packfile_objects);
+		nr_result += reuse_packfile_objects;
+		display_progress(progress_state, nr_result);
+	}
+
+	traverse_bitmap_commit_list(&add_object_entry_from_bitmap);
+	return 0;
 }
 
 static void get_object_list(int ac, const char **av)
@@ -2277,6 +2478,9 @@ static void get_object_list(int ac, const char **av)
 	save_commit_buffer = 0;
 	setup_revisions(ac, av, &revs, NULL);
 
+	/* make sure shallows are read */
+	is_repository_shallow();
+
 	while (fgets(line, sizeof(line), stdin) != NULL) {
 		int len = strlen(line);
 		if (len && line[len - 1] == '\n')
@@ -2286,17 +2490,28 @@ static void get_object_list(int ac, const char **av)
 		if (*line == '-') {
 			if (!strcmp(line, "--not")) {
 				flags ^= UNINTERESTING;
+				write_bitmap_index = 0;
+				continue;
+			}
+			if (starts_with(line, "--shallow ")) {
+				unsigned char sha1[20];
+				if (get_sha1_hex(line + 10, sha1))
+					die("not an SHA-1 '%s'", line + 10);
+				register_shallow(sha1);
 				continue;
 			}
 			die("not a rev '%s'", line);
 		}
-		if (handle_revision_arg(line, &revs, flags, 1))
+		if (handle_revision_arg(line, &revs, flags, REVARG_CANNOT_BE_FILENAME))
 			die("bad revision '%s'", line);
 	}
 
+	if (use_bitmap_index && !get_object_list_from_bitmap(&revs))
+		return;
+
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
-	mark_edges_uninteresting(revs.commits, &revs, show_edge);
+	mark_edges_uninteresting(&revs, show_edge);
 	traverse_commit_list(&revs, show_commit, show_object, NULL);
 
 	if (keep_unreachable)
@@ -2305,23 +2520,132 @@ static void get_object_list(int ac, const char **av)
 		loosen_unused_packed_objects(&revs);
 }
 
+static int option_parse_index_version(const struct option *opt,
+				      const char *arg, int unset)
+{
+	char *c;
+	const char *val = arg;
+	pack_idx_opts.version = strtoul(val, &c, 10);
+	if (pack_idx_opts.version > 2)
+		die(_("unsupported index version %s"), val);
+	if (*c == ',' && c[1])
+		pack_idx_opts.off32_limit = strtoul(c+1, &c, 0);
+	if (*c || pack_idx_opts.off32_limit & 0x80000000)
+		die(_("bad index version '%s'"), val);
+	return 0;
+}
+
+static int option_parse_unpack_unreachable(const struct option *opt,
+					   const char *arg, int unset)
+{
+	if (unset) {
+		unpack_unreachable = 0;
+		unpack_unreachable_expiration = 0;
+	}
+	else {
+		unpack_unreachable = 1;
+		if (arg)
+			unpack_unreachable_expiration = approxidate(arg);
+	}
+	return 0;
+}
+
+static int option_parse_ulong(const struct option *opt,
+			      const char *arg, int unset)
+{
+	if (unset)
+		die(_("option %s does not accept negative form"),
+		    opt->long_name);
+
+	if (!git_parse_ulong(arg, opt->value))
+		die(_("unable to parse value '%s' for option %s"),
+		    arg, opt->long_name);
+	return 0;
+}
+
+#define OPT_ULONG(s, l, v, h) \
+	{ OPTION_CALLBACK, (s), (l), (v), "n", (h),	\
+	  PARSE_OPT_NONEG, option_parse_ulong }
+
 int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 {
 	int use_internal_rev_list = 0;
 	int thin = 0;
 	int all_progress_implied = 0;
-	uint32_t i;
-	const char **rp_av;
-	int rp_ac_alloc = 64;
-	int rp_ac;
+	const char *rp_av[6];
+	int rp_ac = 0;
+	int rev_list_unpacked = 0, rev_list_all = 0, rev_list_reflog = 0;
+	struct option pack_objects_options[] = {
+		OPT_SET_INT('q', "quiet", &progress,
+			    N_("do not show progress meter"), 0),
+		OPT_SET_INT(0, "progress", &progress,
+			    N_("show progress meter"), 1),
+		OPT_SET_INT(0, "all-progress", &progress,
+			    N_("show progress meter during object writing phase"), 2),
+		OPT_BOOL(0, "all-progress-implied",
+			 &all_progress_implied,
+			 N_("similar to --all-progress when progress meter is shown")),
+		{ OPTION_CALLBACK, 0, "index-version", NULL, N_("version[,offset]"),
+		  N_("write the pack index file in the specified idx format version"),
+		  0, option_parse_index_version },
+		OPT_ULONG(0, "max-pack-size", &pack_size_limit,
+			  N_("maximum size of each output pack file")),
+		OPT_BOOL(0, "local", &local,
+			 N_("ignore borrowed objects from alternate object store")),
+		OPT_BOOL(0, "incremental", &incremental,
+			 N_("ignore packed objects")),
+		OPT_INTEGER(0, "window", &window,
+			    N_("limit pack window by objects")),
+		OPT_ULONG(0, "window-memory", &window_memory_limit,
+			  N_("limit pack window by memory in addition to object limit")),
+		OPT_INTEGER(0, "depth", &depth,
+			    N_("maximum length of delta chain allowed in the resulting pack")),
+		OPT_BOOL(0, "reuse-delta", &reuse_delta,
+			 N_("reuse existing deltas")),
+		OPT_BOOL(0, "reuse-object", &reuse_object,
+			 N_("reuse existing objects")),
+		OPT_BOOL(0, "delta-base-offset", &allow_ofs_delta,
+			 N_("use OFS_DELTA objects")),
+		OPT_INTEGER(0, "threads", &delta_search_threads,
+			    N_("use threads when searching for best delta matches")),
+		OPT_BOOL(0, "non-empty", &non_empty,
+			 N_("do not create an empty pack output")),
+		OPT_BOOL(0, "revs", &use_internal_rev_list,
+			 N_("read revision arguments from standard input")),
+		{ OPTION_SET_INT, 0, "unpacked", &rev_list_unpacked, NULL,
+		  N_("limit the objects to those that are not yet packed"),
+		  PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, 1 },
+		{ OPTION_SET_INT, 0, "all", &rev_list_all, NULL,
+		  N_("include objects reachable from any reference"),
+		  PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, 1 },
+		{ OPTION_SET_INT, 0, "reflog", &rev_list_reflog, NULL,
+		  N_("include objects referred by reflog entries"),
+		  PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, 1 },
+		OPT_BOOL(0, "stdout", &pack_to_stdout,
+			 N_("output pack to stdout")),
+		OPT_BOOL(0, "include-tag", &include_tag,
+			 N_("include tag objects that refer to objects to be packed")),
+		OPT_BOOL(0, "keep-unreachable", &keep_unreachable,
+			 N_("keep unreachable objects")),
+		{ OPTION_CALLBACK, 0, "unpack-unreachable", NULL, N_("time"),
+		  N_("unpack unreachable objects newer than <time>"),
+		  PARSE_OPT_OPTARG, option_parse_unpack_unreachable },
+		OPT_BOOL(0, "thin", &thin,
+			 N_("create thin packs")),
+		OPT_BOOL(0, "honor-pack-keep", &ignore_packed_keep,
+			 N_("ignore packs that have companion .keep file")),
+		OPT_INTEGER(0, "compression", &pack_compression_level,
+			    N_("pack compression level")),
+		OPT_SET_INT(0, "keep-true-parents", &grafts_replace_parents,
+			    N_("do not hide commits by grafts"), 0),
+		OPT_BOOL(0, "use-bitmap-index", &use_bitmap_index,
+			 N_("use a bitmap index if available to speed up counting objects")),
+		OPT_BOOL(0, "write-bitmap-index", &write_bitmap_index,
+			 N_("write a bitmap index together with the pack index")),
+		OPT_END(),
+	};
 
-	read_replace_refs = 0;
-
-	rp_av = xcalloc(rp_ac_alloc, sizeof(*rp_av));
-
-	rp_av[0] = "pack-objects";
-	rp_av[1] = "--objects"; /* --thin will make it --objects-edge */
-	rp_ac = 2;
+	check_replace_refs = 0;
 
 	reset_pack_idx_option(&pack_idx_opts);
 	git_config(git_pack_config, NULL);
@@ -2329,180 +2653,46 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		pack_compression_level = core_compression_level;
 
 	progress = isatty(2);
-	for (i = 1; i < argc; i++) {
-		const char *arg = argv[i];
+	argc = parse_options(argc, argv, prefix, pack_objects_options,
+			     pack_usage, 0);
 
-		if (*arg != '-')
-			break;
+	if (argc) {
+		base_name = argv[0];
+		argc--;
+	}
+	if (pack_to_stdout != !base_name || argc)
+		usage_with_options(pack_usage, pack_objects_options);
 
-		if (!strcmp("--non-empty", arg)) {
-			non_empty = 1;
-			continue;
-		}
-		if (!strcmp("--local", arg)) {
-			local = 1;
-			continue;
-		}
-		if (!strcmp("--incremental", arg)) {
-			incremental = 1;
-			continue;
-		}
-		if (!strcmp("--honor-pack-keep", arg)) {
-			ignore_packed_keep = 1;
-			continue;
-		}
-		if (!prefixcmp(arg, "--compression=")) {
-			char *end;
-			int level = strtoul(arg+14, &end, 0);
-			if (!arg[14] || *end)
-				usage(pack_usage);
-			if (level == -1)
-				level = Z_DEFAULT_COMPRESSION;
-			else if (level < 0 || level > Z_BEST_COMPRESSION)
-				die("bad pack compression level %d", level);
-			pack_compression_level = level;
-			continue;
-		}
-		if (!prefixcmp(arg, "--max-pack-size=")) {
-			pack_size_limit_cfg = 0;
-			if (!git_parse_ulong(arg+16, &pack_size_limit))
-				usage(pack_usage);
-			continue;
-		}
-		if (!prefixcmp(arg, "--window=")) {
-			char *end;
-			window = strtoul(arg+9, &end, 0);
-			if (!arg[9] || *end)
-				usage(pack_usage);
-			continue;
-		}
-		if (!prefixcmp(arg, "--window-memory=")) {
-			if (!git_parse_ulong(arg+16, &window_memory_limit))
-				usage(pack_usage);
-			continue;
-		}
-		if (!prefixcmp(arg, "--threads=")) {
-			char *end;
-			delta_search_threads = strtoul(arg+10, &end, 0);
-			if (!arg[10] || *end || delta_search_threads < 0)
-				usage(pack_usage);
-#ifdef NO_PTHREADS
-			if (delta_search_threads != 1)
-				warning("no threads support, "
-					"ignoring %s", arg);
-#endif
-			continue;
-		}
-		if (!prefixcmp(arg, "--depth=")) {
-			char *end;
-			depth = strtoul(arg+8, &end, 0);
-			if (!arg[8] || *end)
-				usage(pack_usage);
-			continue;
-		}
-		if (!strcmp("--progress", arg)) {
-			progress = 1;
-			continue;
-		}
-		if (!strcmp("--all-progress", arg)) {
-			progress = 2;
-			continue;
-		}
-		if (!strcmp("--all-progress-implied", arg)) {
-			all_progress_implied = 1;
-			continue;
-		}
-		if (!strcmp("-q", arg)) {
-			progress = 0;
-			continue;
-		}
-		if (!strcmp("--no-reuse-delta", arg)) {
-			reuse_delta = 0;
-			continue;
-		}
-		if (!strcmp("--no-reuse-object", arg)) {
-			reuse_object = reuse_delta = 0;
-			continue;
-		}
-		if (!strcmp("--delta-base-offset", arg)) {
-			allow_ofs_delta = 1;
-			continue;
-		}
-		if (!strcmp("--stdout", arg)) {
-			pack_to_stdout = 1;
-			continue;
-		}
-		if (!strcmp("--revs", arg)) {
-			use_internal_rev_list = 1;
-			continue;
-		}
-		if (!strcmp("--keep-unreachable", arg)) {
-			keep_unreachable = 1;
-			continue;
-		}
-		if (!strcmp("--unpack-unreachable", arg)) {
-			unpack_unreachable = 1;
-			continue;
-		}
-		if (!strcmp("--include-tag", arg)) {
-			include_tag = 1;
-			continue;
-		}
-		if (!strcmp("--unpacked", arg) ||
-		    !strcmp("--reflog", arg) ||
-		    !strcmp("--all", arg)) {
-			use_internal_rev_list = 1;
-			if (rp_ac >= rp_ac_alloc - 1) {
-				rp_ac_alloc = alloc_nr(rp_ac_alloc);
-				rp_av = xrealloc(rp_av,
-						 rp_ac_alloc * sizeof(*rp_av));
-			}
-			rp_av[rp_ac++] = arg;
-			continue;
-		}
-		if (!strcmp("--thin", arg)) {
-			use_internal_rev_list = 1;
-			thin = 1;
-			rp_av[1] = "--objects-edge";
-			continue;
-		}
-		if (!prefixcmp(arg, "--index-version=")) {
-			char *c;
-			pack_idx_opts.version = strtoul(arg + 16, &c, 10);
-			if (pack_idx_opts.version > 2)
-				die("bad %s", arg);
-			if (*c == ',')
-				pack_idx_opts.off32_limit = strtoul(c+1, &c, 0);
-			if (*c || pack_idx_opts.off32_limit & 0x80000000)
-				die("bad %s", arg);
-			continue;
-		}
-		if (!strcmp(arg, "--keep-true-parents")) {
-			grafts_replace_parents = 0;
-			continue;
-		}
-		usage(pack_usage);
+	rp_av[rp_ac++] = "pack-objects";
+	if (thin) {
+		use_internal_rev_list = 1;
+		rp_av[rp_ac++] = "--objects-edge";
+	} else
+		rp_av[rp_ac++] = "--objects";
+
+	if (rev_list_all) {
+		use_internal_rev_list = 1;
+		rp_av[rp_ac++] = "--all";
+	}
+	if (rev_list_reflog) {
+		use_internal_rev_list = 1;
+		rp_av[rp_ac++] = "--reflog";
+	}
+	if (rev_list_unpacked) {
+		use_internal_rev_list = 1;
+		rp_av[rp_ac++] = "--unpacked";
 	}
 
-	/* Traditionally "pack-objects [options] base extra" failed;
-	 * we would however want to take refs parameter that would
-	 * have been given to upstream rev-list ourselves, which means
-	 * we somehow want to say what the base name is.  So the
-	 * syntax would be:
-	 *
-	 * pack-objects [options] base <refs...>
-	 *
-	 * in other words, we would treat the first non-option as the
-	 * base_name and send everything else to the internal revision
-	 * walker.
-	 */
-
-	if (!pack_to_stdout)
-		base_name = argv[i++];
-
-	if (pack_to_stdout != !base_name)
-		usage(pack_usage);
-
+	if (!reuse_object)
+		reuse_delta = 0;
+	if (pack_compression_level == -1)
+		pack_compression_level = Z_DEFAULT_COMPRESSION;
+	else if (pack_compression_level < 0 || pack_compression_level > Z_BEST_COMPRESSION)
+		die("bad pack compression level %d", pack_compression_level);
+#ifdef NO_PTHREADS
+	if (delta_search_threads != 1)
+		warning("no threads support, ignoring --threads");
+#endif
 	if (!pack_to_stdout && !pack_size_limit)
 		pack_size_limit = pack_size_limit_cfg;
 	if (pack_to_stdout && pack_size_limit)
@@ -2518,13 +2708,19 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	if (keep_unreachable && unpack_unreachable)
 		die("--keep-unreachable and --unpack-unreachable are incompatible.");
 
+	if (!use_internal_rev_list || !pack_to_stdout || is_repository_shallow())
+		use_bitmap_index = 0;
+
+	if (pack_to_stdout || !rev_list_all)
+		write_bitmap_index = 0;
+
 	if (progress && all_progress_implied)
 		progress = 2;
 
 	prepare_packed_git();
 
 	if (progress)
-		progress_state = start_progress("Counting objects", 0);
+		progress_state = start_progress(_("Counting objects"), 0);
 	if (!use_internal_rev_list)
 		read_object_list_from_stdin();
 	else {

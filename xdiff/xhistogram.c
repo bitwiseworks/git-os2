@@ -55,7 +55,7 @@ struct histindex {
 	struct record {
 		unsigned int ptr, cnt;
 		struct record *next;
-	} **records, /* an ocurrence */
+	} **records, /* an occurrence */
 	  **line_map; /* map of line to record chain */
 	chastore_t rcha;
 	unsigned int *next_ptrs;
@@ -252,7 +252,7 @@ static int fall_back_to_classic_diff(struct histindex *index,
 		int line1, int count1, int line2, int count2)
 {
 	xpparam_t xpp;
-	xpp.flags = index->xpp->flags & ~XDF_HISTOGRAM_DIFF;
+	xpp.flags = index->xpp->flags & ~XDF_DIFF_ALGORITHM_MASK;
 
 	return xdl_fall_back_diff(index->env, &xpp,
 				  line1, count1, line2, count2);

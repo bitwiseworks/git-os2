@@ -1,6 +1,6 @@
 /*
  * This program can either change modification time of the given
- * file(s) or just print it. The program does not change atime nor
+ * file(s) or just print it. The program does not change atime or
  * ctime (their values are explicitly preserved).
  *
  * The mtime can be changed to an absolute value:
@@ -56,7 +56,7 @@ static int timespec_arg(const char *arg, long int *set_time, int *set_eq)
 	return 1;
 }
 
-int main(int argc, const char *argv[])
+int main(int argc, char *argv[])
 {
 	static int verbose;
 
@@ -84,15 +84,15 @@ int main(int argc, const char *argv[])
 		if (stat(argv[i], &sb) < 0) {
 			fprintf(stderr, "Failed to stat %s: %s\n",
 			        argv[i], strerror(errno));
-			return -1;
+			return 1;
 		}
 
-#ifdef WIN32
+#ifdef GIT_WINDOWS_NATIVE
 		if (!(sb.st_mode & S_IWUSR) &&
 				chmod(argv[i], sb.st_mode | S_IWUSR)) {
 			fprintf(stderr, "Could not make user-writable %s: %s",
 				argv[i], strerror(errno));
-			return -1;
+			return 1;
 		}
 #endif
 
@@ -107,13 +107,13 @@ int main(int argc, const char *argv[])
 		if (utb.modtime != sb.st_mtime && utime(argv[i], &utb) < 0) {
 			fprintf(stderr, "Failed to modify time on %s: %s\n",
 			        argv[i], strerror(errno));
-			return -1;
+			return 1;
 		}
 	}
 
 	return 0;
 
 usage:
-	fprintf(stderr, "Usage: %s %s\n", argv[0], usage_str);
-	return -1;
+	fprintf(stderr, "usage: %s %s\n", argv[0], usage_str);
+	return 1;
 }

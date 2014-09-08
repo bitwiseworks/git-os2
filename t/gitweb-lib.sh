@@ -1,4 +1,5 @@
-#!/bin/sh
+# Initialization and helpers for Gitweb tests, which source this
+# shell library instead of test-lib.sh.
 #
 # Copyright (c) 2007 Jakub Narebski
 #
@@ -36,7 +37,7 @@ EOF
 
 	# You can set the GITWEB_TEST_INSTALLED environment variable to
 	# the gitwebdir (the directory where gitweb is installed / deployed to)
-	# of an existing gitweb instalation to test that installation,
+	# of an existing gitweb installation to test that installation,
 	# or simply to pathname of installed gitweb script.
 	if test -n "$GITWEB_TEST_INSTALLED" ; then
 		if test -d $GITWEB_TEST_INSTALLED; then

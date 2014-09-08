@@ -266,7 +266,7 @@ static int create_default_files(const char *template_path)
 		/* allow template config file to override the default */
 		if (log_all_ref_updates == -1)
 		    git_config_set("core.logallrefupdates", "true");
-		if (prefixcmp(git_dir, work_tree) ||
+		if (!starts_with(git_dir, work_tree) ||
 		    strcmp(git_dir + strlen(work_tree), "/.git")) {
 			git_config_set("core.worktree", work_tree);
 		}
@@ -290,6 +290,7 @@ static int create_default_files(const char *template_path)
 		strcpy(path + len, "CoNfIg");
 		if (!access(path, F_OK))
 			git_config_set("core.ignorecase", "true");
+		probe_utf8_pathname_composition(path, len);
 	}
 
 	return reinit;
@@ -411,11 +412,9 @@ int init_db(const char *template_dir, unsigned int flags)
 	if (!(flags & INIT_DB_QUIET)) {
 		int len = strlen(git_dir);
 
-		/*
-		 * TRANSLATORS: The first '%s' is either "Reinitialized
-		 * existing" or "Initialized empty", the second " shared" or
-		 * "", and the last '%s%s' is the verbatim directory name.
-		 */
+		/* TRANSLATORS: The first '%s' is either "Reinitialized
+		   existing" or "Initialized empty", the second " shared" or
+		   "", and the last '%s%s' is the verbatim directory name. */
 		printf(_("%s%s Git repository in %s%s\n"),
 		       reinit ? _("Reinitialized existing") : _("Initialized empty"),
 		       shared_repository ? _(" shared") : "",
@@ -463,7 +462,7 @@ static int shared_callback(const struct option *opt, const char *arg, int unset)
 }
 
 static const char *const init_db_usage[] = {
-	"git init [-q | --quiet] [--bare] [--template=<template-directory>] [--shared[=<permissions>]] [directory]",
+	N_("git init [-q | --quiet] [--bare] [--template=<template-directory>] [--shared[=<permissions>]] [directory]"),
 	NULL
 };
 
@@ -481,17 +480,17 @@ int cmd_init_db(int argc, const char **argv, const char *prefix)
 	const char *template_dir = NULL;
 	unsigned int flags = 0;
 	const struct option init_db_options[] = {
-		OPT_STRING(0, "template", &template_dir, "template-directory",
-				"directory from which templates will be used"),
+		OPT_STRING(0, "template", &template_dir, N_("template-directory"),
+				N_("directory from which templates will be used")),
 		OPT_SET_INT(0, "bare", &is_bare_repository_cfg,
-				"create a bare repository", 1),
+				N_("create a bare repository"), 1),
 		{ OPTION_CALLBACK, 0, "shared", &init_shared_repository,
-			"permissions",
-			"specify that the git repository is to be shared amongst several users",
+			N_("permissions"),
+			N_("specify that the git repository is to be shared amongst several users"),
 			PARSE_OPT_OPTARG | PARSE_OPT_NONEG, shared_callback, 0},
-		OPT_BIT('q', "quiet", &flags, "be quiet", INIT_DB_QUIET),
-		OPT_STRING(0, "separate-git-dir", &real_git_dir, "gitdir",
-			   "separate git dir from working tree"),
+		OPT_BIT('q', "quiet", &flags, N_("be quiet"), INIT_DB_QUIET),
+		OPT_STRING(0, "separate-git-dir", &real_git_dir, N_("gitdir"),
+			   N_("separate git dir from working tree")),
 		OPT_END()
 	};
 
@@ -514,13 +513,14 @@ int cmd_init_db(int argc, const char **argv, const char *prefix)
 				saved = shared_repository;
 				shared_repository = 0;
 				switch (safe_create_leading_directories_const(argv[0])) {
-				case -3:
+				case SCLD_OK:
+				case SCLD_PERMS:
+					break;
+				case SCLD_EXISTS:
 					errno = EEXIST;
 					/* fallthru */
-				case -1:
-					die_errno(_("cannot mkdir %s"), argv[0]);
-					break;
 				default:
+					die_errno(_("cannot mkdir %s"), argv[0]);
 					break;
 				}
 				shared_repository = saved;

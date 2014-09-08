@@ -9,6 +9,7 @@ LONG_USAGE='Summarizes the changes between two commits to the standard output,
 and includes the given URL in the generated summary.'
 SUBDIRECTORY_OK='Yes'
 OPTIONS_KEEPDASHDASH=
+OPTIONS_STUCKLONG=
 OPTIONS_SPEC='git request-pull [options] start url [end]
 --
 p    show patch text as well
@@ -35,59 +36,94 @@ do
 	shift
 done
 
-base=$1 url=$2 head=${3-HEAD} status=0 branch_name=
-
-headref=$(git symbolic-ref -q "$head")
-if git show-ref -q --verify "$headref"
-then
-	branch_name=${headref#refs/heads/}
-	if test "z$branch_name" = "z$headref" ||
-		! git config "branch.$branch_name.description" >/dev/null
-	then
-		branch_name=
-	fi
-fi
-
-tag_name=$(git describe --exact "$head^0" 2>/dev/null)
+base=$1 url=$2 status=0
 
 test -n "$base" && test -n "$url" || usage
-baserev=$(git rev-parse --verify "$base"^0) &&
-headrev=$(git rev-parse --verify "$head"^0) || exit
+
+baserev=$(git rev-parse --verify --quiet "$base"^0)
+if test -z "$baserev"
+then
+    die "fatal: Not a valid revision: $base"
+fi
+
+#
+# $3 must be a symbolic ref, a unique ref, or
+# a SHA object expression. It can also be of
+# the format 'local-name:remote-name'.
+#
+local=${3%:*}
+local=${local:-HEAD}
+remote=${3#*:}
+pretty_remote=${remote#refs/}
+pretty_remote=${pretty_remote#heads/}
+head=$(git symbolic-ref -q "$local")
+head=${head:-$(git show-ref --heads --tags "$local" | cut -d' ' -f2)}
+head=${head:-$(git rev-parse --quiet --verify "$local")}
+
+# None of the above? Bad.
+test -z "$head" && die "fatal: Not a valid revision: $local"
+
+# This also verifies that the resulting head is unique:
+# "git show-ref" could have shown multiple matching refs..
+headrev=$(git rev-parse --verify --quiet "$head"^0)
+test -z "$headrev" && die "fatal: Ambiguous revision: $local"
+
+# Was it a branch with a description?
+branch_name=${head#refs/heads/}
+if test "z$branch_name" = "z$headref" ||
+	! git config "branch.$branch_name.description" >/dev/null
+then
+	branch_name=
+fi
 
 merge_base=$(git merge-base $baserev $headrev) ||
 die "fatal: No commits in common between $base and $head"
 
-# $head is the token given from the command line. If a ref with that
-# name exists at the remote and their values match, we should use it.
-# Otherwise find a ref that matches $headrev.
+# $head is the refname from the command line.
+# If a ref with the same name as $head exists at the remote
+# and their values match, use that.
+#
+# Otherwise find a random ref that matches $headrev.
 find_matching_ref='
-	sub abbr {
-		my $ref = shift;
-		if ($ref =~ s|^refs/heads/|| || $ref =~ s|^refs/tags/|tags/|) {
-			return $ref;
-		} else {
-			return $ref;
-		}
-	}
+	my ($head,$headrev) = (@ARGV);
+	my ($found);
 
-	my ($exact, $found);
 	while (<STDIN>) {
-		my ($sha1, $ref, $deref) = /^(\S+)\s+(\S+?)(\^\{\})?$/;
-		next unless ($sha1 eq $ARGV[1]);
-		$found = abbr($ref);
-		if ($ref =~ m|/\Q$ARGV[0]\E$|) {
-			$exact = $found;
-			last;
+		chomp;
+		my ($sha1, $ref, $deref) = /^(\S+)\s+([^^]+)(\S*)$/;
+		my ($pattern);
+		next unless ($sha1 eq $headrev);
+
+		$pattern="/$head\$";
+		if ($ref eq $head) {
+			$found = $ref;
+		}
+		if ($ref =~ /$pattern/) {
+			$found = $ref;
+		}
+		if ($sha1 eq $head) {
+			$found = $sha1;
 		}
 	}
-	if ($exact) {
-		print "$exact\n";
-	} elsif ($found) {
+	if ($found) {
 		print "$found\n";
 	}
 '
 
-ref=$(git ls-remote "$url" | perl -e "$find_matching_ref" "$head" "$headrev")
+ref=$(git ls-remote "$url" | @@PERL@@ -e "$find_matching_ref" "${remote:-HEAD}" "$headrev")
+
+if test -z "$ref"
+then
+	echo "warn: No match for commit $headrev found at $url" >&2
+	echo "warn: Are you sure you pushed '${remote:-HEAD}' there?" >&2
+	status=1
+fi
+
+# Special case: turn "for_linus" to "tags/for_linus" when it is correct
+if test "$ref" = "refs/tags/$pretty_remote"
+then
+	pretty_remote=tags/$pretty_remote
+fi
 
 url=$(git ls-remote --get-url "$url")
 
@@ -97,7 +133,7 @@ git show -s --format='The following changes since commit %H:
 
 are available in the git repository at:
 ' $merge_base &&
-echo "  $url${ref+ $ref}" &&
+echo "  $url $pretty_remote" &&
 git show -s --format='
 for you to fetch changes up to %H:
 
@@ -105,33 +141,23 @@ for you to fetch changes up to %H:
 
 ----------------------------------------------------------------' $headrev &&
 
+if test $(git cat-file -t "$head") = tag
+then
+	git cat-file tag "$head" |
+	sed -n -e '1,/^$/d' -e '/^-----BEGIN PGP /q' -e p
+	echo
+	echo "----------------------------------------------------------------"
+fi &&
+
 if test -n "$branch_name"
 then
 	echo "(from the branch description for $branch_name local branch)"
 	echo
 	git config "branch.$branch_name.description"
-fi &&
-
-if test -n "$tag_name"
-then
-	git cat-file tag "$tag_name" |
-	sed -n -e '1,/^$/d' -e '/^-----BEGIN PGP /q' -e p
-	echo
-fi &&
-
-if test -n "$branch_name" || test -n "$tag_name"
-then
 	echo "----------------------------------------------------------------"
 fi &&
 
 git shortlog ^$baserev $headrev &&
 git diff -M --stat --summary $patch $merge_base..$headrev || status=1
 
-if test -z "$ref"
-then
-	echo "warn: No branch of $url is at:" >&2
-	git show -s --format='warn:   %h: %s' $headrev >&2
-	echo "warn: Are you sure you pushed '$head' there?" >&2
-	status=1
-fi
 exit $status

@@ -156,6 +156,41 @@ create_stash () {
 	die "$(gettext "Cannot record working tree state")"
 }
 
+store_stash () {
+	while test $# != 0
+	do
+		case "$1" in
+		-m|--message)
+			shift
+			stash_msg="$1"
+			;;
+		-q|--quiet)
+			quiet=t
+			;;
+		*)
+			break
+			;;
+		esac
+		shift
+	done
+	test $# = 1 ||
+	die "$(eval_gettext "\"$dashless store\" requires one <commit> argument")"
+
+	w_commit="$1"
+	if test -z "$stash_msg"
+	then
+		stash_msg="Created via \"git stash store\"."
+	fi
+
+	# Make sure the reflog for stash is kept.
+	: >>"$GIT_DIR/logs/$ref_stash"
+	git update-ref -m "$stash_msg" $ref_stash $w_commit
+	ret=$?
+	test $ret != 0 && test -z $quiet &&
+	die "$(eval_gettext "Cannot update \$ref_stash with \$w_commit")"
+	return $ret
+}
+
 save_stash () {
 	keep_index=
 	patch_mode=
@@ -199,8 +234,8 @@ save_stash () {
 			#    $ git stash save --blah-blah 2>&1 | head -n 2
 			#    error: unknown option for 'stash save': --blah-blah
 			#           To provide a message, use git stash save -- '--blah-blah'
-			eval_gettextln "$("error: unknown option for 'stash save': \$option
-       To provide a message, use git stash save -- '\$option'")"
+			eval_gettextln "error: unknown option for 'stash save': \$option
+       To provide a message, use git stash save -- '\$option'"
 			usage
 			;;
 		*)
@@ -227,12 +262,8 @@ save_stash () {
 		clear_stash || die "$(gettext "Cannot initialize stash")"
 
 	create_stash "$stash_msg" $untracked
-
-	# Make sure the reflog for stash is kept.
-	: >>"$GIT_DIR/logs/$ref_stash"
-
-	git update-ref -m "$stash_msg" $ref_stash $w_commit ||
-		die "$(gettext "Cannot save the current status")"
+	store_stash -m "$stash_msg" -q $w_commit ||
+	die "$(gettext "Cannot save the current status")"
 	say Saved working directory and index state "$stash_msg"
 
 	if test -z "$patch_mode"
@@ -327,7 +358,7 @@ parse_flags_and_rev()
 	i_tree=
 	u_tree=
 
-	REV=$(git rev-parse --no-flags --symbolic "$@") || exit 1
+	REV=$(git rev-parse --no-flags --symbolic --sq "$@") || exit 1
 
 	FLAGS=
 	for opt
@@ -345,7 +376,7 @@ parse_flags_and_rev()
 		esac
 	done
 
-	set -- $REV
+	eval set -- $REV
 
 	case $# in
 		0)
@@ -360,13 +391,13 @@ parse_flags_and_rev()
 		;;
 	esac
 
-	REV=$(git rev-parse --quiet --symbolic --verify $1 2>/dev/null) || {
+	REV=$(git rev-parse --quiet --symbolic --verify "$1" 2>/dev/null) || {
 		reference="$1"
 		die "$(eval_gettext "\$reference is not valid reference")"
 	}
 
-	i_commit=$(git rev-parse --quiet --verify $REV^2 2>/dev/null) &&
-	set -- $(git rev-parse $REV $REV^1 $REV: $REV^1: $REV^2: 2>/dev/null) &&
+	i_commit=$(git rev-parse --quiet --verify "$REV^2" 2>/dev/null) &&
+	set -- $(git rev-parse "$REV" "$REV^1" "$REV:" "$REV^1:" "$REV^2:" 2>/dev/null) &&
 	s=$1 &&
 	w_commit=$1 &&
 	b_commit=$2 &&
@@ -377,8 +408,8 @@ parse_flags_and_rev()
 	test "$ref_stash" = "$(git rev-parse --symbolic-full-name "${REV%@*}")" &&
 	IS_STASH_REF=t
 
-	u_commit=$(git rev-parse --quiet --verify $REV^3 2>/dev/null) &&
-	u_tree=$(git rev-parse $REV^3: 2>/dev/null)
+	u_commit=$(git rev-parse --quiet --verify "$REV^3" 2>/dev/null) &&
+	u_tree=$(git rev-parse "$REV^3:" 2>/dev/null)
 }
 
 is_stash_like()
@@ -469,6 +500,7 @@ apply_stash () {
 	else
 		# Merge conflict; keep the exit status from merge-recursive
 		status=$?
+		git rerere
 		if test -n "$INDEX_OPTION"
 		then
 			gettextln "Index was not unstashed." >&2
@@ -480,8 +512,14 @@ apply_stash () {
 pop_stash() {
 	assert_stash_ref "$@"
 
-	apply_stash "$@" &&
-	drop_stash "$@"
+	if apply_stash "$@"
+	then
+		drop_stash "$@"
+	else
+		status=$?
+		say "The stash is kept in case you need it again."
+		exit $status
+	fi
 }
 
 drop_stash () {
@@ -545,11 +583,12 @@ clear)
 	clear_stash "$@"
 	;;
 create)
-	if test $# -gt 0 && test "$1" = create
-	then
-		shift
-	fi
+	shift
 	create_stash "$*" && echo "$w_commit"
+	;;
+store)
+	shift
+	store_stash "$@"
 	;;
 drop)
 	shift

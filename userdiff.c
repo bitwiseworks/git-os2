@@ -14,6 +14,15 @@ static int drivers_alloc;
 	{ name, NULL, -1, { pattern, REG_EXTENDED | REG_ICASE }, \
 	  word_regex "|[^[:space:]]|[\xc0-\xff][\x80-\xbf]+" }
 static struct userdiff_driver builtin_drivers[] = {
+IPATTERN("ada",
+	 "!^(.*[ \t])?(is[ \t]+new|renames|is[ \t]+separate)([ \t].*)?$\n"
+	 "!^[ \t]*with[ \t].*$\n"
+	 "^[ \t]*((procedure|function)[ \t]+.*)$\n"
+	 "^[ \t]*((package|protected|task)[ \t]+.*)$",
+	 /* -- */
+	 "[a-zA-Z][a-zA-Z0-9_]*"
+	 "|[-+]?[0-9][0-9#_.aAbBcCdDeEfF]*([eE][+-]?[0-9_]+)?"
+	 "|=>|\\.\\.|\\*\\*|:=|/=|>=|<=|<<|>>|<>"),
 IPATTERN("fortran",
 	 "!^([C*]|[ \t]*!)\n"
 	 "!^[ \t]*MODULE[ \t]+PROCEDURE[ \t]\n"
@@ -116,15 +125,13 @@ PATTERNS("tex", "^(\\\\((sub)*section|chapter|part)\\*{0,1}\\{.*)$",
 	 "\\\\[a-zA-Z@]+|\\\\.|[a-zA-Z0-9\x80-\xff]+"),
 PATTERNS("cpp",
 	 /* Jump targets or access declarations */
-	 "!^[ \t]*[A-Za-z_][A-Za-z_0-9]*:.*$\n"
-	 /* C/++ functions/methods at top level */
-	 "^([A-Za-z_][A-Za-z_0-9]*([ \t*]+[A-Za-z_][A-Za-z_0-9]*([ \t]*::[ \t]*[^[:space:]]+)?){1,}[ \t]*\\([^;]*)$\n"
-	 /* compound type at top level */
-	 "^((struct|class|enum)[^;]*)$",
+	 "!^[ \t]*[A-Za-z_][A-Za-z_0-9]*:[[:space:]]*($|/[/*])\n"
+	 /* functions/methods, variables, and compounds at top level */
+	 "^((::[[:space:]]*)?[A-Za-z_].*)$",
 	 /* -- */
 	 "[a-zA-Z_][a-zA-Z0-9_]*"
-	 "|[-+0-9.e]+[fFlL]?|0[xXbB]?[0-9a-fA-F]+[lL]?"
-	 "|[-+*/<>%&^|=!]=|--|\\+\\+|<<=?|>>=?|&&|\\|\\||::|->"),
+	 "|[-+0-9.e]+[fFlL]?|0[xXbB]?[0-9a-fA-F]+[lLuU]*"
+	 "|[-+*/<>%&^|=!]=|--|\\+\\+|<<=?|>>=?|&&|\\|\\||::|->\\*?|\\.\\*"),
 PATTERNS("csharp",
 	 /* Keywords */
 	 "!^[ \t]*(do|while|for|if|else|instanceof|new|return|switch|case|throw|catch|using)\n"
@@ -175,49 +182,13 @@ static struct userdiff_driver *userdiff_find_by_namelen(const char *k, int len)
 	return NULL;
 }
 
-static struct userdiff_driver *parse_driver(const char *var,
-		const char *value, const char *type)
-{
-	struct userdiff_driver *drv;
-	const char *dot;
-	const char *name;
-	int namelen;
-
-	if (prefixcmp(var, "diff."))
-		return NULL;
-	dot = strrchr(var, '.');
-	if (dot == var + 4)
-		return NULL;
-	if (strcmp(type, dot+1))
-		return NULL;
-
-	name = var + 5;
-	namelen = dot - name;
-	drv = userdiff_find_by_namelen(name, namelen);
-	if (!drv) {
-		ALLOC_GROW(drivers, ndrivers+1, drivers_alloc);
-		drv = &drivers[ndrivers++];
-		memset(drv, 0, sizeof(*drv));
-		drv->name = xmemdupz(name, namelen);
-		drv->binary = -1;
-	}
-	return drv;
-}
-
 static int parse_funcname(struct userdiff_funcname *f, const char *k,
 		const char *v, int cflags)
 {
 	if (git_config_string(&f->pattern, k, v) < 0)
 		return -1;
 	f->cflags = cflags;
-	return 1;
-}
-
-static int parse_string(const char **d, const char *k, const char *v)
-{
-	if (git_config_string(d, k, v) < 0)
-		return -1;
-	return 1;
+	return 0;
 }
 
 static int parse_tristate(int *b, const char *k, const char *v)
@@ -226,33 +197,47 @@ static int parse_tristate(int *b, const char *k, const char *v)
 		*b = -1;
 	else
 		*b = git_config_bool(k, v);
-	return 1;
+	return 0;
 }
 
 static int parse_bool(int *b, const char *k, const char *v)
 {
 	*b = git_config_bool(k, v);
-	return 1;
+	return 0;
 }
 
 int userdiff_config(const char *k, const char *v)
 {
 	struct userdiff_driver *drv;
+	const char *name, *type;
+	int namelen;
 
-	if ((drv = parse_driver(k, v, "funcname")))
+	if (parse_config_key(k, "diff", &name, &namelen, &type) || !name)
+		return 0;
+
+	drv = userdiff_find_by_namelen(name, namelen);
+	if (!drv) {
+		ALLOC_GROW(drivers, ndrivers+1, drivers_alloc);
+		drv = &drivers[ndrivers++];
+		memset(drv, 0, sizeof(*drv));
+		drv->name = xmemdupz(name, namelen);
+		drv->binary = -1;
+	}
+
+	if (!strcmp(type, "funcname"))
 		return parse_funcname(&drv->funcname, k, v, 0);
-	if ((drv = parse_driver(k, v, "xfuncname")))
+	if (!strcmp(type, "xfuncname"))
 		return parse_funcname(&drv->funcname, k, v, REG_EXTENDED);
-	if ((drv = parse_driver(k, v, "binary")))
+	if (!strcmp(type, "binary"))
 		return parse_tristate(&drv->binary, k, v);
-	if ((drv = parse_driver(k, v, "command")))
-		return parse_string(&drv->external, k, v);
-	if ((drv = parse_driver(k, v, "textconv")))
-		return parse_string(&drv->textconv, k, v);
-	if ((drv = parse_driver(k, v, "cachetextconv")))
+	if (!strcmp(type, "command"))
+		return git_config_string(&drv->external, k, v);
+	if (!strcmp(type, "textconv"))
+		return git_config_string(&drv->textconv, k, v);
+	if (!strcmp(type, "cachetextconv"))
 		return parse_bool(&drv->textconv_want_cache, k, v);
-	if ((drv = parse_driver(k, v, "wordregex")))
-		return parse_string(&drv->word_regex, k, v);
+	if (!strcmp(type, "wordregex"))
+		return git_config_string(&drv->word_regex, k, v);
 
 	return 0;
 }

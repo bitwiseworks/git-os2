@@ -9,7 +9,7 @@
 #include "dir.h"
 
 static const char * const prune_usage[] = {
-	"git prune [-n] [-v] [--expire <time>] [--] [<head>...]",
+	N_("git prune [-n] [-v] [--expire <time>] [--] [<head>...]"),
 	NULL
 };
 static int show_only;
@@ -17,23 +17,22 @@ static int verbose;
 static unsigned long expire;
 static int show_progress = -1;
 
-static int prune_tmp_object(const char *path, const char *filename)
+static int prune_tmp_file(const char *fullpath)
 {
-	const char *fullpath = mkpath("%s/%s", path, filename);
 	struct stat st;
 	if (lstat(fullpath, &st))
 		return error("Could not stat '%s'", fullpath);
 	if (st.st_mtime > expire)
 		return 0;
-	printf("Removing stale temporary file %s\n", fullpath);
+	if (show_only || verbose)
+		printf("Removing stale temporary file %s\n", fullpath);
 	if (!show_only)
 		unlink_or_warn(fullpath);
 	return 0;
 }
 
-static int prune_object(char *path, const char *filename, const unsigned char *sha1)
+static int prune_object(const char *fullpath, const unsigned char *sha1)
 {
-	const char *fullpath = mkpath("%s/%s", path, filename);
 	struct stat st;
 	if (lstat(fullpath, &st))
 		return error("Could not stat '%s'", fullpath);
@@ -49,9 +48,10 @@ static int prune_object(char *path, const char *filename, const unsigned char *s
 	return 0;
 }
 
-static int prune_dir(int i, char *path)
+static int prune_dir(int i, struct strbuf *path)
 {
-	DIR *dir = opendir(path);
+	size_t baselen = path->len;
+	DIR *dir = opendir(path->buf);
 	struct dirent *de;
 
 	if (!dir)
@@ -76,28 +76,39 @@ static int prune_dir(int i, char *path)
 			if (lookup_object(sha1))
 				continue;
 
-			prune_object(path, de->d_name, sha1);
+			strbuf_addf(path, "/%s", de->d_name);
+			prune_object(path->buf, sha1);
+			strbuf_setlen(path, baselen);
 			continue;
 		}
-		if (!prefixcmp(de->d_name, "tmp_obj_")) {
-			prune_tmp_object(path, de->d_name);
+		if (starts_with(de->d_name, "tmp_obj_")) {
+			strbuf_addf(path, "/%s", de->d_name);
+			prune_tmp_file(path->buf);
+			strbuf_setlen(path, baselen);
 			continue;
 		}
-		fprintf(stderr, "bad sha1 file: %s/%s\n", path, de->d_name);
+		fprintf(stderr, "bad sha1 file: %s/%s\n", path->buf, de->d_name);
 	}
-	if (!show_only)
-		rmdir(path);
 	closedir(dir);
+	if (!show_only)
+		rmdir(path->buf);
 	return 0;
 }
 
 static void prune_object_dir(const char *path)
 {
+	struct strbuf buf = STRBUF_INIT;
+	size_t baselen;
 	int i;
+
+	strbuf_addstr(&buf, path);
+	strbuf_addch(&buf, '/');
+	baselen = buf.len;
+
 	for (i = 0; i < 256; i++) {
-		static char dir[4096];
-		sprintf(dir, "%s/%02x", path, i);
-		prune_dir(i, dir);
+		strbuf_addf(&buf, "%02x", i);
+		prune_dir(i, &buf);
+		strbuf_setlen(&buf, baselen);
 	}
 }
 
@@ -118,8 +129,8 @@ static void remove_temporary_files(const char *path)
 		return;
 	}
 	while ((de = readdir(dir)) != NULL)
-		if (!prefixcmp(de->d_name, "tmp_"))
-			prune_tmp_object(path, de->d_name);
+		if (starts_with(de->d_name, "tmp_"))
+			prune_tmp_file(mkpath("%s/%s", path, de->d_name));
 	closedir(dir);
 }
 
@@ -128,18 +139,18 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 	struct rev_info revs;
 	struct progress *progress = NULL;
 	const struct option options[] = {
-		OPT__DRY_RUN(&show_only, "do not remove, show only"),
-		OPT__VERBOSE(&verbose, "report pruned objects"),
-		OPT_BOOL(0, "progress", &show_progress, "show progress"),
-		OPT_DATE(0, "expire", &expire,
-			 "expire objects older than <time>"),
+		OPT__DRY_RUN(&show_only, N_("do not remove, show only")),
+		OPT__VERBOSE(&verbose, N_("report pruned objects")),
+		OPT_BOOL(0, "progress", &show_progress, N_("show progress")),
+		OPT_EXPIRY_DATE(0, "expire", &expire,
+				N_("expire objects older than <time>")),
 		OPT_END()
 	};
 	char *s;
 
 	expire = ULONG_MAX;
 	save_commit_buffer = 0;
-	read_replace_refs = 0;
+	check_replace_refs = 0;
 	init_revisions(&revs, prefix);
 
 	argc = parse_options(argc, argv, prefix, options, prune_usage, 0);
@@ -148,9 +159,7 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 		const char *name = *argv++;
 
 		if (!get_sha1(name, sha1)) {
-			struct object *object = parse_object(sha1);
-			if (!object)
-				die("bad object: %s", name);
+			struct object *object = parse_object_or_die(sha1, name);
 			add_pending_object(&revs, object, "");
 		}
 		else
@@ -160,16 +169,20 @@ int cmd_prune(int argc, const char **argv, const char *prefix)
 	if (show_progress == -1)
 		show_progress = isatty(2);
 	if (show_progress)
-		progress = start_progress_delay("Checking connectivity", 0, 0, 2);
+		progress = start_progress_delay(_("Checking connectivity"), 0, 0, 2);
 
 	mark_reachable_objects(&revs, 1, progress);
 	stop_progress(&progress);
 	prune_object_dir(get_object_directory());
 
-	prune_packed_objects(show_only);
+	prune_packed_objects(show_only ? PRUNE_PACKED_DRY_RUN : 0);
 	remove_temporary_files(get_object_directory());
-	s = xstrdup(mkpath("%s/pack", get_object_directory()));
+	s = mkpathdup("%s/pack", get_object_directory());
 	remove_temporary_files(s);
 	free(s);
+
+	if (is_repository_shallow())
+		prune_shallow(show_only);
+
 	return 0;
 }

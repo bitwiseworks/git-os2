@@ -16,7 +16,7 @@ struct tree_desc {
 static inline const unsigned char *tree_entry_extract(struct tree_desc *desc, const char **pathp, unsigned int *modep)
 {
 	*pathp = desc->entry.path;
-	*modep = canon_mode(desc->entry.mode);
+	*modep = desc->entry.mode;
 	return desc->entry.sha1;
 }
 
@@ -46,7 +46,7 @@ struct traverse_info {
 	int pathlen;
 	struct pathspec *pathspec;
 
-	unsigned long conflicts;
+	unsigned long df_conflicts;
 	traverse_callback_t fn;
 	void *data;
 	int show_all_errors;

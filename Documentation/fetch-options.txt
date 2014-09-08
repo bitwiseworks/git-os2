@@ -8,9 +8,24 @@
 	option old data in `.git/FETCH_HEAD` will be overwritten.
 
 --depth=<depth>::
-	Deepen the history of a 'shallow' repository created by
+	Deepen or shorten the history of a 'shallow' repository created by
 	`git clone` with `--depth=<depth>` option (see linkgit:git-clone[1])
-	by the specified number of commits.
+	to the specified number of commits from the tip of each remote
+	branch history. Tags for the deepened commits are not fetched.
+
+--unshallow::
+	If the source repository is complete, convert a shallow
+	repository to a complete one, removing all the limitations
+	imposed by shallow repositories.
++
+If the source repository is shallow, fetch as much as possible so that
+the current repository has the same history as the source repository.
+
+--update-shallow::
+	By default when fetching from a shallow repository,
+	`git fetch` refuses refs that require updating
+	.git/shallow. This option updates .git/shallow and accept such
+	refs.
 
 ifndef::git-pull[]
 --dry-run::
@@ -36,17 +51,20 @@ ifndef::git-pull[]
 
 -p::
 --prune::
-	After fetching, remove any remote-tracking branches which
-	no longer exist	on the remote.
+	After fetching, remove any remote-tracking references that no
+	longer exist on the remote.  Tags are not subject to pruning
+	if they are fetched only because of the default tag
+	auto-following or due to a --tags option.  However, if tags
+	are fetched due to an explicit refspec (either on the command
+	line or in the remote configuration, for example if the remote
+	was cloned with the --mirror option), then they are also
+	subject to pruning.
 endif::git-pull[]
 
-ifdef::git-pull[]
---no-tags::
-endif::git-pull[]
 ifndef::git-pull[]
 -n::
---no-tags::
 endif::git-pull[]
+--no-tags::
 	By default, tags that point at objects that are downloaded
 	from the remote repository are fetched and stored locally.
 	This option disables this automatic tag following. The default
@@ -56,14 +74,12 @@ endif::git-pull[]
 ifndef::git-pull[]
 -t::
 --tags::
-	Most of the tags are fetched automatically as branch
-	heads are downloaded, but tags that do not point at
-	objects reachable from the branch heads that are being
-	tracked will not be fetched by this mechanism.  This
-	flag lets all tags and their associated objects be
-	downloaded. The default behavior for a remote may be
-	specified with the remote.<name>.tagopt setting. See
-	linkgit:git-config[1].
+	Fetch all tags from the remote (i.e., fetch remote tags
+	`refs/tags/*` into local tags with the same name), in addition
+	to whatever else would otherwise be fetched.  Using this
+	option alone does not subject tags to pruning, even if --prune
+	is used (though tags may be pruned anyway if they are also the
+	destination of an explicit refspec; see '--prune').
 
 --recurse-submodules[=yes|on-demand|no]::
 	This option controls if and under what conditions new commits of

@@ -37,6 +37,18 @@ test_expect_failure TTY 'pager runs from subdir' '
 	test_cmp expected actual
 '
 
+test_expect_success TTY 'LESS and LV envvars are set for pagination' '
+	(
+		sane_unset LESS LV &&
+		PAGER="env >pager-env.out; wc" &&
+		export PAGER &&
+
+		test_terminal git log
+	) &&
+	grep ^LESS= pager-env.out &&
+	grep ^LV= pager-env.out
+'
+
 test_expect_success TTY 'some commands do not use a pager' '
 	rm -f paginated.out &&
 	test_terminal git rev-list HEAD &&
@@ -134,11 +146,7 @@ test_expect_success 'no color when stdout is a regular file' '
 test_expect_success TTY 'color when writing to a pager' '
 	rm -f paginated.out &&
 	test_config color.ui auto &&
-	(
-		TERM=vt100 &&
-		export TERM &&
-		test_terminal git log
-	) &&
+	test_terminal env TERM=vt100 git log &&
 	colorful paginated.out
 '
 
@@ -146,11 +154,7 @@ test_expect_success TTY 'colors are suppressed by color.pager' '
 	rm -f paginated.out &&
 	test_config color.ui auto &&
 	test_config color.pager false &&
-	(
-		TERM=vt100 &&
-		export TERM &&
-		test_terminal git log
-	) &&
+	test_terminal env TERM=vt100 git log &&
 	! colorful paginated.out
 '
 
@@ -169,11 +173,7 @@ test_expect_success 'color when writing to a file intended for a pager' '
 test_expect_success TTY 'colors are sent to pager for external commands' '
 	test_config alias.externallog "!git log" &&
 	test_config color.ui auto &&
-	(
-		TERM=vt100 &&
-		export TERM &&
-		test_terminal git -p externallog
-	) &&
+	test_terminal env TERM=vt100 git -p externallog &&
 	colorful paginated.out
 '
 

@@ -44,6 +44,8 @@ my ($diff_new_color) =
 
 my $normal_color = $repo->get_color("", "reset");
 
+my $diff_algorithm = $repo->config('diff.algorithm');
+
 my $use_readkey = 0;
 my $use_termcap = 0;
 my %term_escapes;
@@ -56,6 +58,9 @@ if ($repo->config_bool("interactive.singlekey")) {
 		Term::ReadKey->import;
 		$use_readkey = 1;
 	};
+	if (!$use_readkey) {
+		print STDERR "missing Term::ReadKey, disabling interactive.singlekey\n";
+	}
 	eval {
 		require Term::Cap;
 		my $termcap = Term::Cap->Tgetent;
@@ -167,7 +172,7 @@ my %patch_modes = (
 my %patch_mode_flavour = %{$patch_modes{stage}};
 
 sub run_cmd_pipe {
-	if ($^O eq 'MSWin32' || $^O eq 'msys') {
+	if ($^O eq 'MSWin32') {
 		my @invalid = grep {m/[":*]/} @_;
 		die "$^O does not support: @invalid\n" if @invalid;
 		my @args = map { m/ /o ? "\"$_\"": $_ } @_;
@@ -261,6 +266,17 @@ sub get_empty_tree {
 	return '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 }
 
+sub get_diff_reference {
+	my $ref = shift;
+	if (defined $ref and $ref ne 'HEAD') {
+		return $ref;
+	} elsif (is_initial_commit()) {
+		return get_empty_tree();
+	} else {
+		return 'HEAD';
+	}
+}
+
 # Returns list of hashes, contents of each of which are:
 # VALUE:	pathname
 # BINARY:	is a binary path
@@ -268,6 +284,7 @@ sub get_empty_tree {
 # FILE:		is file different from index?
 # INDEX_ADDDEL:	is it add/delete between HEAD and index?
 # FILE_ADDDEL:	is it add/delete between index and file?
+# UNMERGED:	is the path unmerged
 
 sub list_modified {
 	my ($only) = @_;
@@ -283,14 +300,7 @@ sub list_modified {
 		return if (!@tracked);
 	}
 
-	my $reference;
-	if (defined $patch_mode_revision and $patch_mode_revision ne 'HEAD') {
-		$reference = $patch_mode_revision;
-	} elsif (is_initial_commit()) {
-		$reference = get_empty_tree();
-	} else {
-		$reference = 'HEAD';
-	}
+	my $reference = get_diff_reference($patch_mode_revision);
 	for (run_cmd_pipe(qw(git diff-index --cached
 			     --numstat --summary), $reference,
 			     '--', @tracked)) {
@@ -318,16 +328,10 @@ sub list_modified {
 		}
 	}
 
-	for (run_cmd_pipe(qw(git diff-files --numstat --summary --), @tracked)) {
+	for (run_cmd_pipe(qw(git diff-files --numstat --summary --raw --), @tracked)) {
 		if (($add, $del, $file) =
 		    /^([-\d]+)	([-\d]+)	(.*)/) {
 			$file = unquote_path($file);
-			if (!exists $data{$file}) {
-				$data{$file} = +{
-					INDEX => 'unchanged',
-					BINARY => 0,
-				};
-			}
 			my ($change, $bin);
 			if ($add eq '-' && $del eq '-') {
 				$change = 'binary';
@@ -345,6 +349,18 @@ sub list_modified {
 		       /^ (create|delete) mode [0-7]+ (.*)$/) {
 			$file = unquote_path($file);
 			$data{$file}{FILE_ADDDEL} = $adddel;
+		}
+		elsif (/^:[0-7]+ [0-7]+ [0-9a-f]+ [0-9a-f]+ (.)	(.*)$/) {
+			$file = unquote_path($2);
+			if (!exists $data{$file}) {
+				$data{$file} = +{
+					INDEX => 'unchanged',
+					BINARY => 0,
+				};
+			}
+			if ($1 eq 'U') {
+				$data{$file}{UNMERGED} = 1;
+			}
 		}
 	}
 
@@ -724,8 +740,11 @@ sub run_git_apply {
 sub parse_diff {
 	my ($path) = @_;
 	my @diff_cmd = split(" ", $patch_mode_flavour{DIFF});
+	if (defined $diff_algorithm) {
+		splice @diff_cmd, 1, 0, "--diff-algorithm=${diff_algorithm}";
+	}
 	if (defined $patch_mode_revision) {
-		push @diff_cmd, $patch_mode_revision;
+		push @diff_cmd, get_diff_reference($patch_mode_revision);
 	}
 	my @diff = run_cmd_pipe("git", @diff_cmd, "--", $path);
 	my @colored = ();
@@ -1060,7 +1079,6 @@ EOF
 }
 
 sub diff_applies {
-	my $fh;
 	return run_git_apply($patch_mode_flavour{APPLY_CHECK} . ' --check',
 			     map { @{$_->{TEXT}} } @_);
 }
@@ -1141,9 +1159,9 @@ sub help_patch_cmd {
 	print colored $help_color, <<EOF ;
 y - $verb this hunk$target
 n - do not $verb this hunk$target
-q - quit; do not $verb this hunk nor any of the remaining ones
+q - quit; do not $verb this hunk or any of the remaining ones
 a - $verb this hunk and all later hunks in the file
-d - do not $verb this hunk nor any of the later hunks in the file
+d - do not $verb this hunk or any of the later hunks in the file
 g - select a hunk to go to
 / - search for a hunk matching the given regex
 j - leave this hunk undecided, see next undecided hunk
@@ -1190,6 +1208,10 @@ sub apply_patch_for_checkout_commit {
 
 sub patch_update_cmd {
 	my @all_mods = list_modified($patch_mode_flavour{FILTER});
+	error_msg "ignoring unmerged: $_->{VALUE}\n"
+		for grep { $_->{UNMERGED} } @all_mods;
+	@all_mods = grep { !$_->{UNMERGED} } @all_mods;
+
 	my @mods = grep { !($_->{BINARY}) } @all_mods;
 	my @them;
 
@@ -1237,7 +1259,7 @@ sub summarize_hunk {
 
 
 # Print a one-line summary of each hunk in the array ref in
-# the first argument, starting wih the index in the 2nd.
+# the first argument, starting with the index in the 2nd.
 sub display_hunks {
 	my ($hunks, $i) = @_;
 	my $ctr = 0;
@@ -1503,7 +1525,6 @@ sub patch_update_file {
 	}
 
 	if (@result) {
-		my $fh;
 		my @patch = reassemble_patch($head->{TEXT}, @result);
 		my $apply_routine = $patch_mode_flavour{APPLY};
 		&$apply_routine(@patch);

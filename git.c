@@ -4,52 +4,22 @@
 #include "help.h"
 #include "quote.h"
 #include "run-command.h"
+#include "commit.h"
 
 const char git_usage_string[] =
-	"git [--version] [--exec-path[=<path>]] [--html-path] [--man-path] [--info-path]\n"
+	"git [--version] [--help] [-C <path>] [-c name=value]\n"
+	"           [--exec-path[=<path>]] [--html-path] [--man-path] [--info-path]\n"
 	"           [-p|--paginate|--no-pager] [--no-replace-objects] [--bare]\n"
 	"           [--git-dir=<path>] [--work-tree=<path>] [--namespace=<name>]\n"
-	"           [-c name=value] [--help]\n"
 	"           <command> [<args>]";
 
 const char git_more_info_string[] =
-	"See 'git help <command>' for more information on a specific command.";
+	N_("'git help -a' and 'git help -g' lists available subcommands and some\n"
+	   "concept guides. See 'git help <command>' or 'git help <concept>'\n"
+	   "to read about a specific subcommand or concept.");
 
 static struct startup_info git_startup_info;
 static int use_pager = -1;
-struct pager_config {
-	const char *cmd;
-	int want;
-	char *value;
-};
-
-static int pager_command_config(const char *var, const char *value, void *data)
-{
-	struct pager_config *c = data;
-	if (!prefixcmp(var, "pager.") && !strcmp(var + 6, c->cmd)) {
-		int b = git_config_maybe_bool(var, value);
-		if (b >= 0)
-			c->want = b;
-		else {
-			c->want = 1;
-			c->value = xstrdup(value);
-		}
-	}
-	return 0;
-}
-
-/* returns 0 for "no pager", 1 for "use pager", and -1 for "not specified" */
-int check_pager_config(const char *cmd)
-{
-	struct pager_config c;
-	c.cmd = cmd;
-	c.want = -1;
-	c.value = NULL;
-	git_config(pager_command_config, &c);
-	if (c.value)
-		pager_program = c.value;
-	return c.want;
-}
 
 static void commit_pager_choice(void) {
 	switch (use_pager) {
@@ -84,7 +54,7 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 		/*
 		 * Check remaining flags.
 		 */
-		if (!prefixcmp(cmd, "--exec-path")) {
+		if (starts_with(cmd, "--exec-path")) {
 			cmd += 11;
 			if (*cmd == '=')
 				git_set_argv_exec_path(cmd + 1);
@@ -108,7 +78,7 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 			if (envchanged)
 				*envchanged = 1;
 		} else if (!strcmp(cmd, "--no-replace-objects")) {
-			read_replace_refs = 0;
+			check_replace_refs = 0;
 			setenv(NO_REPLACE_OBJECTS_ENVIRONMENT, "1", 1);
 			if (envchanged)
 				*envchanged = 1;
@@ -122,7 +92,7 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 				*envchanged = 1;
 			(*argv)++;
 			(*argc)--;
-		} else if (!prefixcmp(cmd, "--git-dir=")) {
+		} else if (starts_with(cmd, "--git-dir=")) {
 			setenv(GIT_DIR_ENVIRONMENT, cmd + 10, 1);
 			if (envchanged)
 				*envchanged = 1;
@@ -136,7 +106,7 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 				*envchanged = 1;
 			(*argv)++;
 			(*argc)--;
-		} else if (!prefixcmp(cmd, "--namespace=")) {
+		} else if (starts_with(cmd, "--namespace=")) {
 			setenv(GIT_NAMESPACE_ENVIRONMENT, cmd + 12, 1);
 			if (envchanged)
 				*envchanged = 1;
@@ -150,7 +120,7 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 				*envchanged = 1;
 			(*argv)++;
 			(*argc)--;
-		} else if (!prefixcmp(cmd, "--work-tree=")) {
+		} else if (starts_with(cmd, "--work-tree=")) {
 			setenv(GIT_WORK_TREE_ENVIRONMENT, cmd + 12, 1);
 			if (envchanged)
 				*envchanged = 1;
@@ -158,6 +128,7 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 			static char git_dir[PATH_MAX+1];
 			is_bare_repository_cfg = 1;
 			setenv(GIT_DIR_ENVIRONMENT, getcwd(git_dir, sizeof(git_dir)), 0);
+			setenv(GIT_IMPLICIT_WORK_TREE_ENVIRONMENT, "0", 1);
 			if (envchanged)
 				*envchanged = 1;
 		} else if (!strcmp(cmd, "-c")) {
@@ -166,6 +137,43 @@ static int handle_options(const char ***argv, int *argc, int *envchanged)
 				usage(git_usage_string);
 			}
 			git_config_push_parameter((*argv)[1]);
+			(*argv)++;
+			(*argc)--;
+		} else if (!strcmp(cmd, "--literal-pathspecs")) {
+			setenv(GIT_LITERAL_PATHSPECS_ENVIRONMENT, "1", 1);
+			if (envchanged)
+				*envchanged = 1;
+		} else if (!strcmp(cmd, "--no-literal-pathspecs")) {
+			setenv(GIT_LITERAL_PATHSPECS_ENVIRONMENT, "0", 1);
+			if (envchanged)
+				*envchanged = 1;
+		} else if (!strcmp(cmd, "--glob-pathspecs")) {
+			setenv(GIT_GLOB_PATHSPECS_ENVIRONMENT, "1", 1);
+			if (envchanged)
+				*envchanged = 1;
+		} else if (!strcmp(cmd, "--noglob-pathspecs")) {
+			setenv(GIT_NOGLOB_PATHSPECS_ENVIRONMENT, "1", 1);
+			if (envchanged)
+				*envchanged = 1;
+		} else if (!strcmp(cmd, "--icase-pathspecs")) {
+			setenv(GIT_ICASE_PATHSPECS_ENVIRONMENT, "1", 1);
+			if (envchanged)
+				*envchanged = 1;
+		} else if (!strcmp(cmd, "--shallow-file")) {
+			(*argv)++;
+			(*argc)--;
+			set_alternate_shallow_file((*argv)[0], 1);
+			if (envchanged)
+				*envchanged = 1;
+		} else if (!strcmp(cmd, "-C")) {
+			if (*argc < 2) {
+				fprintf(stderr, "No directory given for -C.\n" );
+				usage(git_usage_string);
+			}
+			if (chdir((*argv)[1]))
+				die_errno("Cannot change to '%s'", (*argv)[1]);
+			if (envchanged)
+				*envchanged = 1;
 			(*argv)++;
 			(*argc)--;
 		} else {
@@ -256,8 +264,6 @@ static int handle_alias(int *argcp, const char ***argv)
 	return ret;
 }
 
-const char git_version_string[] = GIT_VERSION;
-
 #define RUN_SETUP		(1<<0)
 #define RUN_SETUP_GENTLY	(1<<1)
 #define USE_PAGER		(1<<2)
@@ -326,122 +332,136 @@ static int run_builtin(struct cmd_struct *p, int argc, const char **argv)
 	return 0;
 }
 
-static void handle_internal_command(int argc, const char **argv)
+static struct cmd_struct commands[] = {
+	{ "add", cmd_add, RUN_SETUP | NEED_WORK_TREE },
+	{ "annotate", cmd_annotate, RUN_SETUP },
+	{ "apply", cmd_apply, RUN_SETUP_GENTLY },
+	{ "archive", cmd_archive },
+	{ "bisect--helper", cmd_bisect__helper, RUN_SETUP },
+	{ "blame", cmd_blame, RUN_SETUP },
+	{ "branch", cmd_branch, RUN_SETUP },
+	{ "bundle", cmd_bundle, RUN_SETUP_GENTLY },
+	{ "cat-file", cmd_cat_file, RUN_SETUP },
+	{ "check-attr", cmd_check_attr, RUN_SETUP },
+	{ "check-ignore", cmd_check_ignore, RUN_SETUP | NEED_WORK_TREE },
+	{ "check-mailmap", cmd_check_mailmap, RUN_SETUP },
+	{ "check-ref-format", cmd_check_ref_format },
+	{ "checkout", cmd_checkout, RUN_SETUP | NEED_WORK_TREE },
+	{ "checkout-index", cmd_checkout_index,
+		RUN_SETUP | NEED_WORK_TREE},
+	{ "cherry", cmd_cherry, RUN_SETUP },
+	{ "cherry-pick", cmd_cherry_pick, RUN_SETUP | NEED_WORK_TREE },
+	{ "clean", cmd_clean, RUN_SETUP | NEED_WORK_TREE },
+	{ "clone", cmd_clone },
+	{ "column", cmd_column, RUN_SETUP_GENTLY },
+	{ "commit", cmd_commit, RUN_SETUP | NEED_WORK_TREE },
+	{ "commit-tree", cmd_commit_tree, RUN_SETUP },
+	{ "config", cmd_config, RUN_SETUP_GENTLY },
+	{ "count-objects", cmd_count_objects, RUN_SETUP },
+	{ "credential", cmd_credential, RUN_SETUP_GENTLY },
+	{ "describe", cmd_describe, RUN_SETUP },
+	{ "diff", cmd_diff },
+	{ "diff-files", cmd_diff_files, RUN_SETUP | NEED_WORK_TREE },
+	{ "diff-index", cmd_diff_index, RUN_SETUP },
+	{ "diff-tree", cmd_diff_tree, RUN_SETUP },
+	{ "fast-export", cmd_fast_export, RUN_SETUP },
+	{ "fetch", cmd_fetch, RUN_SETUP },
+	{ "fetch-pack", cmd_fetch_pack, RUN_SETUP },
+	{ "fmt-merge-msg", cmd_fmt_merge_msg, RUN_SETUP },
+	{ "for-each-ref", cmd_for_each_ref, RUN_SETUP },
+	{ "format-patch", cmd_format_patch, RUN_SETUP },
+	{ "fsck", cmd_fsck, RUN_SETUP },
+	{ "fsck-objects", cmd_fsck, RUN_SETUP },
+	{ "gc", cmd_gc, RUN_SETUP },
+	{ "get-tar-commit-id", cmd_get_tar_commit_id },
+	{ "grep", cmd_grep, RUN_SETUP_GENTLY },
+	{ "hash-object", cmd_hash_object },
+	{ "help", cmd_help },
+	{ "index-pack", cmd_index_pack, RUN_SETUP_GENTLY },
+	{ "init", cmd_init_db },
+	{ "init-db", cmd_init_db },
+	{ "log", cmd_log, RUN_SETUP },
+	{ "ls-files", cmd_ls_files, RUN_SETUP },
+	{ "ls-remote", cmd_ls_remote, RUN_SETUP_GENTLY },
+	{ "ls-tree", cmd_ls_tree, RUN_SETUP },
+	{ "mailinfo", cmd_mailinfo },
+	{ "mailsplit", cmd_mailsplit },
+	{ "merge", cmd_merge, RUN_SETUP | NEED_WORK_TREE },
+	{ "merge-base", cmd_merge_base, RUN_SETUP },
+	{ "merge-file", cmd_merge_file, RUN_SETUP_GENTLY },
+	{ "merge-index", cmd_merge_index, RUN_SETUP },
+	{ "merge-ours", cmd_merge_ours, RUN_SETUP },
+	{ "merge-recursive", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
+	{ "merge-recursive-ours", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
+	{ "merge-recursive-theirs", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
+	{ "merge-subtree", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
+	{ "merge-tree", cmd_merge_tree, RUN_SETUP },
+	{ "mktag", cmd_mktag, RUN_SETUP },
+	{ "mktree", cmd_mktree, RUN_SETUP },
+	{ "mv", cmd_mv, RUN_SETUP | NEED_WORK_TREE },
+	{ "name-rev", cmd_name_rev, RUN_SETUP },
+	{ "notes", cmd_notes, RUN_SETUP },
+	{ "pack-objects", cmd_pack_objects, RUN_SETUP },
+	{ "pack-redundant", cmd_pack_redundant, RUN_SETUP },
+	{ "pack-refs", cmd_pack_refs, RUN_SETUP },
+	{ "patch-id", cmd_patch_id },
+	{ "pickaxe", cmd_blame, RUN_SETUP },
+	{ "prune", cmd_prune, RUN_SETUP },
+	{ "prune-packed", cmd_prune_packed, RUN_SETUP },
+	{ "push", cmd_push, RUN_SETUP },
+	{ "read-tree", cmd_read_tree, RUN_SETUP },
+	{ "receive-pack", cmd_receive_pack },
+	{ "reflog", cmd_reflog, RUN_SETUP },
+	{ "remote", cmd_remote, RUN_SETUP },
+	{ "remote-ext", cmd_remote_ext },
+	{ "remote-fd", cmd_remote_fd },
+	{ "repack", cmd_repack, RUN_SETUP },
+	{ "replace", cmd_replace, RUN_SETUP },
+	{ "rerere", cmd_rerere, RUN_SETUP },
+	{ "reset", cmd_reset, RUN_SETUP },
+	{ "rev-list", cmd_rev_list, RUN_SETUP },
+	{ "rev-parse", cmd_rev_parse },
+	{ "revert", cmd_revert, RUN_SETUP | NEED_WORK_TREE },
+	{ "rm", cmd_rm, RUN_SETUP },
+	{ "send-pack", cmd_send_pack, RUN_SETUP },
+	{ "shortlog", cmd_shortlog, RUN_SETUP_GENTLY | USE_PAGER },
+	{ "show", cmd_show, RUN_SETUP },
+	{ "show-branch", cmd_show_branch, RUN_SETUP },
+	{ "show-ref", cmd_show_ref, RUN_SETUP },
+	{ "stage", cmd_add, RUN_SETUP | NEED_WORK_TREE },
+	{ "status", cmd_status, RUN_SETUP | NEED_WORK_TREE },
+	{ "stripspace", cmd_stripspace },
+	{ "symbolic-ref", cmd_symbolic_ref, RUN_SETUP },
+	{ "tag", cmd_tag, RUN_SETUP },
+	{ "unpack-file", cmd_unpack_file, RUN_SETUP },
+	{ "unpack-objects", cmd_unpack_objects, RUN_SETUP },
+	{ "update-index", cmd_update_index, RUN_SETUP },
+	{ "update-ref", cmd_update_ref, RUN_SETUP },
+	{ "update-server-info", cmd_update_server_info, RUN_SETUP },
+	{ "upload-archive", cmd_upload_archive },
+	{ "upload-archive--writer", cmd_upload_archive_writer },
+	{ "var", cmd_var, RUN_SETUP_GENTLY },
+	{ "verify-pack", cmd_verify_pack },
+	{ "verify-tag", cmd_verify_tag, RUN_SETUP },
+	{ "version", cmd_version },
+	{ "whatchanged", cmd_whatchanged, RUN_SETUP },
+	{ "write-tree", cmd_write_tree, RUN_SETUP },
+};
+
+int is_builtin(const char *s)
+{
+	int i;
+	for (i = 0; i < ARRAY_SIZE(commands); i++) {
+		struct cmd_struct *p = commands+i;
+		if (!strcmp(s, p->cmd))
+			return 1;
+	}
+	return 0;
+}
+
+static void handle_builtin(int argc, const char **argv)
 {
 	const char *cmd = argv[0];
-	static struct cmd_struct commands[] = {
-		{ "add", cmd_add, RUN_SETUP | NEED_WORK_TREE },
-		{ "annotate", cmd_annotate, RUN_SETUP },
-		{ "apply", cmd_apply, RUN_SETUP_GENTLY },
-		{ "archive", cmd_archive },
-		{ "bisect--helper", cmd_bisect__helper, RUN_SETUP },
-		{ "blame", cmd_blame, RUN_SETUP },
-		{ "branch", cmd_branch, RUN_SETUP },
-		{ "bundle", cmd_bundle, RUN_SETUP_GENTLY },
-		{ "cat-file", cmd_cat_file, RUN_SETUP },
-		{ "check-attr", cmd_check_attr, RUN_SETUP },
-		{ "check-ref-format", cmd_check_ref_format },
-		{ "checkout", cmd_checkout, RUN_SETUP | NEED_WORK_TREE },
-		{ "checkout-index", cmd_checkout_index,
-			RUN_SETUP | NEED_WORK_TREE},
-		{ "cherry", cmd_cherry, RUN_SETUP },
-		{ "cherry-pick", cmd_cherry_pick, RUN_SETUP | NEED_WORK_TREE },
-		{ "clean", cmd_clean, RUN_SETUP | NEED_WORK_TREE },
-		{ "clone", cmd_clone },
-		{ "commit", cmd_commit, RUN_SETUP | NEED_WORK_TREE },
-		{ "commit-tree", cmd_commit_tree, RUN_SETUP },
-		{ "config", cmd_config, RUN_SETUP_GENTLY },
-		{ "count-objects", cmd_count_objects, RUN_SETUP },
-		{ "describe", cmd_describe, RUN_SETUP },
-		{ "diff", cmd_diff },
-		{ "diff-files", cmd_diff_files, RUN_SETUP | NEED_WORK_TREE },
-		{ "diff-index", cmd_diff_index, RUN_SETUP },
-		{ "diff-tree", cmd_diff_tree, RUN_SETUP },
-		{ "fast-export", cmd_fast_export, RUN_SETUP },
-		{ "fetch", cmd_fetch, RUN_SETUP },
-		{ "fetch-pack", cmd_fetch_pack, RUN_SETUP },
-		{ "fmt-merge-msg", cmd_fmt_merge_msg, RUN_SETUP },
-		{ "for-each-ref", cmd_for_each_ref, RUN_SETUP },
-		{ "format-patch", cmd_format_patch, RUN_SETUP },
-		{ "fsck", cmd_fsck, RUN_SETUP },
-		{ "fsck-objects", cmd_fsck, RUN_SETUP },
-		{ "gc", cmd_gc, RUN_SETUP },
-		{ "get-tar-commit-id", cmd_get_tar_commit_id },
-		{ "grep", cmd_grep, RUN_SETUP_GENTLY },
-		{ "hash-object", cmd_hash_object },
-		{ "help", cmd_help },
-		{ "index-pack", cmd_index_pack, RUN_SETUP_GENTLY },
-		{ "init", cmd_init_db },
-		{ "init-db", cmd_init_db },
-		{ "log", cmd_log, RUN_SETUP },
-		{ "ls-files", cmd_ls_files, RUN_SETUP },
-		{ "ls-remote", cmd_ls_remote, RUN_SETUP_GENTLY },
-		{ "ls-tree", cmd_ls_tree, RUN_SETUP },
-		{ "mailinfo", cmd_mailinfo },
-		{ "mailsplit", cmd_mailsplit },
-		{ "merge", cmd_merge, RUN_SETUP | NEED_WORK_TREE },
-		{ "merge-base", cmd_merge_base, RUN_SETUP },
-		{ "merge-file", cmd_merge_file, RUN_SETUP_GENTLY },
-		{ "merge-index", cmd_merge_index, RUN_SETUP },
-		{ "merge-ours", cmd_merge_ours, RUN_SETUP },
-		{ "merge-recursive", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
-		{ "merge-recursive-ours", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
-		{ "merge-recursive-theirs", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
-		{ "merge-subtree", cmd_merge_recursive, RUN_SETUP | NEED_WORK_TREE },
-		{ "merge-tree", cmd_merge_tree, RUN_SETUP },
-		{ "mktag", cmd_mktag, RUN_SETUP },
-		{ "mktree", cmd_mktree, RUN_SETUP },
-		{ "mv", cmd_mv, RUN_SETUP | NEED_WORK_TREE },
-		{ "name-rev", cmd_name_rev, RUN_SETUP },
-		{ "notes", cmd_notes, RUN_SETUP },
-		{ "pack-objects", cmd_pack_objects, RUN_SETUP },
-		{ "pack-redundant", cmd_pack_redundant, RUN_SETUP },
-		{ "pack-refs", cmd_pack_refs, RUN_SETUP },
-		{ "patch-id", cmd_patch_id },
-		{ "peek-remote", cmd_ls_remote, RUN_SETUP_GENTLY },
-		{ "pickaxe", cmd_blame, RUN_SETUP },
-		{ "prune", cmd_prune, RUN_SETUP },
-		{ "prune-packed", cmd_prune_packed, RUN_SETUP },
-		{ "push", cmd_push, RUN_SETUP },
-		{ "read-tree", cmd_read_tree, RUN_SETUP },
-		{ "receive-pack", cmd_receive_pack },
-		{ "reflog", cmd_reflog, RUN_SETUP },
-		{ "remote", cmd_remote, RUN_SETUP },
-		{ "remote-ext", cmd_remote_ext },
-		{ "remote-fd", cmd_remote_fd },
-		{ "replace", cmd_replace, RUN_SETUP },
-		{ "repo-config", cmd_repo_config, RUN_SETUP_GENTLY },
-		{ "rerere", cmd_rerere, RUN_SETUP },
-		{ "reset", cmd_reset, RUN_SETUP },
-		{ "rev-list", cmd_rev_list, RUN_SETUP },
-		{ "rev-parse", cmd_rev_parse },
-		{ "revert", cmd_revert, RUN_SETUP | NEED_WORK_TREE },
-		{ "rm", cmd_rm, RUN_SETUP },
-		{ "send-pack", cmd_send_pack, RUN_SETUP },
-		{ "shortlog", cmd_shortlog, RUN_SETUP_GENTLY | USE_PAGER },
-		{ "show", cmd_show, RUN_SETUP },
-		{ "show-branch", cmd_show_branch, RUN_SETUP },
-		{ "show-ref", cmd_show_ref, RUN_SETUP },
-		{ "stage", cmd_add, RUN_SETUP | NEED_WORK_TREE },
-		{ "status", cmd_status, RUN_SETUP | NEED_WORK_TREE },
-		{ "stripspace", cmd_stripspace },
-		{ "symbolic-ref", cmd_symbolic_ref, RUN_SETUP },
-		{ "tag", cmd_tag, RUN_SETUP },
-		{ "tar-tree", cmd_tar_tree },
-		{ "unpack-file", cmd_unpack_file, RUN_SETUP },
-		{ "unpack-objects", cmd_unpack_objects, RUN_SETUP },
-		{ "update-index", cmd_update_index, RUN_SETUP },
-		{ "update-ref", cmd_update_ref, RUN_SETUP },
-		{ "update-server-info", cmd_update_server_info, RUN_SETUP },
-		{ "upload-archive", cmd_upload_archive },
-		{ "upload-archive--writer", cmd_upload_archive_writer },
-		{ "var", cmd_var, RUN_SETUP_GENTLY },
-		{ "verify-pack", cmd_verify_pack },
-		{ "verify-tag", cmd_verify_tag, RUN_SETUP },
-		{ "version", cmd_version },
-		{ "whatchanged", cmd_whatchanged, RUN_SETUP },
-		{ "write-tree", cmd_write_tree, RUN_SETUP },
-	};
 	int i;
 	static const char ext[] = STRIP_EXTENSION;
 
@@ -509,8 +529,8 @@ static int run_argv(int *argcp, const char ***argv)
 	int done_alias = 0;
 
 	while (1) {
-		/* See if it's an internal command */
-		handle_internal_command(*argcp, *argv);
+		/* See if it's a builtin */
+		handle_builtin(*argcp, *argv);
 
 		/* .. then try the external ones */
 		execv_dashed_external(*argv);
@@ -528,8 +548,9 @@ static int run_argv(int *argcp, const char ***argv)
 }
 
 
-int main(int argc, const char **argv)
+int main(int argc, char **av)
 {
+	const char **argv = (const char **) av;
 	const char *cmd;
 
 	startup_info = &git_startup_info;
@@ -537,6 +558,13 @@ int main(int argc, const char **argv)
 	cmd = git_extract_argv0_path(argv[0]);
 	if (!cmd)
 		cmd = "git-help";
+
+	/*
+	 * Always open file descriptors 0/1/2 to avoid clobbering files
+	 * in die().  It also avoids messing up when the pipes are dup'ed
+	 * onto stdin/stdout/stderr in the child processes we spawn.
+	 */
+	sanitize_stdfds();
 
 	git_setup_gettext();
 
@@ -547,14 +575,14 @@ int main(int argc, const char **argv)
 	 *  - cannot execute it externally (since it would just do
 	 *    the same thing over again)
 	 *
-	 * So we just directly call the internal command handler, and
-	 * die if that one cannot handle it.
+	 * So we just directly call the builtin handler, and die if
+	 * that one cannot handle it.
 	 */
-	if (!prefixcmp(cmd, "git-")) {
+	if (starts_with(cmd, "git-")) {
 		cmd += 4;
 		argv[0] = cmd;
-		handle_internal_command(argc, argv);
-		die("cannot handle %s internally", cmd);
+		handle_builtin(argc, argv);
+		die("cannot handle %s as a builtin", cmd);
 	}
 
 	/* Look for flags.. */
@@ -562,14 +590,14 @@ int main(int argc, const char **argv)
 	argc--;
 	handle_options(&argv, &argc, NULL);
 	if (argc > 0) {
-		if (!prefixcmp(argv[0], "--"))
+		if (starts_with(argv[0], "--"))
 			argv[0] += 2;
 	} else {
 		/* The user didn't specify a command; give them help */
 		commit_pager_choice();
 		printf("usage: %s\n\n", git_usage_string);
 		list_common_cmds_help();
-		printf("\n%s\n", git_more_info_string);
+		printf("\n%s\n", _(git_more_info_string));
 		exit(1);
 	}
 	cmd = argv[0];

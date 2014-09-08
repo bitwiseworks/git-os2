@@ -9,10 +9,13 @@ test_expect_success setup '
 	rm -fr .git &&
 	test_create_repo src &&
 	(
-		cd src
-		>file
-		git add file
-		git commit -m initial
+		cd src &&
+		>file &&
+		git add file &&
+		git commit -m initial &&
+		echo 1 >file &&
+		git add file &&
+		git commit -m updated
 	)
 
 '
@@ -33,7 +36,7 @@ test_expect_success 'clone with excess parameters (2)' '
 
 test_expect_success C_LOCALE_OUTPUT 'output from clone' '
 	rm -fr dst &&
-	git clone -n "file://$(pwd)/src" dst >output &&
+	git clone -n "file://$(pwd)/src" dst >output 2>&1 &&
 	test $(grep Clon output | wc -l) = 1
 '
 
@@ -85,6 +88,26 @@ test_expect_success 'clone --mirror' '
 	test "+refs/*:refs/*" = "$FETCH" &&
 	MIRROR="$(cd mirror && git config --bool remote.origin.mirror)" &&
 	test "$MIRROR" = true
+
+'
+
+test_expect_success 'clone --mirror with detached HEAD' '
+
+	( cd src && git checkout HEAD^ && git rev-parse HEAD >../expected ) &&
+	git clone --mirror src mirror.detached &&
+	( cd src && git checkout - ) &&
+	GIT_DIR=mirror.detached git rev-parse HEAD >actual &&
+	test_cmp expected actual
+
+'
+
+test_expect_success 'clone --bare with detached HEAD' '
+
+	( cd src && git checkout HEAD^ && git rev-parse HEAD >../expected ) &&
+	git clone --bare src bare.detached &&
+	( cd src && git checkout - ) &&
+	GIT_DIR=bare.detached git rev-parse HEAD >actual &&
+	test_cmp expected actual
 
 '
 
@@ -246,6 +269,172 @@ test_expect_success 'clone from original with relative alternate' '
 	echo ../../../src/.git/objects >nest/src-5/objects/info/alternates &&
 	git clone --bare nest/src-5 target-10 &&
 	grep /src/\\.git/objects target-10/objects/info/alternates
+'
+
+test_expect_success 'clone checking out a tag' '
+	git clone --branch=some-tag src dst.tag &&
+	GIT_DIR=src/.git git rev-parse some-tag >expected &&
+	test_cmp expected dst.tag/.git/HEAD &&
+	GIT_DIR=dst.tag/.git git config remote.origin.fetch >fetch.actual &&
+	echo "+refs/heads/*:refs/remotes/origin/*" >fetch.expected &&
+	test_cmp fetch.expected fetch.actual
+'
+
+setup_ssh_wrapper () {
+	test_expect_success 'setup ssh wrapper' '
+		write_script "$TRASH_DIRECTORY/ssh-wrapper" <<-\EOF &&
+		echo >>"$TRASH_DIRECTORY/ssh-output" "ssh: $*" &&
+		# throw away all but the last argument, which should be the
+		# command
+		while test $# -gt 1; do shift; done
+		eval "$1"
+		EOF
+		GIT_SSH="$TRASH_DIRECTORY/ssh-wrapper" &&
+		export GIT_SSH &&
+		export TRASH_DIRECTORY &&
+		>"$TRASH_DIRECTORY"/ssh-output
+	'
+}
+
+expect_ssh () {
+	test_when_finished '
+		(cd "$TRASH_DIRECTORY" && rm -f ssh-expect && >ssh-output)
+	' &&
+	{
+		case "$1" in
+		none)
+			;;
+		*)
+			echo "ssh: $1 git-upload-pack '$2'"
+		esac
+	} >"$TRASH_DIRECTORY/ssh-expect" &&
+	(cd "$TRASH_DIRECTORY" && test_cmp ssh-expect ssh-output)
+}
+
+setup_ssh_wrapper
+
+test_expect_success 'clone myhost:src uses ssh' '
+	git clone myhost:src ssh-clone &&
+	expect_ssh myhost src
+'
+
+test_expect_success NOT_MINGW,NOT_CYGWIN 'clone local path foo:bar' '
+	cp -R src "foo:bar" &&
+	git clone "foo:bar" foobar &&
+	expect_ssh none
+'
+
+test_expect_success 'bracketed hostnames are still ssh' '
+	git clone "[myhost:123]:src" ssh-bracket-clone &&
+	expect_ssh myhost:123 src
+'
+
+counter=0
+# $1 url
+# $2 none|host
+# $3 path
+test_clone_url () {
+	counter=$(($counter + 1))
+	test_might_fail git clone "$1" tmp$counter &&
+	expect_ssh "$2" "$3"
+}
+
+test_expect_success NOT_MINGW 'clone c:temp is ssl' '
+	test_clone_url c:temp c temp
+'
+
+test_expect_success MINGW 'clone c:temp is dos drive' '
+	test_clone_url c:temp none
+'
+
+#ip v4
+for repo in rep rep/home/project 123
+do
+	test_expect_success "clone host:$repo" '
+		test_clone_url host:$repo host $repo
+	'
+done
+
+#ipv6
+for repo in rep rep/home/project 123
+do
+	test_expect_success "clone [::1]:$repo" '
+		test_clone_url [::1]:$repo ::1 $repo
+	'
+done
+#home directory
+test_expect_success "clone host:/~repo" '
+	test_clone_url host:/~repo host "~repo"
+'
+
+test_expect_success "clone [::1]:/~repo" '
+	test_clone_url [::1]:/~repo ::1 "~repo"
+'
+
+# Corner cases
+for url in foo/bar:baz [foo]bar/baz:qux [foo/bar]:baz
+do
+	test_expect_success "clone $url is not ssh" '
+		test_clone_url $url none
+	'
+done
+
+#with ssh:// scheme
+test_expect_success 'clone ssh://host.xz/home/user/repo' '
+	test_clone_url "ssh://host.xz/home/user/repo" host.xz "/home/user/repo"
+'
+
+# from home directory
+test_expect_success 'clone ssh://host.xz/~repo' '
+	test_clone_url "ssh://host.xz/~repo" host.xz "~repo"
+'
+
+# with port number
+test_expect_success 'clone ssh://host.xz:22/home/user/repo' '
+	test_clone_url "ssh://host.xz:22/home/user/repo" "-p 22 host.xz" "/home/user/repo"
+'
+
+# from home directory with port number
+test_expect_success 'clone ssh://host.xz:22/~repo' '
+	test_clone_url "ssh://host.xz:22/~repo" "-p 22 host.xz" "~repo"
+'
+
+#IPv6
+test_expect_success 'clone ssh://[::1]/home/user/repo' '
+	test_clone_url "ssh://[::1]/home/user/repo" "::1" "/home/user/repo"
+'
+
+#IPv6 from home directory
+test_expect_success 'clone ssh://[::1]/~repo' '
+	test_clone_url "ssh://[::1]/~repo" "::1" "~repo"
+'
+
+#IPv6 with port number
+test_expect_success 'clone ssh://[::1]:22/home/user/repo' '
+	test_clone_url "ssh://[::1]:22/home/user/repo" "-p 22 ::1" "/home/user/repo"
+'
+
+#IPv6 from home directory with port number
+test_expect_success 'clone ssh://[::1]:22/~repo' '
+	test_clone_url "ssh://[::1]:22/~repo" "-p 22 ::1" "~repo"
+'
+
+test_expect_success 'clone from a repository with two identical branches' '
+
+	(
+		cd src &&
+		git checkout -b another master
+	) &&
+	git clone src target-11 &&
+	test "z$( cd target-11 && git symbolic-ref HEAD )" = zrefs/heads/another
+
+'
+
+test_expect_success 'shallow clone locally' '
+	git clone --depth=1 --no-local src ssrrcc &&
+	git clone ssrrcc ddsstt &&
+	test_cmp ssrrcc/.git/shallow ddsstt/.git/shallow &&
+	( cd ddsstt && git fsck )
 '
 
 test_done

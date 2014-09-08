@@ -39,8 +39,7 @@ int init_patch_ids(struct patch_ids *ids)
 	memset(ids, 0, sizeof(*ids));
 	diff_setup(&ids->diffopts);
 	DIFF_OPT_SET(&ids->diffopts, RECURSIVE);
-	if (diff_setup_done(&ids->diffopts) < 0)
-		return error("diff_setup_done failed");
+	diff_setup_done(&ids->diffopts);
 	return 0;
 }
 
@@ -84,10 +83,7 @@ static struct patch_id *add_commit(struct commit *commit,
 	ent = &bucket->bucket[bucket->nr++];
 	hashcpy(ent->patch_id, sha1);
 
-	if (ids->alloc <= ids->nr) {
-		ids->alloc = alloc_nr(ids->nr);
-		ids->table = xrealloc(ids->table, sizeof(ent) * ids->alloc);
-	}
+	ALLOC_GROW(ids->table, ids->nr + 1, ids->alloc);
 	if (pos < ids->nr)
 		memmove(ids->table + pos + 1, ids->table + pos,
 			sizeof(ent) * (ids->nr - pos));

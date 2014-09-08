@@ -29,7 +29,7 @@ static int number_callback(const struct option *opt, const char *arg, int unset)
 	return 0;
 }
 
-int main(int argc, const char **argv)
+int main(int argc, char **argv)
 {
 	const char *prefix = "prefix/";
 	const char *usage[] = {
@@ -37,7 +37,11 @@ int main(int argc, const char **argv)
 		NULL
 	};
 	struct option options[] = {
-		OPT_BOOLEAN('b', "boolean", &boolean, "get a boolean"),
+		OPT_BOOL(0, "yes", &boolean, "get a boolean"),
+		OPT_BOOL('D', "no-doubt", &boolean, "begins with 'no-'"),
+		{ OPTION_SET_INT, 'B', "no-fear", &boolean, NULL,
+		  "be brave", PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, 1 },
+		OPT_COUNTUP('b', "boolean", &boolean, "increment by one"),
 		OPT_BIT('4', "or4", &boolean,
 			"bitwise-or boolean with ...0100", 4),
 		OPT_NEGBIT(0, "neg-or4", &boolean, "same as --no-or4", 4),
@@ -55,18 +59,16 @@ int main(int argc, const char **argv)
 		OPT_STRING(0, "st", &string, "st", "get another string (pervert ordering)"),
 		OPT_STRING('o', NULL, &string, "str", "get another string"),
 		OPT_NOOP_NOARG(0, "obsolete"),
-		OPT_SET_PTR(0, "default-string", &string,
-			"set string to default", (unsigned long)"default"),
 		OPT_STRING_LIST(0, "list", &list, "str", "add str to list"),
 		OPT_GROUP("Magic arguments"),
 		OPT_ARGUMENT("quux", "means --quux"),
 		OPT_NUMBER_CALLBACK(&integer, "set integer to NUM",
 			number_callback),
-		{ OPTION_BOOLEAN, '+', NULL, &boolean, NULL, "same as -b",
+		{ OPTION_COUNTUP, '+', NULL, &boolean, NULL, "same as -b",
 		  PARSE_OPT_NOARG | PARSE_OPT_NONEG | PARSE_OPT_NODASH },
-		{ OPTION_BOOLEAN, 0, "ambiguous", &ambiguous, NULL,
+		{ OPTION_COUNTUP, 0, "ambiguous", &ambiguous, NULL,
 		  "positive ambiguity", PARSE_OPT_NOARG | PARSE_OPT_NONEG },
-		{ OPTION_BOOLEAN, 0, "no-ambiguous", &ambiguous, NULL,
+		{ OPTION_COUNTUP, 0, "no-ambiguous", &ambiguous, NULL,
 		  "negative ambiguity", PARSE_OPT_NOARG | PARSE_OPT_NONEG },
 		OPT_GROUP("Standard options"),
 		OPT__ABBREV(&abbrev),
@@ -77,7 +79,7 @@ int main(int argc, const char **argv)
 	};
 	int i;
 
-	argc = parse_options(argc, argv, prefix, options, usage, 0);
+	argc = parse_options(argc, (const char **)argv, prefix, options, usage, 0);
 
 	printf("boolean: %d\n", boolean);
 	printf("integer: %u\n", integer);

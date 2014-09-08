@@ -74,7 +74,8 @@
 # define _XOPEN_SOURCE 500
 # endif
 #elif !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__USLC__) && \
-      !defined(_M_UNIX) && !defined(__sgi) && !defined(__DragonFly__)
+      !defined(_M_UNIX) && !defined(__sgi) && !defined(__DragonFly__) && \
+      !defined(__TANDEM) && !defined(__QNX__) && !defined(__MirBSD__)
 #define _XOPEN_SOURCE 600 /* glibc2 and AIX 5.3L need 500, OpenBSD needs 600 for S_ISLNK() */
 #define _XOPEN_SOURCE_EXTENDED 1 /* AIX 5.3L needs this */
 #endif
@@ -84,10 +85,14 @@
 #define _NETBSD_SOURCE 1
 #define _SGI_SOURCE 1
 
-#ifdef WIN32 /* Both MinGW and MSVC */
+#if defined(WIN32) && !defined(__CYGWIN__) /* Both MinGW and MSVC */
+# if defined (_MSC_VER) && !defined(_WIN32_WINNT)
+#  define _WIN32_WINNT 0x0502
+# endif
 #define WIN32_LEAN_AND_MEAN  /* stops windows.h including winsock.h */
 #include <winsock2.h>
 #include <windows.h>
+#define GIT_WINDOWS_NATIVE
 #endif
 
 #include <unistd.h>
@@ -98,15 +103,19 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#ifdef HAVE_STRINGS_H
+#include <strings.h> /* for strcasecmp() */
+#endif
 #include <errno.h>
 #include <limits.h>
+#ifdef NEEDS_SYS_PARAM_H
 #include <sys/param.h>
+#endif
 #include <sys/types.h>
 #include <dirent.h>
 #include <sys/time.h>
 #include <time.h>
 #include <signal.h>
-#include <fnmatch.h>
 #include <assert.h>
 #include <regex.h>
 #include <utime.h>
@@ -118,6 +127,7 @@
 #else
 #include <poll.h>
 #endif
+
 #if defined(__MINGW32__)
 /* pull in Windows compatibility stuff */
 #include "compat/mingw.h"
@@ -143,19 +153,54 @@
 #else
 #include <stdint.h>
 #endif
+#ifdef NO_INTPTR_T
+/*
+ * On I16LP32, ILP32 and LP64 "long" is the save bet, however
+ * on LLP86, IL33LLP64 and P64 it needs to be "long long",
+ * while on IP16 and IP16L32 it is "int" (resp. "short")
+ * Size needs to match (or exceed) 'sizeof(void *)'.
+ * We can't take "long long" here as not everybody has it.
+ */
+typedef long intptr_t;
+typedef unsigned long uintptr_t;
+#endif
 #if defined(__CYGWIN__)
 #undef _XOPEN_SOURCE
 #include <grp.h>
 #define _XOPEN_SOURCE 600
-#include "compat/cygwin.h"
 #else
 #undef _ALL_SOURCE /* AIX 5.3L defines a struct list with _ALL_SOURCE. */
 #include <grp.h>
 #define _ALL_SOURCE 1
 #endif
 #if defined(__OS2__)
-#include "compat/os2-git-compat.h"
+#include "compat/os2-compat.h"
 #endif
+#endif
+
+/* used on Mac OS X */
+#ifdef PRECOMPOSE_UNICODE
+#include "compat/precompose_utf8.h"
+#else
+#define precompose_str(in,i_nfd2nfc)
+#define precompose_argv(c,v)
+#define probe_utf8_pathname_composition(a,b)
+#endif
+
+#ifdef MKDIR_WO_TRAILING_SLASH
+#define mkdir(a,b) compat_mkdir_wo_trailing_slash((a),(b))
+extern int compat_mkdir_wo_trailing_slash(const char*, mode_t);
+#endif
+
+#ifdef NO_STRUCT_ITIMERVAL
+struct itimerval {
+	struct timeval it_interval;
+	struct timeval it_value;
+}
+#endif
+
+#ifdef NO_SETITIMER
+#define setitimer(which,value,ovalue)
 #endif
 
 #ifndef NO_LIBGEN_H
@@ -172,6 +217,17 @@ extern char *gitbasename(char *);
 #ifndef NO_OPENSSL
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#endif
+
+/* On most systems <netdb.h> would have given us this, but
+ * not on some systems (e.g. z/OS).
+ */
+#ifndef NI_MAXHOST
+#define NI_MAXHOST 1025
+#endif
+
+#ifndef NI_MAXSERV
+#define NI_MAXSERV 32
 #endif
 
 /* On most systems <limits.h> would have given us this, but
@@ -241,7 +297,16 @@ extern char *gitbasename(char *);
 #endif
 #endif
 
+/* The sentinel attribute is valid from gcc version 4.0 */
+#if defined(__GNUC__) && (__GNUC__ >= 4)
+#define LAST_ARG_MUST_BE_NULL __attribute__((sentinel))
+#else
+#define LAST_ARG_MUST_BE_NULL
+#endif
+
 #include "compat/bswap.h"
+
+#include "wildmatch.h"
 
 /* General helper functions */
 extern void vreportf(const char *prefix, const char *err, va_list params);
@@ -253,16 +318,41 @@ extern NORETURN void die_errno(const char *err, ...) __attribute__((__format__ (
 extern int error(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
 extern void warning(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
 
+#ifndef NO_OPENSSL
+#ifdef APPLE_COMMON_CRYPTO
+#include "compat/apple-common-crypto.h"
+#else
+#include <openssl/evp.h>
+#include <openssl/hmac.h>
+#endif /* APPLE_COMMON_CRYPTO */
+#include <openssl/x509v3.h>
+#endif /* NO_OPENSSL */
+
+/*
+ * Let callers be aware of the constant return value; this can help
+ * gcc with -Wuninitialized analysis. We restrict this trick to gcc, though,
+ * because some compilers may not support variadic macros. Since we're only
+ * trying to help gcc, anyway, it's OK; other compilers will fall back to
+ * using the function as usual.
+ */
+#if defined(__GNUC__) && ! defined(__clang__)
+#define error(...) (error(__VA_ARGS__), -1)
+#endif
+
 extern void set_die_routine(NORETURN_PTR void (*routine)(const char *err, va_list params));
 extern void set_error_routine(void (*routine)(const char *err, va_list params));
+extern void set_die_is_recursing_routine(int (*routine)(void));
 
-extern int prefixcmp(const char *str, const char *prefix);
-extern int suffixcmp(const char *str, const char *suffix);
+extern int starts_with(const char *str, const char *prefix);
+extern int ends_with(const char *str, const char *suffix);
 
 static inline const char *skip_prefix(const char *str, const char *prefix)
 {
-	size_t len = strlen(prefix);
-	return strncmp(str, prefix, len) ? NULL : str + len;
+	do {
+		if (!*prefix)
+			return str;
+	} while (*str++ == *prefix++);
+	return NULL;
 }
 
 #if defined(NO_MMAP) || defined(USE_WIN32_MMAP)
@@ -360,11 +450,6 @@ extern uintmax_t gitstrtoumax(const char *, char **, int);
 extern intmax_t gitstrtoimax(const char *, char **, int);
 #endif
 
-#ifdef NO_STRTOK_R
-#define strtok_r gitstrtok_r
-extern char *gitstrtok_r(char *s, const char *delim, char **save_ptr);
-#endif
-
 #ifdef NO_HSTRERROR
 #define hstrerror githstrerror
 extern const char *githstrerror(int herror);
@@ -376,6 +461,10 @@ void *gitmemmem(const void *haystack, size_t haystacklen,
                 const void *needle, size_t needlelen);
 #endif
 
+#ifdef NO_GETPAGESIZE
+#define getpagesize() sysconf(_SC_PAGESIZE)
+#endif
+
 #ifdef FREAD_READS_DIRECTORIES
 #ifdef fopen
 #undef fopen
@@ -385,9 +474,15 @@ extern FILE *git_fopen(const char*, const char*);
 #endif
 
 #ifdef SNPRINTF_RETURNS_BOGUS
+#ifdef snprintf
+#undef snprintf
+#endif
 #define snprintf git_snprintf
 extern int git_snprintf(char *str, size_t maxsize,
 			const char *format, ...);
+#ifdef vsnprintf
+#undef vsnprintf
+#endif
 #define vsnprintf git_vsnprintf
 extern int git_vsnprintf(char *str, size_t maxsize,
 			 const char *format, va_list ap);
@@ -426,7 +521,7 @@ int inet_pton(int af, const char *src, void *dst);
 const char *inet_ntop(int af, const void *src, char *dst, size_t size);
 #endif
 
-extern void release_pack_memory(size_t, int);
+extern void release_pack_memory(size_t);
 
 typedef void (*try_to_free_t)(size_t);
 extern try_to_free_t set_try_to_free_routine(try_to_free_t);
@@ -446,7 +541,7 @@ extern FILE *xfdopen(int fd, const char *mode);
 extern int xmkstemp(char *template);
 extern int xmkstemp_mode(char *template, int mode);
 extern int odb_mkstemp(char *template, size_t limit, const char *pattern);
-extern int odb_pack_keep(char *name, size_t namesz, unsigned char *sha1);
+extern int odb_pack_keep(char *name, size_t namesz, const unsigned char *sha1);
 
 static inline size_t xsize_t(off_t len)
 {
@@ -462,33 +557,48 @@ static inline int has_extension(const char *filename, const char *ext)
 	return len > extlen && !memcmp(filename + len - extlen, ext, extlen);
 }
 
+/* in ctype.c, for kwset users */
+extern const char tolower_trans_tbl[256];
+
 /* Sane ctype - no locale, and works with signed chars */
 #undef isascii
 #undef isspace
 #undef isdigit
 #undef isalpha
 #undef isalnum
+#undef isprint
 #undef islower
 #undef isupper
 #undef tolower
 #undef toupper
-extern unsigned char sane_ctype[256];
+#undef iscntrl
+#undef ispunct
+#undef isxdigit
+
+extern const unsigned char sane_ctype[256];
 #define GIT_SPACE 0x01
 #define GIT_DIGIT 0x02
 #define GIT_ALPHA 0x04
 #define GIT_GLOB_SPECIAL 0x08
 #define GIT_REGEX_SPECIAL 0x10
 #define GIT_PATHSPEC_MAGIC 0x20
+#define GIT_CNTRL 0x40
+#define GIT_PUNCT 0x80
 #define sane_istest(x,mask) ((sane_ctype[(unsigned char)(x)] & (mask)) != 0)
 #define isascii(x) (((x) & ~0x7f) == 0)
 #define isspace(x) sane_istest(x,GIT_SPACE)
 #define isdigit(x) sane_istest(x,GIT_DIGIT)
 #define isalpha(x) sane_istest(x,GIT_ALPHA)
 #define isalnum(x) sane_istest(x,GIT_ALPHA | GIT_DIGIT)
+#define isprint(x) ((x) >= 0x20 && (x) <= 0x7e)
 #define islower(x) sane_iscase(x, 1)
 #define isupper(x) sane_iscase(x, 0)
 #define is_glob_special(x) sane_istest(x,GIT_GLOB_SPECIAL)
 #define is_regex_special(x) sane_istest(x,GIT_GLOB_SPECIAL | GIT_REGEX_SPECIAL)
+#define iscntrl(x) (sane_istest(x,GIT_CNTRL))
+#define ispunct(x) sane_istest(x, GIT_PUNCT | GIT_REGEX_SPECIAL | \
+		GIT_GLOB_SPECIAL | GIT_PATHSPEC_MAGIC)
+#define isxdigit(x) (hexval_table[x] != -1)
 #define tolower(x) sane_case((unsigned char)(x), 0x20)
 #define toupper(x) sane_case((unsigned char)(x), 0)
 #define is_pathspec_magic(x) sane_istest(x,GIT_PATHSPEC_MAGIC)
@@ -596,5 +706,26 @@ int rmdir_or_warn(const char *path);
  * the supplied file mode.
  */
 int remove_or_warn(unsigned int mode, const char *path);
+
+/*
+ * Call access(2), but warn for any error except "missing file"
+ * (ENOENT or ENOTDIR).
+ */
+#define ACCESS_EACCES_OK (1U << 0)
+int access_or_warn(const char *path, int mode, unsigned flag);
+int access_or_die(const char *path, int mode, unsigned flag);
+
+/* Warn on an inaccessible file that ought to be accessible */
+void warn_on_inaccessible(const char *path);
+
+/* Get the passwd entry for the UID of the current process. */
+struct passwd *xgetpwuid_self(void);
+
+#ifdef GMTIME_UNRELIABLE_ERRORS
+struct tm *git_gmtime(const time_t *);
+struct tm *git_gmtime_r(const time_t *, struct tm *);
+#define gmtime git_gmtime
+#define gmtime_r git_gmtime_r
+#endif
 
 #endif

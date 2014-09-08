@@ -23,10 +23,7 @@ static void append_to_tree(unsigned mode, unsigned char *sha1, char *path)
 	if (strchr(path, '/'))
 		die("path %s contains slash", path);
 
-	if (alloc <= used) {
-		alloc = alloc_nr(used);
-		entries = xrealloc(entries, sizeof(*entries) * alloc);
-	}
+	ALLOC_GROW(entries, used + 1, alloc);
 	ent = entries[used++] = xmalloc(sizeof(**entries) + len + 1);
 	ent->mode = mode;
 	ent->len = len;
@@ -64,7 +61,7 @@ static void write_tree(unsigned char *sha1)
 }
 
 static const char *mktree_usage[] = {
-	"git mktree [-z] [--missing] [--batch]",
+	N_("git mktree [-z] [--missing] [--batch]"),
 	NULL
 };
 
@@ -150,9 +147,9 @@ int cmd_mktree(int ac, const char **av, const char *prefix)
 	int got_eof = 0;
 
 	const struct option option[] = {
-		OPT_SET_INT('z', NULL, &line_termination, "input is NUL terminated", '\0'),
-		OPT_SET_INT( 0 , "missing", &allow_missing, "allow missing objects", 1),
-		OPT_SET_INT( 0 , "batch", &is_batch_mode, "allow creation of more than one tree", 1),
+		OPT_SET_INT('z', NULL, &line_termination, N_("input is NUL terminated"), '\0'),
+		OPT_SET_INT( 0 , "missing", &allow_missing, N_("allow missing objects"), 1),
+		OPT_SET_INT( 0 , "batch", &is_batch_mode, N_("allow creation of more than one tree"), 1),
 		OPT_END()
 	};
 

@@ -517,6 +517,25 @@ test_expect_success '#16c: bare .git has no worktree' '
 		"$here/16c/.git" "(null)" "$here/16c/sub" "(null)"
 '
 
+test_expect_success '#16d: bareness preserved across alias' '
+	setup_repo 16d unset "" unset &&
+	(
+		cd 16d/.git &&
+		test_must_fail git status &&
+		git config alias.st status &&
+		test_must_fail git st
+	)
+'
+
+test_expect_success '#16e: bareness preserved by --bare' '
+	setup_repo 16e unset "" unset &&
+	(
+		cd 16e/.git &&
+		test_must_fail git status &&
+		test_must_fail git --bare status
+	)
+'
+
 test_expect_success '#17: GIT_WORK_TREE without explicit GIT_DIR is accepted (bare case)' '
 	# Just like #16.
 	setup_repo 17a unset "" true &&
@@ -758,9 +777,7 @@ test_expect_success '#30: core.worktree and core.bare conflict (gitfile version)
 	setup_repo 30 "$here/30" gitfile true &&
 	(
 		cd 30 &&
-		GIT_DIR=.git &&
-		export GIT_DIR &&
-		test_must_fail git symbolic-ref HEAD 2>result
+		test_must_fail env GIT_DIR=.git git symbolic-ref HEAD 2>result
 	) &&
 	grep "core.bare and core.worktree" 30/result
 '

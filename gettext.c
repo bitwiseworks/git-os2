@@ -4,6 +4,8 @@
 
 #include "git-compat-util.h"
 #include "gettext.h"
+#include "strbuf.h"
+#include "utf8.h"
 
 #ifndef NO_GETTEXT
 #	include <locale.h>
@@ -27,10 +29,20 @@ int use_gettext_poison(void)
 #endif
 
 #ifndef NO_GETTEXT
+static int test_vsnprintf(const char *fmt, ...)
+{
+	char buf[26];
+	int ret;
+	va_list ap;
+	va_start(ap, fmt);
+	ret = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+	return ret;
+}
+
+static const char *charset;
 static void init_gettext_charset(const char *domain)
 {
-	const char *charset;
-
 	/*
 	   This trick arranges for messages to be emitted in the user's
 	   requested encoding, but avoids setting LC_CTYPE from the
@@ -98,9 +110,7 @@ static void init_gettext_charset(const char *domain)
 	   $ LANGUAGE= LANG=de_DE.utf8 ./test
 	   test: Kein passendes Ger?t gefunden
 
-	   In the long term we should probably see about getting that
-	   vsnprintf bug in glibc fixed, and audit our code so it won't
-	   fall apart under a non-C locale.
+	   The vsnprintf bug has been fixed since glibc 2.17.
 
 	   Then we could simply set LC_CTYPE from the environment, which would
 	   make things like the external perror(3) messages work.
@@ -114,7 +124,9 @@ static void init_gettext_charset(const char *domain)
 	setlocale(LC_CTYPE, "");
 	charset = locale_charset();
 	bind_textdomain_codeset(domain, charset);
-	setlocale(LC_CTYPE, "C");
+	/* the string is taken from v0.99.6~1 */
+	if (test_vsnprintf("%.*s", 13, "David_K\345gedal") < 0)
+		setlocale(LC_CTYPE, "C");
 }
 
 void git_setup_gettext(void)
@@ -127,5 +139,15 @@ void git_setup_gettext(void)
 	setlocale(LC_MESSAGES, "");
 	init_gettext_charset("git");
 	textdomain("git");
+}
+
+/* return the number of columns of string 's' in current locale */
+int gettext_width(const char *s)
+{
+	static int is_utf8 = -1;
+	if (is_utf8 == -1)
+		is_utf8 = !strcmp(charset, "UTF-8");
+
+	return is_utf8 ? utf8_strwidth(s) : strlen(s);
 }
 #endif

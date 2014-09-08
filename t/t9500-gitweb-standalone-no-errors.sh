@@ -156,10 +156,10 @@ test_expect_success \
 	 git commit -a -m "File renamed." &&
 	 gitweb_run "p=.git;a=commitdiff"'
 
-test_expect_success SYMLINKS \
+test_expect_success \
 	'commitdiff(0): file to symlink' \
 	'rm renamed_file &&
-	 ln -s file renamed_file &&
+	 test_ln_s_add file renamed_file &&
 	 git commit -a -m "File to symlink." &&
 	 gitweb_run "p=.git;a=commitdiff"'
 
@@ -212,15 +212,14 @@ test_expect_success \
 # ----------------------------------------------------------------------
 # commitdiff testing (taken from t4114-apply-typechange.sh)
 
-test_expect_success SYMLINKS 'setup typechange commits' '
+test_expect_success 'setup typechange commits' '
 	echo "hello world" > foo &&
 	echo "hi planet" > bar &&
 	git update-index --add foo bar &&
 	git commit -m initial &&
 	git branch initial &&
 	rm -f foo &&
-	ln -s bar foo &&
-	git update-index foo &&
+	test_ln_s_add bar foo &&
 	git commit -m "foo symlinked to bar" &&
 	git branch foo-symlinked-to-bar &&
 	rm -f foo &&
@@ -329,7 +328,7 @@ test_expect_success \
 	 git add b &&
 	 git commit -a -m "On branch" &&
 	 git checkout master &&
-	 git pull . b &&
+	 git merge b &&
 	 git tag merge_commit'
 
 test_expect_success \
@@ -361,11 +360,7 @@ test_expect_success \
 	 echo "Changed" >> 04-rename-to &&
 	 test_chmod +x 05-mode-change &&
 	 rm -f 06-file-or-symlink &&
-	 if test_have_prereq SYMLINKS; then
-		ln -s 01-change 06-file-or-symlink
-	 else
-		printf %s 01-change > 06-file-or-symlink
-	 fi &&
+	 test_ln_s_add 01-change 06-file-or-symlink &&
 	 echo "Changed and have mode changed" > 07-change-mode-change	&&
 	 test_chmod +x 07-change-mode-change &&
 	 git commit -a -m "Large commit" &&
@@ -539,8 +534,7 @@ test_expect_success \
 	 test_when_finished "GIT_COMMITTER_NAME=\"C O Mitter\"" &&
 	 echo "ISO-8859-1" >> file &&
 	 git add file &&
-	 git config i18n.commitencoding ISO-8859-1 &&
-	 test_when_finished "git config --unset i18n.commitencoding" &&
+	 test_config i18n.commitencoding ISO-8859-1 &&
 	 git commit -F "$TEST_DIRECTORY"/t3900/ISO8859-1.txt &&
 	 gitweb_run "p=.git;a=commit"'
 
@@ -689,9 +683,11 @@ test_expect_success \
 # syntax highlighting
 
 
-highlight --version >/dev/null 2>&1
+highlight_version=$(highlight --version </dev/null 2>/dev/null)
 if [ $? -eq 127 ]; then
-	say "Skipping syntax highlighting test, because 'highlight' was not found"
+	say "Skipping syntax highlighting tests: 'highlight' not found"
+elif test -z "$highlight_version"; then
+	say "Skipping syntax highlighting tests: incorrect 'highlight' found"
 else
 	test_set_prereq HIGHLIGHT
 	cat >>gitweb_config.perl <<-\EOF

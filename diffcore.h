@@ -29,10 +29,8 @@ struct diff_filespec {
 	char *path;
 	void *data;
 	void *cnt_data;
-	const char *funcname_pattern_ident;
 	unsigned long size;
 	int count;               /* Reference count */
-	int xfrm_flags;		 /* for use by the xfrm */
 	int rename_used;         /* Count of rename users */
 	unsigned short mode;	 /* file mode */
 	unsigned sha1_valid : 1; /* if true, use sha1 and trust mode;
@@ -45,16 +43,17 @@ struct diff_filespec {
 	unsigned dirty_submodule : 2;  /* For submodules: its work tree is dirty */
 #define DIRTY_SUBMODULE_UNTRACKED 1
 #define DIRTY_SUBMODULE_MODIFIED  2
+	unsigned is_stdin : 1;
 	unsigned has_more_entries : 1; /* only appear in combined diff */
-	struct userdiff_driver *driver;
 	/* data should be considered "binary"; -1 means "don't know yet" */
-	int is_binary;
+	signed int is_binary : 2;
+	struct userdiff_driver *driver;
 };
 
 extern struct diff_filespec *alloc_filespec(const char *);
 extern void free_filespec(struct diff_filespec *);
 extern void fill_filespec(struct diff_filespec *, const unsigned char *,
-			  unsigned short);
+			  int, unsigned short);
 
 extern int diff_populate_filespec(struct diff_filespec *, int);
 extern void diff_free_filespec_data(struct diff_filespec *);
@@ -69,6 +68,8 @@ struct diff_filepair {
 	unsigned broken_pair : 1;
 	unsigned renamed_pair : 1;
 	unsigned is_unmerged : 1;
+	unsigned done_skip_stat_unmatch : 1;
+	unsigned skip_stat_unmatch_result : 1;
 };
 #define DIFF_PAIR_UNMERGED(p) ((p)->is_unmerged)
 
@@ -109,6 +110,20 @@ extern void diffcore_rename(struct diff_options *);
 extern void diffcore_merge_broken(void);
 extern void diffcore_pickaxe(struct diff_options *);
 extern void diffcore_order(const char *orderfile);
+
+/* low-level interface to diffcore_order */
+struct obj_order {
+	void *obj;	/* setup by caller */
+
+	/* setup/used by order_objects() */
+	int orig_order;
+	int order;
+};
+
+typedef const char *(*obj_path_fn_t)(void *obj);
+
+void order_objects(const char *orderfile, obj_path_fn_t obj_path,
+		   struct obj_order *objs, int nr);
 
 #define DIFF_DEBUG 0
 #if DIFF_DEBUG

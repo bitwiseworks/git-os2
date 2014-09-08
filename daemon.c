@@ -9,10 +9,6 @@
 #define HOST_NAME_MAX 256
 #endif
 
-#ifndef NI_MAXSERV
-#define NI_MAXSERV 32
-#endif
-
 #ifdef NO_INITGROUPS
 #define initgroups(x, y) (0) /* nothing */
 #endif
@@ -30,6 +26,7 @@ static const char daemon_usage[] =
 "           [--interpolated-path=<path>]\n"
 "           [--reuseaddr] [--pid-file=<file>]\n"
 "           [--(enable|disable|allow-override|forbid-override)=<service>]\n"
+"           [--access-hook=<path>]\n"
 "           [--inetd | [--listen=<host_or_ipaddr>] [--port=<n>]\n"
 "                      [--detach] [--user=<user> [--group=<group>]]\n"
 "           [<directory>...]";
@@ -238,7 +235,7 @@ static int service_enabled;
 
 static int git_daemon_config(const char *var, const char *value, void *cb)
 {
-	if (!prefixcmp(var, "daemon.") &&
+	if (starts_with(var, "daemon.") &&
 	    !strcmp(var + 7, service_looking_at->config_name)) {
 		service_enabled = git_config_bool(var, value);
 		return 0;
@@ -253,6 +250,71 @@ static int daemon_error(const char *dir, const char *msg)
 	if (!informative_errors)
 		msg = "access denied or repository not exported";
 	packet_write(1, "ERR %s: %s", msg, dir);
+	return -1;
+}
+
+static char *access_hook;
+
+static int run_access_hook(struct daemon_service *service, const char *dir, const char *path)
+{
+	struct child_process child;
+	struct strbuf buf = STRBUF_INIT;
+	const char *argv[8];
+	const char **arg = argv;
+	char *eol;
+	int seen_errors = 0;
+
+#define STRARG(x) ((x) ? (x) : "")
+	*arg++ = access_hook;
+	*arg++ = service->name;
+	*arg++ = path;
+	*arg++ = STRARG(hostname);
+	*arg++ = STRARG(canon_hostname);
+	*arg++ = STRARG(ip_address);
+	*arg++ = STRARG(tcp_port);
+	*arg = NULL;
+#undef STRARG
+
+	memset(&child, 0, sizeof(child));
+	child.use_shell = 1;
+	child.argv = argv;
+	child.no_stdin = 1;
+	child.no_stderr = 1;
+	child.out = -1;
+	if (start_command(&child)) {
+		logerror("daemon access hook '%s' failed to start",
+			 access_hook);
+		goto error_return;
+	}
+	if (strbuf_read(&buf, child.out, 0) < 0) {
+		logerror("failed to read from pipe to daemon access hook '%s'",
+			 access_hook);
+		strbuf_reset(&buf);
+		seen_errors = 1;
+	}
+	if (close(child.out) < 0) {
+		logerror("failed to close pipe to daemon access hook '%s'",
+			 access_hook);
+		seen_errors = 1;
+	}
+	if (finish_command(&child))
+		seen_errors = 1;
+
+	if (!seen_errors) {
+		strbuf_release(&buf);
+		return 0;
+	}
+
+error_return:
+	strbuf_ltrim(&buf);
+	if (!buf.len)
+		strbuf_addstr(&buf, "service rejected");
+	eol = strchr(buf.buf, '\n');
+	if (eol)
+		*eol = '\0';
+	errno = EACCES;
+	daemon_error(dir, buf.buf);
+	strbuf_release(&buf);
 	return -1;
 }
 
@@ -302,6 +364,13 @@ static int run_service(char *dir, struct daemon_service *service)
 		errno = EACCES;
 		return daemon_error(dir, "service not enabled");
 	}
+
+	/*
+	 * Optionally, a hook can choose to deny access to the
+	 * repository depending on the phase of the moon.
+	 */
+	if (access_hook && run_access_hook(service, dir, path))
+		return -1;
 
 	/*
 	 * We'll ignore SIGTERM from now on, we have a
@@ -531,7 +600,7 @@ static void parse_host_arg(char *extra_args, int buflen)
 
 static int execute(void)
 {
-	static char line[1000];
+	char *line = packet_buffer;
 	int pktlen, len, i;
 	char *addr = getenv("REMOTE_ADDR"), *port = getenv("REMOTE_PORT");
 
@@ -539,7 +608,7 @@ static int execute(void)
 		loginfo("Connection from %s:%s", addr, port);
 
 	alarm(init_timeout ? init_timeout : timeout);
-	pktlen = packet_read_line(0, line, sizeof(line));
+	pktlen = packet_read(0, NULL, NULL, packet_buffer, sizeof(packet_buffer), 0);
 	alarm(0);
 
 	len = strlen(line);
@@ -564,7 +633,7 @@ static int execute(void)
 	for (i = 0; i < ARRAY_SIZE(daemon_service); i++) {
 		struct daemon_service *s = &(daemon_service[i]);
 		int namelen = strlen(s->name);
-		if (!prefixcmp(line, "git-") &&
+		if (starts_with(line, "git-") &&
 		    !strncmp(s->name, line + 4, namelen) &&
 		    line[namelen + 4] == ' ') {
 			/*
@@ -691,7 +760,7 @@ static void handle(int incoming, struct sockaddr *addr, socklen_t addrlen)
 		snprintf(portbuf, sizeof(portbuf), "REMOTE_PORT=%d",
 		    ntohs(sin_addr->sin_port));
 #ifndef NO_IPV6
-	} else if (addr && addr->sa_family == AF_INET6) {
+	} else if (addr->sa_family == AF_INET6) {
 		struct sockaddr_in6 *sin6_addr = (void *) addr;
 
 		char *buf = addrbuf + 12;
@@ -978,18 +1047,6 @@ static int service_loop(struct socketlist *socklist)
 	}
 }
 
-/* if any standard file descriptor is missing open it to /dev/null */
-static void sanitize_stdfds(void)
-{
-	int fd = open("/dev/null", O_RDWR, 0);
-	while (fd != -1 && fd < 2)
-		fd = dup(fd);
-	if (fd == -1)
-		die_errno("open /dev/null or dup failed");
-	if (fd > 2)
-		close(fd);
-}
-
 #ifdef NO_POSIX_GOODIES
 
 struct credentials;
@@ -997,11 +1054,6 @@ struct credentials;
 static void drop_privileges(struct credentials *cred)
 {
 	/* nothing */
-}
-
-static void daemonize(void)
-{
-	die("--detach not supported on this platform");
 }
 
 static struct credentials *prepare_credentials(const char *user_name,
@@ -1045,24 +1097,6 @@ static struct credentials *prepare_credentials(const char *user_name,
 
 	return &c;
 }
-
-static void daemonize(void)
-{
-	switch (fork()) {
-		case 0:
-			break;
-		case -1:
-			die_errno("fork failed");
-		default:
-			exit(0);
-	}
-	if (setsid() == -1)
-		die_errno("setsid failed");
-	close(0);
-	close(1);
-	close(2);
-	sanitize_stdfds();
-}
 #endif
 
 static void store_pid(const char *path)
@@ -1086,6 +1120,8 @@ static int serve(struct string_list *listen_addr, int listen_port,
 
 	drop_privileges(cred);
 
+	loginfo("Ready to rumble");
+
 	return service_loop(&socklist);
 }
 
@@ -1106,11 +1142,11 @@ int main(int argc, char **argv)
 	for (i = 1; i < argc; i++) {
 		char *arg = argv[i];
 
-		if (!prefixcmp(arg, "--listen=")) {
+		if (starts_with(arg, "--listen=")) {
 			string_list_append(&listen_addr, xstrdup_tolower(arg + 9));
 			continue;
 		}
-		if (!prefixcmp(arg, "--port=")) {
+		if (starts_with(arg, "--port=")) {
 			char *end;
 			unsigned long n;
 			n = strtoul(arg+7, &end, 0);
@@ -1140,15 +1176,19 @@ int main(int argc, char **argv)
 			export_all_trees = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--timeout=")) {
+		if (starts_with(arg, "--access-hook=")) {
+			access_hook = arg + 14;
+			continue;
+		}
+		if (starts_with(arg, "--timeout=")) {
 			timeout = atoi(arg+10);
 			continue;
 		}
-		if (!prefixcmp(arg, "--init-timeout=")) {
+		if (starts_with(arg, "--init-timeout=")) {
 			init_timeout = atoi(arg+15);
 			continue;
 		}
-		if (!prefixcmp(arg, "--max-connections=")) {
+		if (starts_with(arg, "--max-connections=")) {
 			max_connections = atoi(arg+18);
 			if (max_connections < 0)
 				max_connections = 0;	        /* unlimited */
@@ -1158,7 +1198,7 @@ int main(int argc, char **argv)
 			strict_paths = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--base-path=")) {
+		if (starts_with(arg, "--base-path=")) {
 			base_path = arg+12;
 			continue;
 		}
@@ -1166,7 +1206,7 @@ int main(int argc, char **argv)
 			base_path_relaxed = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--interpolated-path=")) {
+		if (starts_with(arg, "--interpolated-path=")) {
 			interpolated_path = arg+20;
 			continue;
 		}
@@ -1178,11 +1218,11 @@ int main(int argc, char **argv)
 			user_path = "";
 			continue;
 		}
-		if (!prefixcmp(arg, "--user-path=")) {
+		if (starts_with(arg, "--user-path=")) {
 			user_path = arg + 12;
 			continue;
 		}
-		if (!prefixcmp(arg, "--pid-file=")) {
+		if (starts_with(arg, "--pid-file=")) {
 			pid_file = arg + 11;
 			continue;
 		}
@@ -1191,35 +1231,35 @@ int main(int argc, char **argv)
 			log_syslog = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--user=")) {
+		if (starts_with(arg, "--user=")) {
 			user_name = arg + 7;
 			continue;
 		}
-		if (!prefixcmp(arg, "--group=")) {
+		if (starts_with(arg, "--group=")) {
 			group_name = arg + 8;
 			continue;
 		}
-		if (!prefixcmp(arg, "--enable=")) {
+		if (starts_with(arg, "--enable=")) {
 			enable_service(arg + 9, 1);
 			continue;
 		}
-		if (!prefixcmp(arg, "--disable=")) {
+		if (starts_with(arg, "--disable=")) {
 			enable_service(arg + 10, 0);
 			continue;
 		}
-		if (!prefixcmp(arg, "--allow-override=")) {
+		if (starts_with(arg, "--allow-override=")) {
 			make_service_overridable(arg + 17, 1);
 			continue;
 		}
-		if (!prefixcmp(arg, "--forbid-override=")) {
+		if (starts_with(arg, "--forbid-override=")) {
 			make_service_overridable(arg + 18, 0);
 			continue;
 		}
-		if (!prefixcmp(arg, "--informative-errors")) {
+		if (!strcmp(arg, "--informative-errors")) {
 			informative_errors = 1;
 			continue;
 		}
-		if (!prefixcmp(arg, "--no-informative-errors")) {
+		if (!strcmp(arg, "--no-informative-errors")) {
 			informative_errors = 0;
 			continue;
 		}
@@ -1271,10 +1311,9 @@ int main(int argc, char **argv)
 		return execute();
 
 	if (detach) {
-		daemonize();
-		loginfo("Ready to rumble");
-	}
-	else
+		if (daemonize())
+			die("--detach not supported on this platform");
+	} else
 		sanitize_stdfds();
 
 	if (pid_file)

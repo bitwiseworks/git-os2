@@ -11,6 +11,8 @@
 #include "refs.h"
 #include "resolve-undo.h"
 #include "parse-options.h"
+#include "pathspec.h"
+#include "dir.h"
 
 /*
  * Default to not allowing changes to the list of files. The
@@ -83,7 +85,7 @@ static int process_lstat_error(const char *path, int err)
 	return error("lstat(\"%s\"): %s", path, strerror(errno));
 }
 
-static int add_one_path(struct cache_entry *old, const char *path, int len, struct stat *st)
+static int add_one_path(const struct cache_entry *old, const char *path, int len, struct stat *st)
 {
 	int option, size;
 	struct cache_entry *ce;
@@ -95,7 +97,8 @@ static int add_one_path(struct cache_entry *old, const char *path, int len, stru
 	size = cache_entry_size(len);
 	ce = xcalloc(1, size);
 	memcpy(ce->name, path, len);
-	ce->ce_flags = len;
+	ce->ce_flags = create_ce_flags(0);
+	ce->ce_namelen = len;
 	fill_stat_cache_info(ce, st);
 	ce->ce_mode = ce_mode_from_stat(old, st->st_mode);
 
@@ -141,7 +144,7 @@ static int process_directory(const char *path, int len, struct stat *st)
 
 	/* Exact match: file or existing gitlink */
 	if (pos >= 0) {
-		struct cache_entry *ce = active_cache[pos];
+		const struct cache_entry *ce = active_cache[pos];
 		if (S_ISGITLINK(ce->ce_mode)) {
 
 			/* Do nothing to the index if there is no HEAD! */
@@ -157,7 +160,7 @@ static int process_directory(const char *path, int len, struct stat *st)
 	/* Inexact match: is there perhaps a subdirectory match? */
 	pos = -pos-1;
 	while (pos < active_nr) {
-		struct cache_entry *ce = active_cache[pos++];
+		const struct cache_entry *ce = active_cache[pos++];
 
 		if (strncmp(ce->name, path, len))
 			break;
@@ -182,7 +185,7 @@ static int process_path(const char *path)
 {
 	int pos, len;
 	struct stat st;
-	struct cache_entry *ce;
+	const struct cache_entry *ce;
 
 	len = strlen(path);
 	if (has_symlink_leading_path(path, len))
@@ -211,12 +214,6 @@ static int process_path(const char *path)
 	if (S_ISDIR(st.st_mode))
 		return process_directory(path, len, &st);
 
-	/*
-	 * Process a regular file
-	 */
-	if (ce && S_ISGITLINK(ce->ce_mode))
-		return error("%s is already a gitlink, not replacing", path);
-
 	return add_one_path(ce, path, len, &st);
 }
 
@@ -235,7 +232,8 @@ static int add_cacheinfo(unsigned int mode, const unsigned char *sha1,
 
 	hashcpy(ce->sha1, sha1);
 	memcpy(ce->name, path, len);
-	ce->ce_flags = create_ce_flags(len, stage);
+	ce->ce_flags = create_ce_flags(stage);
+	ce->ce_namelen = len;
 	ce->ce_mode = create_ce_mode(mode);
 	if (assume_unchanged)
 		ce->ce_flags |= CE_VALID;
@@ -277,36 +275,32 @@ static void chmod_path(int flip, const char *path)
 	die("git update-index: cannot chmod %cx '%s'", flip, path);
 }
 
-static void update_one(const char *path, const char *prefix, int prefix_length)
+static void update_one(const char *path)
 {
-	const char *p = prefix_path(prefix, prefix_length, path);
-	if (!verify_path(p)) {
+	if (!verify_path(path)) {
 		fprintf(stderr, "Ignoring path %s\n", path);
-		goto free_return;
+		return;
 	}
 	if (mark_valid_only) {
-		if (mark_ce_flags(p, CE_VALID, mark_valid_only == MARK_FLAG))
+		if (mark_ce_flags(path, CE_VALID, mark_valid_only == MARK_FLAG))
 			die("Unable to mark file %s", path);
-		goto free_return;
+		return;
 	}
 	if (mark_skip_worktree_only) {
-		if (mark_ce_flags(p, CE_SKIP_WORKTREE, mark_skip_worktree_only == MARK_FLAG))
+		if (mark_ce_flags(path, CE_SKIP_WORKTREE, mark_skip_worktree_only == MARK_FLAG))
 			die("Unable to mark file %s", path);
-		goto free_return;
+		return;
 	}
 
 	if (force_remove) {
-		if (remove_file_from_cache(p))
+		if (remove_file_from_cache(path))
 			die("git update-index: unable to remove %s", path);
 		report("remove '%s'", path);
-		goto free_return;
+		return;
 	}
-	if (process_path(p))
+	if (process_path(path))
 		die("Unable to process path %s", path);
 	report("add '%s'", path);
- free_return:
-	if (p < path || p > path + strlen(path))
-		free((char *)p);
 }
 
 static void read_index_info(int line_termination)
@@ -402,7 +396,7 @@ static void read_index_info(int line_termination)
 }
 
 static const char * const update_index_usage[] = {
-	"git update-index [options] [--] [<file>...]",
+	N_("git update-index [options] [--] [<file>...]"),
 	NULL
 };
 
@@ -433,7 +427,8 @@ static struct cache_entry *read_one_ent(const char *which,
 
 	hashcpy(ce->sha1, sha1);
 	memcpy(ce->name, path, namelen);
-	ce->ce_flags = create_ce_flags(namelen, stage);
+	ce->ce_flags = create_ce_flags(stage);
+	ce->ce_namelen = namelen;
 	ce->ce_mode = create_ce_mode(mode);
 	return ce;
 }
@@ -451,7 +446,7 @@ static int unresolve_one(const char *path)
 		/* already merged */
 		pos = unmerge_cache_entry_at(pos);
 		if (pos < active_nr) {
-			struct cache_entry *ce = active_cache[pos];
+			const struct cache_entry *ce = active_cache[pos];
 			if (ce_stage(ce) &&
 			    ce_namelen(ce) == namelen &&
 			    !memcmp(ce->name, path, namelen))
@@ -465,7 +460,7 @@ static int unresolve_one(const char *path)
 		 */
 		pos = -pos-1;
 		if (pos < active_nr) {
-			struct cache_entry *ce = active_cache[pos];
+			const struct cache_entry *ce = active_cache[pos];
 			if (ce_namelen(ce) == namelen &&
 			    !memcmp(ce->name, path, namelen)) {
 				fprintf(stderr,
@@ -549,10 +544,11 @@ static int do_reupdate(int ac, const char **av,
 	 */
 	int pos;
 	int has_head = 1;
-	const char **paths = get_pathspec(prefix, av + 1);
 	struct pathspec pathspec;
 
-	init_pathspec(&pathspec, paths);
+	parse_pathspec(&pathspec, 0,
+		       PATHSPEC_PREFER_CWD,
+		       prefix, av + 1);
 
 	if (read_ref("HEAD", head_sha1))
 		/* If there is no HEAD, that means it is an initial
@@ -561,11 +557,12 @@ static int do_reupdate(int ac, const char **av,
 		has_head = 0;
  redo:
 	for (pos = 0; pos < active_nr; pos++) {
-		struct cache_entry *ce = active_cache[pos];
+		const struct cache_entry *ce = active_cache[pos];
 		struct cache_entry *old = NULL;
 		int save_nr;
+		char *path;
 
-		if (ce_stage(ce) || !ce_path_match(ce, &pathspec))
+		if (ce_stage(ce) || !ce_path_match(ce, &pathspec, NULL))
 			continue;
 		if (has_head)
 			old = read_one_ent(NULL, head_sha1,
@@ -580,7 +577,9 @@ static int do_reupdate(int ac, const char **av,
 		 * or worse yet 'allow_replace', active_nr may decrease.
 		 */
 		save_nr = active_nr;
-		update_one(ce->name + prefix_length, prefix, prefix_length);
+		path = xstrdup(ce->name);
+		update_one(path);
+		free(path);
 		if (save_nr != active_nr)
 			goto redo;
 	}
@@ -596,6 +595,7 @@ struct refresh_params {
 static int refresh(struct refresh_params *o, unsigned int flag)
 {
 	setup_work_tree();
+	read_cache_preload(NULL);
 	*o->has_errors |= refresh_cache(o->flags | flag);
 	return 0;
 }
@@ -629,14 +629,42 @@ static int resolve_undo_clear_callback(const struct option *opt,
 	return 0;
 }
 
+static int parse_new_style_cacheinfo(const char *arg,
+				     unsigned int *mode,
+				     unsigned char sha1[],
+				     const char **path)
+{
+	unsigned long ul;
+	char *endp;
+
+	errno = 0;
+	ul = strtoul(arg, &endp, 8);
+	if (errno || endp == arg || *endp != ',' || (unsigned int) ul != ul)
+		return -1; /* not a new-style cacheinfo */
+	*mode = ul;
+	endp++;
+	if (get_sha1_hex(endp, sha1) || endp[40] != ',')
+		return -1;
+	*path = endp + 41;
+	return 0;
+}
+
 static int cacheinfo_callback(struct parse_opt_ctx_t *ctx,
 				const struct option *opt, int unset)
 {
 	unsigned char sha1[20];
 	unsigned int mode;
+	const char *path;
 
+	if (!parse_new_style_cacheinfo(ctx->argv[1], &mode, sha1, &path)) {
+		if (add_cacheinfo(mode, sha1, path, 0))
+			die("git update-index: --cacheinfo cannot add %s", path);
+		ctx->argv++;
+		ctx->argc--;
+		return 0;
+	}
 	if (ctx->argc <= 3)
-		return error("option 'cacheinfo' expects three arguments");
+		return error("option 'cacheinfo' expects <mode>,<sha1>,<path>");
 	if (strtoul_ui(*++ctx->argv, 8, &mode) ||
 	    get_sha1_hex(*++ctx->argv, sha1) ||
 	    add_cacheinfo(mode, sha1, *++ctx->argv, 0))
@@ -708,6 +736,7 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 	int newfd, entries, has_errors = 0, line_termination = '\n';
 	int read_from_stdin = 0;
 	int prefix_length = prefix ? strlen(prefix) : 0;
+	int preferred_index_format = 0;
 	char set_executable_bit = 0;
 	struct refresh_params refresh_args = {0, &has_errors};
 	int lock_error = 0;
@@ -716,86 +745,88 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 	int parseopt_state = PARSE_OPT_UNKNOWN;
 	struct option options[] = {
 		OPT_BIT('q', NULL, &refresh_args.flags,
-			"continue refresh even when index needs update",
+			N_("continue refresh even when index needs update"),
 			REFRESH_QUIET),
 		OPT_BIT(0, "ignore-submodules", &refresh_args.flags,
-			"refresh: ignore submodules",
+			N_("refresh: ignore submodules"),
 			REFRESH_IGNORE_SUBMODULES),
 		OPT_SET_INT(0, "add", &allow_add,
-			"do not ignore new files", 1),
+			N_("do not ignore new files"), 1),
 		OPT_SET_INT(0, "replace", &allow_replace,
-			"let files replace directories and vice-versa", 1),
+			N_("let files replace directories and vice-versa"), 1),
 		OPT_SET_INT(0, "remove", &allow_remove,
-			"notice files missing from worktree", 1),
+			N_("notice files missing from worktree"), 1),
 		OPT_BIT(0, "unmerged", &refresh_args.flags,
-			"refresh even if index contains unmerged entries",
+			N_("refresh even if index contains unmerged entries"),
 			REFRESH_UNMERGED),
 		{OPTION_CALLBACK, 0, "refresh", &refresh_args, NULL,
-			"refresh stat information",
+			N_("refresh stat information"),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			refresh_callback},
 		{OPTION_CALLBACK, 0, "really-refresh", &refresh_args, NULL,
-			"like --refresh, but ignore assume-unchanged setting",
+			N_("like --refresh, but ignore assume-unchanged setting"),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			really_refresh_callback},
 		{OPTION_LOWLEVEL_CALLBACK, 0, "cacheinfo", NULL,
-			"<mode> <object> <path>",
-			"add the specified entry to the index",
-			PARSE_OPT_NOARG |	/* disallow --cacheinfo=<mode> form */
+			N_("<mode>,<object>,<path>"),
+			N_("add the specified entry to the index"),
+			PARSE_OPT_NOARG | /* disallow --cacheinfo=<mode> form */
 			PARSE_OPT_NONEG | PARSE_OPT_LITERAL_ARGHELP,
 			(parse_opt_cb *) cacheinfo_callback},
-		{OPTION_CALLBACK, 0, "chmod", &set_executable_bit, "(+/-)x",
-			"override the executable bit of the listed files",
+		{OPTION_CALLBACK, 0, "chmod", &set_executable_bit, N_("(+/-)x"),
+			N_("override the executable bit of the listed files"),
 			PARSE_OPT_NONEG | PARSE_OPT_LITERAL_ARGHELP,
 			chmod_callback},
 		{OPTION_SET_INT, 0, "assume-unchanged", &mark_valid_only, NULL,
-			"mark files as \"not changing\"",
+			N_("mark files as \"not changing\""),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, MARK_FLAG},
 		{OPTION_SET_INT, 0, "no-assume-unchanged", &mark_valid_only, NULL,
-			"clear assumed-unchanged bit",
+			N_("clear assumed-unchanged bit"),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, UNMARK_FLAG},
 		{OPTION_SET_INT, 0, "skip-worktree", &mark_skip_worktree_only, NULL,
-			"mark files as \"index-only\"",
+			N_("mark files as \"index-only\""),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, MARK_FLAG},
 		{OPTION_SET_INT, 0, "no-skip-worktree", &mark_skip_worktree_only, NULL,
-			"clear skip-worktree bit",
+			N_("clear skip-worktree bit"),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG, NULL, UNMARK_FLAG},
 		OPT_SET_INT(0, "info-only", &info_only,
-			"add to index only; do not add content to object database", 1),
+			N_("add to index only; do not add content to object database"), 1),
 		OPT_SET_INT(0, "force-remove", &force_remove,
-			"remove named paths even if present in worktree", 1),
+			N_("remove named paths even if present in worktree"), 1),
 		OPT_SET_INT('z', NULL, &line_termination,
-			"with --stdin: input lines are terminated by null bytes", '\0'),
+			N_("with --stdin: input lines are terminated by null bytes"), '\0'),
 		{OPTION_LOWLEVEL_CALLBACK, 0, "stdin", &read_from_stdin, NULL,
-			"read list of paths to be updated from standard input",
+			N_("read list of paths to be updated from standard input"),
 			PARSE_OPT_NONEG | PARSE_OPT_NOARG,
 			(parse_opt_cb *) stdin_callback},
 		{OPTION_LOWLEVEL_CALLBACK, 0, "index-info", &line_termination, NULL,
-			"add entries from standard input to the index",
+			N_("add entries from standard input to the index"),
 			PARSE_OPT_NONEG | PARSE_OPT_NOARG,
 			(parse_opt_cb *) stdin_cacheinfo_callback},
 		{OPTION_LOWLEVEL_CALLBACK, 0, "unresolve", &has_errors, NULL,
-			"repopulate stages #2 and #3 for the listed paths",
+			N_("repopulate stages #2 and #3 for the listed paths"),
 			PARSE_OPT_NONEG | PARSE_OPT_NOARG,
 			(parse_opt_cb *) unresolve_callback},
 		{OPTION_LOWLEVEL_CALLBACK, 'g', "again", &has_errors, NULL,
-			"only update entries that differ from HEAD",
+			N_("only update entries that differ from HEAD"),
 			PARSE_OPT_NONEG | PARSE_OPT_NOARG,
 			(parse_opt_cb *) reupdate_callback},
 		OPT_BIT(0, "ignore-missing", &refresh_args.flags,
-			"ignore files missing from worktree",
+			N_("ignore files missing from worktree"),
 			REFRESH_IGNORE_MISSING),
 		OPT_SET_INT(0, "verbose", &verbose,
-			"report actions to standard output", 1),
+			N_("report actions to standard output"), 1),
 		{OPTION_CALLBACK, 0, "clear-resolve-undo", NULL, NULL,
-			"(for porcelains) forget saved unresolved conflicts",
+			N_("(for porcelains) forget saved unresolved conflicts"),
 			PARSE_OPT_NOARG | PARSE_OPT_NONEG,
 			resolve_undo_clear_callback},
+		OPT_INTEGER(0, "index-version", &preferred_index_format,
+			N_("write index in this format")),
 		OPT_END()
 	};
 
 	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage(update_index_usage[0]);
+		usage_with_options(update_index_usage, options);
 
 	git_config(git_default_config, NULL);
 
@@ -833,11 +864,10 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 
 			setup_work_tree();
 			p = prefix_path(prefix, prefix_length, path);
-			update_one(p, NULL, 0);
+			update_one(p);
 			if (set_executable_bit)
 				chmod_path(set_executable_bit, p);
-			if (p < path || p > path + strlen(path))
-				free((char *)p);
+			free((char *)p);
 			ctx.argc--;
 			ctx.argv++;
 			break;
@@ -851,6 +881,17 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 		}
 	}
 	argc = parse_options_end(&ctx);
+	if (preferred_index_format) {
+		if (preferred_index_format < INDEX_FORMAT_LB ||
+		    INDEX_FORMAT_UB < preferred_index_format)
+			die("index-version %d not in range: %d..%d",
+			    preferred_index_format,
+			    INDEX_FORMAT_LB, INDEX_FORMAT_UB);
+
+		if (the_index.version != preferred_index_format)
+			active_cache_changed = 1;
+		the_index.version = preferred_index_format;
+	}
 
 	if (read_from_stdin) {
 		struct strbuf buf = STRBUF_INIT, nbuf = STRBUF_INIT;
@@ -865,11 +906,10 @@ int cmd_update_index(int argc, const char **argv, const char *prefix)
 				strbuf_swap(&buf, &nbuf);
 			}
 			p = prefix_path(prefix, prefix_length, buf.buf);
-			update_one(p, NULL, 0);
+			update_one(p);
 			if (set_executable_bit)
 				chmod_path(set_executable_bit, p);
-			if (p < buf.buf || p > buf.buf + buf.len)
-				free((char *)p);
+			free((char *)p);
 		}
 		strbuf_release(&nbuf);
 		strbuf_release(&buf);

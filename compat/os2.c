@@ -27,6 +27,7 @@ extern int _fmode_bin;
 #define PATH_MAX 260
 #endif
 
+#ifndef NO_POLL
 int poll (struct pollfd *fds, nfds_t nfds, int timeout)
 {
 #if defined(POLLIN)
@@ -125,6 +126,7 @@ int poll (struct pollfd *fds, nfds_t nfds, int timeout)
   
   return rc;
 }
+#endif
 
 static
 int is_file(const char *name)

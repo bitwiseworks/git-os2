@@ -137,7 +137,7 @@ bisect_start() {
 			# cogito usage, and cogito users should understand
 			# it relates to cg-seek.
 			[ -s "$GIT_DIR/head-name" ] &&
-				die "$(gettext "won't bisect on seeked tree")"
+				die "$(gettext "won't bisect on cg-seek'ed tree")"
 			start_head="${head#refs/heads/}"
 			;;
 		*)
@@ -311,7 +311,23 @@ bisect_next() {
 	res=$?
 
 	# Check if we should exit because bisection is finished
-	test $res -eq 10 && exit 0
+	if test $res -eq 10
+	then
+		bad_rev=$(git show-ref --hash --verify refs/bisect/bad)
+		bad_commit=$(git show-branch $bad_rev)
+		echo "# first bad commit: $bad_commit" >>"$GIT_DIR/BISECT_LOG"
+		exit 0
+	elif test $res -eq 2
+	then
+		echo "# only skipped commits left to test" >>"$GIT_DIR/BISECT_LOG"
+		good_revs=$(git for-each-ref --format="%(objectname)" "refs/bisect/good-*")
+		for skipped in $(git rev-list refs/bisect/bad --not $good_revs)
+		do
+			skipped_commit=$(git show-branch $skipped)
+			echo "# possible first bad commit: $skipped_commit" >>"$GIT_DIR/BISECT_LOG"
+		done
+		exit $res
+	fi
 
 	# Check for an error in the bisection process
 	test $res -ne 0 && exit $res
@@ -349,7 +365,7 @@ bisect_reset() {
 	}
 	case "$#" in
 	0) branch=$(cat "$GIT_DIR/BISECT_START") ;;
-	1) git rev-parse --quiet --verify "$1^{commit}" > /dev/null || {
+	1) git rev-parse --quiet --verify "$1^{commit}" >/dev/null || {
 			invalid="$1"
 			die "$(eval_gettext "'\$invalid' is not a valid commit")"
 		}
@@ -442,13 +458,13 @@ exit code \$res from '\$command' is < 0 or >= 128" >&2
 		fi
 
 		# We have to use a subshell because "bisect_state" can exit.
-		( bisect_state $state > "$GIT_DIR/BISECT_RUN" )
+		( bisect_state $state >"$GIT_DIR/BISECT_RUN" )
 		res=$?
 
 		cat "$GIT_DIR/BISECT_RUN"
 
 		if sane_grep "first bad commit could be any of" "$GIT_DIR/BISECT_RUN" \
-			> /dev/null
+			>/dev/null
 		then
 			gettextln "bisect run cannot continue any more" >&2
 			exit $res
@@ -461,7 +477,7 @@ exit code \$res from '\$command' is < 0 or >= 128" >&2
 			exit $res
 		fi
 
-		if sane_grep "is the first bad commit" "$GIT_DIR/BISECT_RUN" > /dev/null
+		if sane_grep "is the first bad commit" "$GIT_DIR/BISECT_RUN" >/dev/null
 		then
 			gettextln "bisect run success"
 			exit 0;

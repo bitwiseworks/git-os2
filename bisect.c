@@ -15,14 +15,13 @@
 static struct sha1_array good_revs;
 static struct sha1_array skipped_revs;
 
-static const unsigned char *current_bad_sha1;
+static unsigned char *current_bad_sha1;
 
 static const char *argv_checkout[] = {"checkout", "-q", NULL, "--", NULL};
 static const char *argv_show_branch[] = {"show-branch", NULL, NULL};
 static const char *argv_update_ref[] = {"update-ref", "--no-deref", "BISECT_HEAD", NULL, NULL};
 
-/* bits #0-15 in revision.h */
-
+/* Remember to update object flag allocation in object.h */
 #define COUNTED		(1u<<16)
 
 /*
@@ -404,10 +403,11 @@ static int register_ref(const char *refname, const unsigned char *sha1,
 			int flags, void *cb_data)
 {
 	if (!strcmp(refname, "bad")) {
-		current_bad_sha1 = sha1;
-	} else if (!prefixcmp(refname, "good-")) {
+		current_bad_sha1 = xmalloc(20);
+		hashcpy(current_bad_sha1, sha1);
+	} else if (starts_with(refname, "good-")) {
 		sha1_array_append(&good_revs, sha1);
-	} else if (!prefixcmp(refname, "skip-")) {
+	} else if (starts_with(refname, "skip-")) {
 		sha1_array_append(&skipped_revs, sha1);
 	}
 
@@ -525,9 +525,9 @@ struct commit_list *filter_skipped(struct commit_list *list,
  * is increased by one between each call, but that should not matter
  * for this application.
  */
-static int get_prn(int count) {
+static unsigned get_prn(unsigned count) {
 	count = count * 1103515245 + 12345;
-	return ((unsigned)(count/65536) % PRN_MODULO);
+	return (count/65536) % PRN_MODULO;
 }
 
 /*
@@ -623,7 +623,7 @@ static void bisect_common(struct rev_info *revs)
 	if (prepare_revision_walk(revs))
 		die("revision walk setup failed");
 	if (revs->tree_objects)
-		mark_edges_uninteresting(revs->commits, revs, NULL);
+		mark_edges_uninteresting(revs, NULL);
 }
 
 static void exit_if_skipped_commits(struct commit_list *tried,
@@ -684,7 +684,6 @@ static void mark_expected_rev(char *bisect_rev_hex)
 
 static int bisect_checkout(char *bisect_rev_hex, int no_checkout)
 {
-	int res;
 
 	mark_expected_rev(bisect_rev_hex);
 
@@ -695,6 +694,7 @@ static int bisect_checkout(char *bisect_rev_hex, int no_checkout)
 			die("update-ref --no-deref HEAD failed on %s",
 			    bisect_rev_hex);
 	} else {
+		int res;
 		res = run_command_v_opt(argv_checkout, RUN_GIT_CMD);
 		if (res)
 			exit(res);
@@ -833,7 +833,7 @@ static int check_ancestors(const char *prefix)
  */
 static void check_good_are_ancestors_of_bad(const char *prefix, int no_checkout)
 {
-	const char *filename = git_path("BISECT_ANCESTORS_OK");
+	char *filename = git_pathdup("BISECT_ANCESTORS_OK");
 	struct stat st;
 	int fd;
 
@@ -842,11 +842,11 @@ static void check_good_are_ancestors_of_bad(const char *prefix, int no_checkout)
 
 	/* Check if file BISECT_ANCESTORS_OK exists. */
 	if (!stat(filename, &st) && S_ISREG(st.st_mode))
-		return;
+		goto done;
 
 	/* Bisecting with no good rev is ok. */
 	if (good_revs.nr == 0)
-		return;
+		goto done;
 
 	/* Check if all good revs are ancestor of the bad rev. */
 	if (check_ancestors(prefix))
@@ -859,6 +859,8 @@ static void check_good_are_ancestors_of_bad(const char *prefix, int no_checkout)
 			filename, strerror(errno));
 	else
 		close(fd);
+ done:
+	free(filename);
 }
 
 /*
@@ -954,3 +956,41 @@ int bisect_next_all(const char *prefix, int no_checkout)
 	return bisect_checkout(bisect_rev_hex, no_checkout);
 }
 
+static inline int log2i(int n)
+{
+	int log2 = 0;
+
+	for (; n > 1; n >>= 1)
+		log2++;
+
+	return log2;
+}
+
+static inline int exp2i(int n)
+{
+	return 1 << n;
+}
+
+/*
+ * Estimate the number of bisect steps left (after the current step)
+ *
+ * For any x between 0 included and 2^n excluded, the probability for
+ * n - 1 steps left looks like:
+ *
+ * P(2^n + x) == (2^n - x) / (2^n + x)
+ *
+ * and P(2^n + x) < 0.5 means 2^n < 3x
+ */
+int estimate_bisect_steps(int all)
+{
+	int n, x, e;
+
+	if (all < 3)
+		return 0;
+
+	n = log2i(all);
+	e = exp2i(n);
+	x = all - e;
+
+	return (e < 3 * x) ? n : n - 1;
+}

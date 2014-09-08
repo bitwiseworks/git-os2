@@ -1,4 +1,4 @@
-#!/usr/bin/env perl
+#!/usr/bin/perl
 # Copyright 2005, Ryan Anderson <ryan@michonline.com>
 # Distribution permitted under the GPL v2, as distributed
 # by the Free Software Foundation.
@@ -163,7 +163,7 @@ sub link_two_files($$) {
 
 
 sub usage() {
-	print("Usage: git relink [--safe] <dir>... <master_dir> \n");
+	print("usage: git relink [--safe] <dir>... <master_dir> \n");
 	print("All directories should contain a .git/objects/ subdirectory.\n");
 	print("Options\n");
 	print("\t--safe\t" .

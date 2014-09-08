@@ -4,9 +4,10 @@
 
 SUBDIRECTORY_OK=Yes
 OPTIONS_KEEPDASHDASH=
+OPTIONS_STUCKLONG=t
 OPTIONS_SPEC="\
 git am [options] [(<mbox>|<Maildir>)...]
-git am [options] (--resolved | --skip | --abort)
+git am [options] (--continue | --skip | --abort)
 --
 i,interactive   run interactively
 b,binary*       (historical option -- no-op)
@@ -15,6 +16,7 @@ q,quiet         be quiet
 s,signoff       add a Signed-off-by line to the commit message
 u,utf8          recode into utf8 (default)
 k,keep          pass -k flag to git-mailinfo
+keep-non-patch  pass -b flag to git-mailinfo
 keep-cr         pass --keep-cr flag to git-mailsplit for mbox format
 no-keep-cr      do not pass --keep-cr flag to git-mailsplit independent of am.keepcr
 c,scissors      strip everything before a scissors line
@@ -23,6 +25,7 @@ ignore-space-change pass it through git-apply
 ignore-whitespace pass it through git-apply
 directory=      pass it through git-apply
 exclude=        pass it through git-apply
+include=        pass it through git-apply
 C=              pass it through git-apply
 p=              pass it through git-apply
 patch-format=   format the patch(es) are in
@@ -35,6 +38,7 @@ abort           restore the original branch and abort the patching operation.
 committer-date-is-author-date    lie about committer date
 ignore-date     use current timestamp for author date
 rerere-autoupdate update the index with reused conflict resolution if possible
+S,gpg-sign?     GPG-sign commits
 rebasing*       (internal use for git-rebase)"
 
 . git-sh-setup
@@ -90,7 +94,7 @@ safe_to_abort () {
 	then
 		return 0
 	fi
-		gettextln "You seem to have moved HEAD since the last 'am' failure.
+	gettextln "You seem to have moved HEAD since the last 'am' failure.
 Not rewinding to ORIG_HEAD" >&2
 	return 1
 }
@@ -100,9 +104,9 @@ stop_here_user_resolve () {
 	    printf '%s\n' "$resolvemsg"
 	    stop_here $1
     fi
-    eval_gettextln "When you have resolved this problem run \"\$cmdline --resolved\".
-If you would prefer to skip this patch, instead run \"\$cmdline --skip\".
-To restore the original branch and stop patching run \"\$cmdline --abort\"."
+    eval_gettextln "When you have resolved this problem, run \"\$cmdline --continue\".
+If you prefer to skip this patch, run \"\$cmdline --skip\" instead.
+To restore the original branch and stop patching, run \"\$cmdline --abort\"."
 
     stop_here $1
 }
@@ -121,7 +125,7 @@ cannot_fallback () {
 }
 
 fall_back_3way () {
-    O_OBJECT=`cd "$GIT_OBJECT_DIRECTORY" && pwd`
+    O_OBJECT=$(cd "$GIT_OBJECT_DIRECTORY" && pwd)
 
     rm -fr "$dotest"/patch-merge-*
     mkdir "$dotest/patch-merge-tmp-dir"
@@ -134,9 +138,15 @@ fall_back_3way () {
     git write-tree >"$dotest/patch-merge-base+" ||
     cannot_fallback "$(gettext "Repository lacks necessary blobs to fall back on 3-way merge.")"
 
-    say Using index info to reconstruct a base tree...
+    say "$(gettext "Using index info to reconstruct a base tree...")"
 
     cmd='GIT_INDEX_FILE="$dotest/patch-merge-tmp-index"'
+
+    if test -z "$GIT_QUIET"
+    then
+	eval "$cmd git diff-index --cached --diff-filter=AM --name-status HEAD"
+    fi
+
     cmd="$cmd git apply --cached $git_apply_opt"' <"$dotest/patch"'
     if eval "$cmd"
     then
@@ -168,8 +178,7 @@ It does not apply to blobs recorded in its index.")"
     fi
     git-merge-recursive $orig_tree -- HEAD $his_tree || {
 	    git rerere $allow_rerere_autoupdate
-	    echo Failed to merge in the changes.
-	    exit 1
+	    die "$(gettext "Failed to merge in the changes.")"
     }
     unset GITHEAD_$his_tree
 }
@@ -252,7 +261,7 @@ check_patch_format () {
 split_patches () {
 	case "$patch_format" in
 	mbox)
-		if test -n "$rebasing" || test t = "$keepcr"
+		if test t = "$keepcr"
 		then
 		    keep_cr=--keep-cr
 		else
@@ -266,7 +275,7 @@ split_patches () {
 		then
 			clean_abort "$(gettext "Only one StGIT patch series can be applied at once")"
 		fi
-		series_dir=`dirname "$1"`
+		series_dir=$(dirname "$1")
 		series_file="$1"
 		shift
 		{
@@ -289,13 +298,13 @@ split_patches () {
 		this=0
 		for stgit in "$@"
 		do
-			this=`expr "$this" + 1`
-			msgnum=`printf "%0${prec}d" $this`
+			this=$(expr "$this" + 1)
+			msgnum=$(printf "%0${prec}d" $this)
 			# Perl version of StGIT parse_patch. The first nonemptyline
 			# not starting with Author, From or Date is the
 			# subject, and the body starts with the next nonempty
 			# line not starting with Author, From or Date
-			perl -ne 'BEGIN { $subject = 0 }
+			@@PERL@@ -ne 'BEGIN { $subject = 0 }
 				if ($subject > 1) { print ; }
 				elsif (/^\s+$/) { next ; }
 				elsif (/^Author:/) { s/Author/From/ ; print ;}
@@ -327,7 +336,7 @@ split_patches () {
 			# Since we cannot guarantee that the commit message is in
 			# git-friendly format, we put no Subject: line and just consume
 			# all of the message as the body
-			perl -M'POSIX qw(strftime)' -ne 'BEGIN { $subject = 0 }
+			LANG=C LC_ALL=C @@PERL@@ -M'POSIX qw(strftime)' -ne 'BEGIN { $subject = 0 }
 				if ($subject) { print ; }
 				elsif (/^\# User /) { s/\# User/From:/ ; print ; }
 				elsif (/^\# Date /) {
@@ -367,6 +376,7 @@ git_apply_opt=
 committer_date_is_author_date=
 ignore_date=
 allow_rerere_autoupdate=
+gpg_sign_opt=
 
 if test "$(git config --bool --get am.keepcr)" = true
 then
@@ -379,7 +389,9 @@ do
 	-i|--interactive)
 		interactive=t ;;
 	-b|--binary)
-		: ;;
+		gettextln >&2 "The -b/--binary option has been a no-op for long time, and
+it will be removed. Please do not use it anymore."
+		;;
 	-3|--3way)
 		threeway=t ;;
 	-s|--signoff)
@@ -390,6 +402,8 @@ do
 		utf8= ;;
 	-k|--keep)
 		keep=t ;;
+	--keep-non-patch)
+		keep=b ;;
 	-c|--scissors)
 		scissors=t ;;
 	--no-scissors)
@@ -401,18 +415,15 @@ do
 	--abort)
 		abort=t ;;
 	--rebasing)
-		rebasing=t threeway=t keep=t scissors=f no_inbody_headers=t ;;
-	-d|--dotest)
-		die "$(gettext "-d option is no longer supported.  Do not use.")"
-		;;
-	--resolvemsg)
-		shift; resolvemsg=$1 ;;
-	--whitespace|--directory|--exclude)
-		git_apply_opt="$git_apply_opt $(sq "$1=$2")"; shift ;;
-	-C|-p)
-		git_apply_opt="$git_apply_opt $(sq "$1$2")"; shift ;;
-	--patch-format)
-		shift ; patch_format="$1" ;;
+		rebasing=t threeway=t ;;
+	--resolvemsg=*)
+		resolvemsg="${1#--resolvemsg=}" ;;
+	--whitespace=*|--directory=*|--exclude=*|--include=*)
+		git_apply_opt="$git_apply_opt $(sq "$1")" ;;
+	-C*|-p*)
+		git_apply_opt="$git_apply_opt $(sq "$1")" ;;
+	--patch-format=*)
+		patch_format="${1#--patch-format=}" ;;
 	--reject|--ignore-whitespace|--ignore-space-change)
 		git_apply_opt="$git_apply_opt $1" ;;
 	--committer-date-is-author-date)
@@ -427,6 +438,10 @@ do
 		keepcr=t ;;
 	--no-keep-cr)
 		keepcr=f ;;
+	--gpg-sign)
+		gpg_sign_opt=-S ;;
+	--gpg-sign=*)
+		gpg_sign_opt="-S${1#--gpg-sign=}" ;;
 	--)
 		shift; break ;;
 	*)
@@ -438,6 +453,8 @@ done
 # If the dotest directory exists, but we have finished applying all the
 # patches in them, clear it out.
 if test -d "$dotest" &&
+   test -f "$dotest/last" &&
+   test -f "$dotest/next" &&
    last=$(cat "$dotest/last") &&
    next=$(cat "$dotest/next") &&
    test $# != 0 &&
@@ -446,7 +463,7 @@ then
    rm -fr "$dotest"
 fi
 
-if test -d "$dotest"
+if test -d "$dotest" && test -f "$dotest/last" && test -f "$dotest/next"
 then
 	case "$#,$skip$resolved$abort" in
 	0,*t*)
@@ -496,7 +513,24 @@ then
 	esac
 	rm -f "$dotest/dirtyindex"
 else
-	# Make sure we are not given --skip, --resolved, nor --abort
+	# Possible stray $dotest directory in the independent-run
+	# case; in the --rebasing case, it is upto the caller
+	# (git-rebase--am) to take care of stray directories.
+	if test -d "$dotest" && test -z "$rebasing"
+	then
+		case "$skip,$resolved,$abort" in
+		,,t)
+			rm -fr "$dotest"
+			exit 0
+			;;
+		*)
+			die "$(eval_gettext "Stray \$dotest directory found.
+Use \"git am --abort\" to remove it.")"
+			;;
+		esac
+	fi
+
+	# Make sure we are not given --skip, --continue, or --abort
 	test "$skip$resolved$abort" = "" ||
 		die "$(gettext "Resolve operation not in progress, we are not resuming.")"
 
@@ -568,16 +602,25 @@ case "$resolved" in
 	fi
 esac
 
+# Now, decide what command line options we will give to the git
+# commands we invoke, based on the result of parsing command line
+# options and previous invocation state stored in $dotest/ files.
+
 if test "$(cat "$dotest/utf8")" = t
 then
 	utf8=-u
 else
 	utf8=-n
 fi
-if test "$(cat "$dotest/keep")" = t
-then
-	keep=-k
-fi
+keep=$(cat "$dotest/keep")
+case "$keep" in
+t)
+	keep=-k ;;
+b)
+	keep=-b ;;
+*)
+	keep= ;;
+esac
 case "$(cat "$dotest/scissors")" in
 t)
 	scissors=--scissors ;;
@@ -601,26 +644,26 @@ fi
 git_apply_opt=$(cat "$dotest/apply-opt")
 if test "$(cat "$dotest/sign")" = t
 then
-	SIGNOFF=`git var GIT_COMMITTER_IDENT | sed -e '
+	SIGNOFF=$(git var GIT_COMMITTER_IDENT | sed -e '
 			s/>.*/>/
 			s/^/Signed-off-by: /'
-		`
+		)
 else
 	SIGNOFF=
 fi
 
-last=`cat "$dotest/last"`
-this=`cat "$dotest/next"`
+last=$(cat "$dotest/last")
+this=$(cat "$dotest/next")
 if test "$skip" = t
 then
-	this=`expr "$this" + 1`
+	this=$(expr "$this" + 1)
 	resume=
 fi
 
 while test "$this" -le "$last"
 do
-	msgnum=`printf "%0${prec}d" $this`
-	next=`expr "$this" + 1`
+	msgnum=$(printf "%0${prec}d" $this)
+	next=$(expr "$this" + 1)
 	test -f "$dotest/$msgnum" || {
 		resume=
 		go_next
@@ -634,35 +677,37 @@ do
 	#  - patch is the patch body.
 	#
 	# When we are resuming, these files are either already prepared
-	# by the user, or the user can tell us to do so by --resolved flag.
+	# by the user, or the user can tell us to do so by --continue flag.
 	case "$resume" in
 	'')
-		git mailinfo $keep $no_inbody_headers $scissors $utf8 "$dotest/msg" "$dotest/patch" \
-			<"$dotest/$msgnum" >"$dotest/info" ||
-			stop_here $this
-
-		# skip pine's internal folder data
-		sane_grep '^Author: Mail System Internal Data$' \
-			<"$dotest"/info >/dev/null &&
-			go_next && continue
-
-		test -s "$dotest/patch" || {
-			eval_gettextln "Patch is empty.  Was it split wrong?
-If you would prefer to skip this patch, instead run \"\$cmdline --skip\".
-To restore the original branch and stop patching run \"\$cmdline --abort\"."
-			stop_here $this
-		}
-		rm -f "$dotest/original-commit" "$dotest/author-script"
-		if test -f "$dotest/rebasing" &&
+		if test -f "$dotest/rebasing"
+		then
 			commit=$(sed -e 's/^From \([0-9a-f]*\) .*/\1/' \
 				-e q "$dotest/$msgnum") &&
-			test "$(git cat-file -t "$commit")" = commit
-		then
+			test "$(git cat-file -t "$commit")" = commit ||
+				stop_here $this
 			git cat-file commit "$commit" |
 			sed -e '1,/^$/d' >"$dotest/msg-clean"
-			echo "$commit" > "$dotest/original-commit"
-			get_author_ident_from_commit "$commit" > "$dotest/author-script"
+			echo "$commit" >"$dotest/original-commit"
+			get_author_ident_from_commit "$commit" >"$dotest/author-script"
+			git diff-tree --root --binary --full-index "$commit" >"$dotest/patch"
 		else
+			git mailinfo $keep $no_inbody_headers $scissors $utf8 "$dotest/msg" "$dotest/patch" \
+				<"$dotest/$msgnum" >"$dotest/info" ||
+				stop_here $this
+
+			# skip pine's internal folder data
+			sane_grep '^Author: Mail System Internal Data$' \
+				<"$dotest"/info >/dev/null &&
+				go_next && continue
+
+			test -s "$dotest/patch" || {
+				eval_gettextln "Patch is empty.  Was it split wrong?
+If you would prefer to skip this patch, instead run \"\$cmdline --skip\".
+To restore the original branch and stop patching run \"\$cmdline --abort\"."
+				stop_here $this
+			}
+			rm -f "$dotest/original-commit" "$dotest/author-script"
 			{
 				sed -n '/^Subject/ s/Subject: //p' "$dotest/info"
 				echo
@@ -694,16 +739,16 @@ To restore the original branch and stop patching run \"\$cmdline --abort\"."
 	'')
 	    if test '' != "$SIGNOFF"
 	    then
-		LAST_SIGNED_OFF_BY=`
+		LAST_SIGNED_OFF_BY=$(
 		    sed -ne '/^Signed-off-by: /p' \
 		    "$dotest/msg-clean" |
 		    sed -ne '$p'
-		`
-		ADD_SIGNOFF=`
+		)
+		ADD_SIGNOFF=$(
 		    test "$LAST_SIGNED_OFF_BY" = "$SIGNOFF" || {
 		    test '' = "$LAST_SIGNED_OFF_BY" && echo
 		    echo "$SIGNOFF"
-		}`
+		})
 	    else
 		ADD_SIGNOFF=
 	    fi
@@ -759,13 +804,6 @@ To restore the original branch and stop patching run \"\$cmdline --abort\"."
 	    action=yes
 	fi
 
-	if test -f "$dotest/final-commit"
-	then
-		FIRSTLINE=$(sed 1q "$dotest/final-commit")
-	else
-		FIRSTLINE=""
-	fi
-
 	if test $action = skip
 	then
 		go_next
@@ -776,6 +814,13 @@ To restore the original branch and stop patching run \"\$cmdline --abort\"."
 	then
 		"$GIT_DIR"/hooks/applypatch-msg "$dotest/final-commit" ||
 		stop_here $this
+	fi
+
+	if test -f "$dotest/final-commit"
+	then
+		FIRSTLINE=$(sed 1q "$dotest/final-commit")
+	else
+		FIRSTLINE=""
 	fi
 
 	say "$(eval_gettext "Applying: \$FIRSTLINE")"
@@ -834,6 +879,11 @@ did you forget to use 'git add'?"
 	if test $apply_status != 0
 	then
 		eval_gettextln 'Patch failed at $msgnum $FIRSTLINE'
+		if test "$(git config --bool advice.amworkdir)" != false
+		then
+			eval_gettextln 'The copy of the patch that failed is found in:
+   $dotest/patch'
+		fi
 		stop_here_user_resolve $this
 	fi
 
@@ -856,7 +906,8 @@ did you forget to use 'git add'?"
 			GIT_COMMITTER_DATE="$GIT_AUTHOR_DATE"
 			export GIT_COMMITTER_DATE
 		fi &&
-		git commit-tree $tree ${parent:+-p} $parent <"$dotest/final-commit"
+		git commit-tree ${parent:+-p} $parent ${gpg_sign_opt:+"$gpg_sign_opt"} $tree  \
+			<"$dotest/final-commit"
 	) &&
 	git update-ref -m "$GIT_REFLOG_ACTION: $FIRSTLINE" HEAD $commit $parent ||
 	stop_here $this
@@ -880,5 +931,10 @@ if test -s "$dotest"/rewritten; then
     fi
 fi
 
-rm -fr "$dotest"
-git gc --auto
+# If am was called with --rebasing (from git-rebase--am), it's up to
+# the caller to take care of housekeeping.
+if ! test -f "$dotest/rebasing"
+then
+	rm -fr "$dotest"
+	git gc --auto
+fi

@@ -3,6 +3,8 @@
 #include "diff.h"
 #include "revision.h"
 #include "list-objects.h"
+#include "pack.h"
+#include "pack-bitmap.h"
 #include "builtin.h"
 #include "log-tree.h"
 #include "graph.h"
@@ -109,7 +111,9 @@ static void show_commit(struct commit *commit, void *data)
 		struct pretty_print_context ctx = {0};
 		ctx.abbrev = revs->abbrev;
 		ctx.date_mode = revs->date_mode;
+		ctx.date_mode_explicit = revs->date_mode_explicit;
 		ctx.fmt = revs->commit_format;
+		ctx.output_encoding = get_log_output_encoding();
 		pretty_print_commit(&ctx, commit, &buf);
 		if (revs->graph) {
 			if (buf.len) {
@@ -200,55 +204,6 @@ static void show_edge(struct commit *commit)
 	printf("-%s\n", sha1_to_hex(commit->object.sha1));
 }
 
-static inline int log2i(int n)
-{
-	int log2 = 0;
-
-	for (; n > 1; n >>= 1)
-		log2++;
-
-	return log2;
-}
-
-static inline int exp2i(int n)
-{
-	return 1 << n;
-}
-
-/*
- * Estimate the number of bisect steps left (after the current step)
- *
- * For any x between 0 included and 2^n excluded, the probability for
- * n - 1 steps left looks like:
- *
- * P(2^n + x) == (2^n - x) / (2^n + x)
- *
- * and P(2^n + x) < 0.5 means 2^n < 3x
- */
-int estimate_bisect_steps(int all)
-{
-	int n, x, e;
-
-	if (all < 3)
-		return 0;
-
-	n = log2i(all);
-	e = exp2i(n);
-	x = all - e;
-
-	return (e < 3 * x) ? n : n - 1;
-}
-
-void print_commit_list(struct commit_list *list,
-		       const char *format_cur,
-		       const char *format_last)
-{
-	for ( ; list; list = list->next) {
-		const char *format = list->next ? format_cur : format_last;
-		printf(format, sha1_to_hex(list->item->object.sha1));
-	}
-}
-
 static void print_var_str(const char *var, const char *val)
 {
 	printf("%s='%s'\n", var, val);
@@ -304,6 +259,18 @@ static int show_bisect_vars(struct rev_list_info *info, int reaches, int all)
 	return 0;
 }
 
+static int show_object_fast(
+	const unsigned char *sha1,
+	enum object_type type,
+	int exclude,
+	uint32_t name_hash,
+	struct packed_git *found_pack,
+	off_t found_offset)
+{
+	fprintf(stdout, "%s\n", sha1_to_hex(sha1));
+	return 1;
+}
+
 int cmd_rev_list(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info revs;
@@ -312,6 +279,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	int bisect_list = 0;
 	int bisect_show_vars = 0;
 	int bisect_find_all = 0;
+	int use_bitmap_index = 0;
 
 	git_config(git_default_config, NULL);
 	init_revisions(&revs, prefix);
@@ -353,6 +321,14 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 			bisect_show_vars = 1;
 			continue;
 		}
+		if (!strcmp(arg, "--use-bitmap-index")) {
+			use_bitmap_index = 1;
+			continue;
+		}
+		if (!strcmp(arg, "--test-bitmap")) {
+			test_bitmap_walk(&revs);
+			return 0;
+		}
 		usage(rev_list_usage);
 
 	}
@@ -369,7 +345,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		revs.commit_format = CMIT_FMT_RAW;
 
 	if ((!revs.commits &&
-	     (!(revs.tag_objects||revs.tree_objects||revs.blob_objects) &&
+	     (!(revs.tag_objects || revs.tree_objects || revs.blob_objects) &&
 	      !revs.pending.nr)) ||
 	    revs.diff)
 		usage(rev_list_usage);
@@ -380,10 +356,26 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (bisect_list)
 		revs.limited = 1;
 
+	if (use_bitmap_index) {
+		if (revs.count && !revs.left_right && !revs.cherry_mark) {
+			uint32_t commit_count;
+			if (!prepare_bitmap_walk(&revs)) {
+				count_bitmap_commit_list(&commit_count, NULL, NULL, NULL);
+				printf("%d\n", commit_count);
+				return 0;
+			}
+		} else if (revs.tag_objects && revs.tree_objects && revs.blob_objects) {
+			if (!prepare_bitmap_walk(&revs)) {
+				traverse_bitmap_commit_list(&show_object_fast);
+				return 0;
+			}
+		}
+	}
+
 	if (prepare_revision_walk(&revs))
 		die("revision walk setup failed");
 	if (revs.tree_objects)
-		mark_edges_uninteresting(revs.commits, &revs, show_edge);
+		mark_edges_uninteresting(&revs, show_edge);
 
 	if (bisect_list) {
 		int reaches = reaches, all = all;

@@ -298,6 +298,23 @@ test_expect_success 'git clean -d -x' '
 
 '
 
+test_expect_success 'git clean -d -x with ignored tracked directory' '
+
+	mkdir -p build docs &&
+	touch a.out src/part3.c docs/manual.txt obj.o build/lib.so &&
+	git clean -d -x -e src &&
+	test -f Makefile &&
+	test -f README &&
+	test -f src/part1.c &&
+	test -f src/part2.c &&
+	test ! -f a.out &&
+	test -f src/part3.c &&
+	test ! -d docs &&
+	test ! -f obj.o &&
+	test ! -d build
+
+'
+
 test_expect_success 'git clean -X' '
 
 	mkdir -p build docs &&
@@ -326,6 +343,23 @@ test_expect_success 'git clean -d -X' '
 	test -f src/part2.c &&
 	test -f a.out &&
 	test -f src/part3.c &&
+	test -f docs/manual.txt &&
+	test ! -f obj.o &&
+	test ! -d build
+
+'
+
+test_expect_success 'git clean -d -X with ignored tracked directory' '
+
+	mkdir -p build docs &&
+	touch a.out src/part3.c docs/manual.txt obj.o build/lib.so &&
+	git clean -d -X -e src &&
+	test -f Makefile &&
+	test -f README &&
+	test -f src/part1.c &&
+	test -f src/part2.c &&
+	test -f a.out &&
+	test ! -f src/part3.c &&
 	test -f docs/manual.txt &&
 	test ! -f obj.o &&
 	test ! -d build
@@ -399,8 +433,8 @@ test_expect_success SANITY 'removal failure' '
 '
 
 test_expect_success 'nested git work tree' '
-	rm -fr foo bar &&
-	mkdir foo bar &&
+	rm -fr foo bar baz &&
+	mkdir -p foo bar baz/boo &&
 	(
 		cd foo &&
 		git init &&
@@ -411,16 +445,25 @@ test_expect_success 'nested git work tree' '
 	(
 		cd bar &&
 		>goodbye.people
+	) &&
+	(
+		cd baz/boo &&
+		git init &&
+		>deeper.world
+		git add . &&
+		git commit -a -m deeply.nested
 	) &&
 	git clean -f -d &&
 	test -f foo/.git/index &&
 	test -f foo/hello.world &&
+	test -f baz/boo/.git/index &&
+	test -f baz/boo/deeper.world &&
 	! test -d bar
 '
 
 test_expect_success 'force removal of nested git work tree' '
-	rm -fr foo bar &&
-	mkdir foo bar &&
+	rm -fr foo bar baz &&
+	mkdir -p foo bar baz/boo &&
 	(
 		cd foo &&
 		git init &&
@@ -432,9 +475,17 @@ test_expect_success 'force removal of nested git work tree' '
 		cd bar &&
 		>goodbye.people
 	) &&
+	(
+		cd baz/boo &&
+		git init &&
+		>deeper.world
+		git add . &&
+		git commit -a -m deeply.nested
+	) &&
 	git clean -f -f -d &&
 	! test -d foo &&
-	! test -d bar
+	! test -d bar &&
+	! test -d baz
 '
 
 test_expect_success 'git clean -e' '
@@ -458,6 +509,22 @@ test_expect_success SANITY 'git clean -d with an unreadable empty directory' '
 	chmod a= foo &&
 	git clean -dfx foo &&
 	! test -d foo
+'
+
+test_expect_success 'git clean -d respects pathspecs (dir is prefix of pathspec)' '
+	mkdir -p foo &&
+	mkdir -p foobar &&
+	git clean -df foobar &&
+	test_path_is_dir foo &&
+	test_path_is_missing foobar
+'
+
+test_expect_success 'git clean -d respects pathspecs (pathspec is prefix of dir)' '
+	mkdir -p foo &&
+	mkdir -p foobar &&
+	git clean -df foo &&
+	test_path_is_missing foo &&
+	test_path_is_dir foobar
 '
 
 test_done

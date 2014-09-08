@@ -27,7 +27,7 @@ static int fsck_walk_tree(struct tree *tree, fsck_walk_func walk, void *data)
 		else if (S_ISREG(entry.mode) || S_ISLNK(entry.mode))
 			result = walk(&lookup_blob(entry.sha1)->object, OBJ_BLOB, data);
 		else {
-			result = error("in tree %s: entry %s has bad mode %.6o\n",
+			result = error("in tree %s: entry %s has bad mode %.6o",
 					sha1_to_hex(tree->object.sha1), entry.path, entry.mode);
 		}
 		if (result < 0)
@@ -139,8 +139,12 @@ static int verify_ordered(unsigned mode1, const char *name1, unsigned mode2, con
 static int fsck_tree(struct tree *item, int strict, fsck_error error_func)
 {
 	int retval;
+	int has_null_sha1 = 0;
 	int has_full_path = 0;
 	int has_empty_name = 0;
+	int has_dot = 0;
+	int has_dotdot = 0;
+	int has_dotgit = 0;
 	int has_zero_pad = 0;
 	int has_bad_modes = 0;
 	int has_dup_entries = 0;
@@ -157,13 +161,16 @@ static int fsck_tree(struct tree *item, int strict, fsck_error error_func)
 	while (desc.size) {
 		unsigned mode;
 		const char *name;
+		const unsigned char *sha1;
 
-		tree_entry_extract(&desc, &name, &mode);
+		sha1 = tree_entry_extract(&desc, &name, &mode);
 
-		if (strchr(name, '/'))
-			has_full_path = 1;
-		if (!*name)
-			has_empty_name = 1;
+		has_null_sha1 |= is_null_sha1(sha1);
+		has_full_path |= !!strchr(name, '/');
+		has_empty_name |= !*name;
+		has_dot |= !strcmp(name, ".");
+		has_dotdot |= !strcmp(name, "..");
+		has_dotgit |= !strcmp(name, ".git");
 		has_zero_pad |= *(char *)desc.buffer == '0';
 		update_tree_entry(&desc);
 
@@ -207,10 +214,18 @@ static int fsck_tree(struct tree *item, int strict, fsck_error error_func)
 	}
 
 	retval = 0;
+	if (has_null_sha1)
+		retval += error_func(&item->object, FSCK_WARN, "contains entries pointing to null sha1");
 	if (has_full_path)
 		retval += error_func(&item->object, FSCK_WARN, "contains full pathnames");
 	if (has_empty_name)
 		retval += error_func(&item->object, FSCK_WARN, "contains empty pathname");
+	if (has_dot)
+		retval += error_func(&item->object, FSCK_WARN, "contains '.'");
+	if (has_dotdot)
+		retval += error_func(&item->object, FSCK_WARN, "contains '..'");
+	if (has_dotgit)
+		retval += error_func(&item->object, FSCK_WARN, "contains '.git'");
 	if (has_zero_pad)
 		retval += error_func(&item->object, FSCK_WARN, "contains zero-padded file modes");
 	if (has_bad_modes)
@@ -222,8 +237,10 @@ static int fsck_tree(struct tree *item, int strict, fsck_error error_func)
 	return retval;
 }
 
-static int fsck_ident(char **ident, struct object *obj, fsck_error error_func)
+static int fsck_ident(const char **ident, struct object *obj, fsck_error error_func)
 {
+	char *end;
+
 	if (**ident == '<')
 		return error_func(obj, FSCK_ERROR, "invalid author/committer line - missing space before email");
 	*ident += strcspn(*ident, "<>\n");
@@ -243,10 +260,11 @@ static int fsck_ident(char **ident, struct object *obj, fsck_error error_func)
 	(*ident)++;
 	if (**ident == '0' && (*ident)[1] != ' ')
 		return error_func(obj, FSCK_ERROR, "invalid author/committer line - zero-padded date");
-	*ident += strspn(*ident, "0123456789");
-	if (**ident != ' ')
+	if (date_overflows(strtoul(*ident, &end, 10)))
+		return error_func(obj, FSCK_ERROR, "invalid author/committer line - date causes integer overflow");
+	if (end == *ident || *end != ' ')
 		return error_func(obj, FSCK_ERROR, "invalid author/committer line - bad date");
-	(*ident)++;
+	*ident = end + 1;
 	if ((**ident != '+' && **ident != '-') ||
 	    !isdigit((*ident)[1]) ||
 	    !isdigit((*ident)[2]) ||
@@ -260,24 +278,23 @@ static int fsck_ident(char **ident, struct object *obj, fsck_error error_func)
 
 static int fsck_commit(struct commit *commit, fsck_error error_func)
 {
-	char *buffer = commit->buffer;
+	const char *buffer = commit->buffer, *tmp;
 	unsigned char tree_sha1[20], sha1[20];
 	struct commit_graft *graft;
 	int parents = 0;
 	int err;
 
-	if (commit->date == ULONG_MAX)
-		return error_func(&commit->object, FSCK_ERROR, "invalid author/committer line");
-
-	if (memcmp(buffer, "tree ", 5))
+	buffer = skip_prefix(buffer, "tree ");
+	if (!buffer)
 		return error_func(&commit->object, FSCK_ERROR, "invalid format - expected 'tree' line");
-	if (get_sha1_hex(buffer+5, tree_sha1) || buffer[45] != '\n')
+	if (get_sha1_hex(buffer, tree_sha1) || buffer[40] != '\n')
 		return error_func(&commit->object, FSCK_ERROR, "invalid 'tree' line format - bad sha1");
-	buffer += 46;
-	while (!memcmp(buffer, "parent ", 7)) {
-		if (get_sha1_hex(buffer+7, sha1) || buffer[47] != '\n')
+	buffer += 41;
+	while ((tmp = skip_prefix(buffer, "parent "))) {
+		buffer = tmp;
+		if (get_sha1_hex(buffer, sha1) || buffer[40] != '\n')
 			return error_func(&commit->object, FSCK_ERROR, "invalid 'parent' line format - bad sha1");
-		buffer += 48;
+		buffer += 41;
 		parents++;
 	}
 	graft = lookup_commit_graft(commit->object.sha1);
@@ -301,15 +318,15 @@ static int fsck_commit(struct commit *commit, fsck_error error_func)
 		if (p || parents)
 			return error_func(&commit->object, FSCK_ERROR, "parent objects missing");
 	}
-	if (memcmp(buffer, "author ", 7))
+	buffer = skip_prefix(buffer, "author ");
+	if (!buffer)
 		return error_func(&commit->object, FSCK_ERROR, "invalid format - expected 'author' line");
-	buffer += 7;
 	err = fsck_ident(&buffer, &commit->object, error_func);
 	if (err)
 		return err;
-	if (memcmp(buffer, "committer ", strlen("committer ")))
+	buffer = skip_prefix(buffer, "committer ");
+	if (!buffer)
 		return error_func(&commit->object, FSCK_ERROR, "invalid format - expected 'committer' line");
-	buffer += strlen("committer ");
 	err = fsck_ident(&buffer, &commit->object, error_func);
 	if (err)
 		return err;

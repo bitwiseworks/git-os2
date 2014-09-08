@@ -40,13 +40,6 @@ test_expect_success 'prepare repository with topic branches' '
 	echo Side >>C &&
 	git add C &&
 	git commit -m "Add C" &&
-	git checkout -b nonlinear my-topic-branch &&
-	echo Edit >>B &&
-	git add B &&
-	git commit -m "Modify B" &&
-	git merge side &&
-	git checkout -b upstream-merged-nonlinear &&
-	git merge master &&
 	git checkout -f my-topic-branch &&
 	git tag topic
 '
@@ -66,26 +59,15 @@ test_expect_success 'rebase against master' '
 	git rebase master
 '
 
-test_expect_success 'rebase against master twice' '
-	git rebase master >out &&
-	grep "Current branch my-topic-branch is up to date" out
-'
-
-test_expect_success 'rebase against master twice with --force' '
-	git rebase --force-rebase master >out &&
-	grep "Current branch my-topic-branch is up to date, rebase forced" out
-'
-
-test_expect_success 'rebase against master twice from another branch' '
-	git checkout my-topic-branch^ &&
-	git rebase master my-topic-branch >out &&
-	grep "Current branch my-topic-branch is up to date" out
-'
-
-test_expect_success 'rebase fast-forward to master' '
-	git checkout my-topic-branch^ &&
-	git rebase my-topic-branch >out &&
-	grep "Fast-forwarded HEAD to my-topic-branch" out
+test_expect_success 'rebase, with <onto> and <upstream> specified as :/quuxery' '
+	test_when_finished "git branch -D torebase" &&
+	git checkout -b torebase my-topic-branch^ &&
+	upstream=$(git rev-parse ":/Add B") &&
+	onto=$(git rev-parse ":/Add A") &&
+	git rebase --onto $onto $upstream &&
+	git reset --hard my-topic-branch^ &&
+	git rebase --onto ":/Add A" ":/Add B" &&
+	git checkout my-topic-branch
 '
 
 test_expect_success 'the rebase operation should not have destroyed author information' '
@@ -101,29 +83,31 @@ test_expect_success 'HEAD was detached during rebase' '
 	test $(git rev-parse HEAD@{1}) != $(git rev-parse my-topic-branch@{1})
 '
 
-test_expect_success 'rebase after merge master' '
-	git reset --hard topic &&
-	git merge master &&
-	git rebase master &&
-	! (git show | grep "^Merge:")
+test_expect_success 'rebase from ambiguous branch name' '
+	git checkout -b topic side &&
+	git rebase master
 '
 
-test_expect_success 'rebase of history with merges is linearized' '
-	git checkout nonlinear &&
-	test 4 = $(git rev-list master.. | wc -l) &&
-	git rebase master &&
-	test 3 = $(git rev-list master.. | wc -l)
-'
+test_expect_success 'rebase off of the previous branch using "-"' '
+	git checkout master &&
+	git checkout HEAD^ &&
+	git rebase @{-1} >expect.messages &&
+	git merge-base master HEAD >expect.forkpoint &&
 
-test_expect_success 'rebase of history with merges after upstream merge is linearized' '
-	git checkout upstream-merged-nonlinear &&
-	test 5 = $(git rev-list master.. | wc -l) &&
-	git rebase master &&
-	test 3 = $(git rev-list master.. | wc -l)
+	git checkout master &&
+	git checkout HEAD^ &&
+	git rebase - >actual.messages &&
+	git merge-base master HEAD >actual.forkpoint &&
+
+	test_cmp expect.forkpoint actual.forkpoint &&
+	# the next one is dubious---we may want to say "-",
+	# instead of @{-1}, in the message
+	test_i18ncmp expect.messages actual.messages
 '
 
 test_expect_success 'rebase a single mode change' '
 	git checkout master &&
+	git branch -D topic &&
 	echo 1 >X &&
 	git add X &&
 	test_tick &&
@@ -138,8 +122,7 @@ test_expect_success 'rebase a single mode change' '
 '
 
 test_expect_success 'rebase is not broken by diff.renames' '
-	git config diff.renames copies &&
-	test_when_finished "git config --unset diff.renames" &&
+	test_config diff.renames copies &&
 	git checkout filemove &&
 	GIT_TRACE=1 git rebase force-3way
 '
@@ -160,28 +143,36 @@ rm -f B
 
 test_expect_success 'fail when upstream arg is missing and not on branch' '
 	git checkout topic &&
-	test_must_fail git rebase >output.out &&
-	grep "You are not currently on a branch" output.out
+	test_must_fail git rebase
 '
 
 test_expect_success 'fail when upstream arg is missing and not configured' '
 	git checkout -b no-config topic &&
-	test_must_fail git rebase >output.out &&
-	grep "branch.no-config.merge" output.out
+	test_must_fail git rebase
 '
 
-test_expect_success 'default to @{upstream} when upstream arg is missing' '
+test_expect_success 'default to common base in @{upstream}s reflog if no upstream arg' '
+	git checkout -b default-base master &&
 	git checkout -b default topic &&
 	git config branch.default.remote . &&
-	git config branch.default.merge refs/heads/master &&
+	git config branch.default.merge refs/heads/default-base &&
 	git rebase &&
-	test "$(git rev-parse default~1)" = "$(git rev-parse master)"
+	git rev-parse --verify default-base >expect &&
+	git rev-parse default~1 >actual &&
+	test_cmp expect actual &&
+	git checkout default-base &&
+	git reset --hard HEAD^ &&
+	git checkout default &&
+	git rebase &&
+	git rev-parse --verify default-base >expect &&
+	git rev-parse default~1 >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'rebase -q is quiet' '
 	git checkout -b quiet topic &&
 	git rebase -q master >output.out 2>&1 &&
-	test ! -s output.out
+	test_must_be_empty output.out
 '
 
 test_expect_success 'Rebase a commit that sprinkles CRs in' '

@@ -104,7 +104,7 @@ test_expect_failure 'conflict caused if rename not detected' '
 	test 0 -eq $(git ls-files -u | wc -l) &&
 	test 0 -eq $(git ls-files -o | wc -l) &&
 
-	test 6 -eq $(wc -l < c) &&
+	test_line_count = 6 c &&
 	test $(git rev-parse HEAD:a) = $(git rev-parse B:a) &&
 	test $(git rev-parse HEAD:b) = $(git rev-parse A:b)
 '
@@ -380,7 +380,7 @@ test_expect_success 'handle rename/rename (2to1) conflict correctly' '
 	git checkout B^0 &&
 
 	test_must_fail git merge -s recursive C^0 >out &&
-	grep "CONFLICT (rename/rename)" out &&
+	test_i18ngrep "CONFLICT (rename/rename)" out &&
 
 	test 2 -eq $(git ls-files -s | wc -l) &&
 	test 2 -eq $(git ls-files -u | wc -l) &&

@@ -62,38 +62,6 @@
   #define setW(x, val) (W(x) = (val))
 #endif
 
-/*
- * Performance might be improved if the CPU architecture is OK with
- * unaligned 32-bit loads and a fast ntohl() is available.
- * Otherwise fall back to byte loads and shifts which is portable,
- * and is faster on architectures with memory alignment issues.
- */
-
-#if defined(__i386__) || defined(__x86_64__) || \
-    defined(_M_IX86) || defined(_M_X64) || \
-    defined(__ppc__) || defined(__ppc64__) || \
-    defined(__powerpc__) || defined(__powerpc64__) || \
-    defined(__s390__) || defined(__s390x__)
-
-#define get_be32(p)	ntohl(*(unsigned int *)(p))
-#define put_be32(p, v)	do { *(unsigned int *)(p) = htonl(v); } while (0)
-
-#else
-
-#define get_be32(p)	( \
-	(*((unsigned char *)(p) + 0) << 24) | \
-	(*((unsigned char *)(p) + 1) << 16) | \
-	(*((unsigned char *)(p) + 2) <<  8) | \
-	(*((unsigned char *)(p) + 3) <<  0) )
-#define put_be32(p, v)	do { \
-	unsigned int __v = (v); \
-	*((unsigned char *)(p) + 0) = __v >> 24; \
-	*((unsigned char *)(p) + 1) = __v >> 16; \
-	*((unsigned char *)(p) + 2) = __v >>  8; \
-	*((unsigned char *)(p) + 3) = __v >>  0; } while (0)
-
-#endif
-
 /* This "rolls" over the 512-bit array */
 #define W(x) (array[(x)&15])
 
@@ -101,8 +69,8 @@
  * Where do we get the source from? The first 16 iterations get it from
  * the input data, the next mix it from the 512-bit array.
  */
-#define SHA_SRC(t) get_be32(data + t)
-#define SHA_MIX(t) SHA_ROL(W(t+13) ^ W(t+8) ^ W(t+2) ^ W(t), 1)
+#define SHA_SRC(t) get_be32((unsigned char *) block + (t)*4)
+#define SHA_MIX(t) SHA_ROL(W((t)+13) ^ W((t)+8) ^ W((t)+2) ^ W(t), 1);
 
 #define SHA_ROUND(t, input, fn, constant, A, B, C, D, E) do { \
 	unsigned int TEMP = input(t); setW(t, TEMP); \
@@ -115,7 +83,7 @@
 #define T_40_59(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, ((B&C)+(D&(B^C))) , 0x8f1bbcdc, A, B, C, D, E )
 #define T_60_79(t, A, B, C, D, E) SHA_ROUND(t, SHA_MIX, (B^C^D) ,  0xca62c1d6, A, B, C, D, E )
 
-static void blk_SHA1_Block(blk_SHA_CTX *ctx, const unsigned int *data)
+static void blk_SHA1_Block(blk_SHA_CTX *ctx, const void *block)
 {
 	unsigned int A,B,C,D,E;
 	unsigned int array[16];
@@ -126,7 +94,7 @@ static void blk_SHA1_Block(blk_SHA_CTX *ctx, const unsigned int *data)
 	D = ctx->H[3];
 	E = ctx->H[4];
 
-	/* Round 1 - iterations 0-16 take their input from 'data' */
+	/* Round 1 - iterations 0-16 take their input from 'block' */
 	T_0_15( 0, A, B, C, D, E);
 	T_0_15( 1, E, A, B, C, D);
 	T_0_15( 2, D, E, A, B, C);
@@ -274,10 +242,10 @@ void blk_SHA1_Final(unsigned char hashout[20], blk_SHA_CTX *ctx)
 	padlen[1] = htonl((uint32_t)(ctx->size << 3));
 
 	i = ctx->size & 63;
-	blk_SHA1_Update(ctx, pad, 1+ (63 & (55 - i)));
+	blk_SHA1_Update(ctx, pad, 1 + (63 & (55 - i)));
 	blk_SHA1_Update(ctx, padlen, 8);
 
 	/* Output hash */
 	for (i = 0; i < 5; i++)
-		put_be32(hashout + i*4, ctx->H[i]);
+		put_be32(hashout + i * 4, ctx->H[i]);
 }

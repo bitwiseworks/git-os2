@@ -10,7 +10,7 @@ SYNOPSIS
 --------
 [verse]
 'git archive' [--format=<fmt>] [--list] [--prefix=<prefix>/] [<extra>]
-	      [-o | --output=<file>] [--worktree-attributes]
+	      [-o <file> | --output=<file>] [--worktree-attributes]
 	      [--remote=<repo> [--exec=<git-upload-archive>]] <tree-ish>
 	      [<path>...]
 
@@ -56,7 +56,8 @@ OPTIONS
 	Write the archive to <file> instead of stdout.
 
 --worktree-attributes::
-	Look for attributes in .gitattributes in working directory too.
+	Look for attributes in .gitattributes files in the working tree
+	as well (see <<ATTRIBUTES>>).
 
 <extra>::
 	This can be any options that the archiver backend understands.
@@ -64,7 +65,10 @@ OPTIONS
 
 --remote=<repo>::
 	Instead of making a tar archive from the local repository,
-	retrieve a tar archive from a remote repository.
+	retrieve a tar archive from a remote repository. Note that the
+	remote repository may place restrictions on which sha1
+	expressions may be allowed in `<tree-ish>`. See
+	linkgit:git-upload-archive[1] for details.
 
 --exec=<git-upload-archive>::
 	Used with --remote to specify the path to the
@@ -120,6 +124,7 @@ tar.<format>.remote::
 	user-defined formats, but true for the "tar.gz" and "tgz"
 	formats.
 
+[[ATTRIBUTES]]
 ATTRIBUTES
 ----------
 
@@ -128,7 +133,7 @@ export-ignore::
 	added to archive files.  See linkgit:gitattributes[5] for details.
 
 export-subst::
-	If the attribute export-subst is set for a file then git will
+	If the attribute export-subst is set for a file then Git will
 	expand several placeholders when adding this file to an archive.
 	See linkgit:gitattributes[5] for details.
 
@@ -160,7 +165,7 @@ EXAMPLES
 
 	Same as above, but the format is inferred from the output file.
 
-`git archive --format=tar --prefix=git-1.4.0/ v1.4.0{caret}\{tree\} | gzip >git-1.4.0.tar.gz`::
+`git archive --format=tar --prefix=git-1.4.0/ v1.4.0^{tree} | gzip >git-1.4.0.tar.gz`::
 
 	Create a compressed tarball for v1.4.0 release, but without a
 	global extended pax header.

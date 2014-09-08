@@ -122,9 +122,9 @@ test_expect_success '"git replace" listing and deleting' '
      test "$HASH2" = "$(git replace -l)" &&
      test "$HASH2" = "$(git replace)" &&
      aa=${HASH2%??????????????????????????????????????} &&
-     test "$HASH2" = "$(git replace -l "$aa*")" &&
+     test "$HASH2" = "$(git replace --list "$aa*")" &&
      test_must_fail git replace -d $R &&
-     test_must_fail git replace -d &&
+     test_must_fail git replace --delete &&
      test_must_fail git replace -l -d $HASH2 &&
      git replace -d $HASH2 &&
      git show $HASH2 | grep "A U Thor" &&
@@ -137,6 +137,17 @@ test_expect_success '"git replace" replacing' '
      test_must_fail git replace $HASH2 $R &&
      git replace -f $HASH2 $R &&
      test_must_fail git replace -f &&
+     test "$HASH2" = "$(git replace)"
+'
+
+test_expect_success '"git replace" resolves sha1' '
+     SHORTHASH2=$(git rev-parse --short=8 $HASH2) &&
+     git replace -d $SHORTHASH2 &&
+     git replace $SHORTHASH2 $R &&
+     git show $HASH2 | grep "O Thor" &&
+     test_must_fail git replace $HASH2 $R &&
+     git replace -f $HASH2 $R &&
+     test_must_fail git replace --force &&
      test "$HASH2" = "$(git replace)"
 '
 
@@ -250,6 +261,67 @@ test_expect_success 'not just commits' '
 
 	git checkout file &&
 	test_cmp file.replaced file
+'
+
+test_expect_success 'replaced and replacement objects must be of the same type' '
+	test_must_fail git replace mytag $HASH1 &&
+	test_must_fail git replace HEAD^{tree} HEAD~1 &&
+	BLOB=$(git rev-parse :file) &&
+	test_must_fail git replace HEAD^ $BLOB
+'
+
+test_expect_success '-f option bypasses the type check' '
+	git replace -f mytag $HASH1 &&
+	git replace --force HEAD^{tree} HEAD~1 &&
+	git replace -f HEAD^ $BLOB
+'
+
+test_expect_success 'git cat-file --batch works on replace objects' '
+	git replace | grep $PARA3 &&
+	echo $PARA3 | git cat-file --batch
+'
+
+test_expect_success 'test --format bogus' '
+	test_must_fail git replace --format bogus >/dev/null 2>&1
+'
+
+test_expect_success 'test --format short' '
+	git replace --format=short >actual &&
+	git replace >expected &&
+	test_cmp expected actual
+'
+
+test_expect_success 'test --format medium' '
+	H1=$(git --no-replace-objects rev-parse HEAD~1) &&
+	HT=$(git --no-replace-objects rev-parse HEAD^{tree}) &&
+	MYTAG=$(git --no-replace-objects rev-parse mytag) &&
+	{
+		echo "$H1 -> $BLOB" &&
+		echo "$BLOB -> $REPLACED" &&
+		echo "$HT -> $H1" &&
+		echo "$PARA3 -> $S" &&
+		echo "$MYTAG -> $HASH1"
+	} | sort >expected &&
+	git replace -l --format medium | sort > actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'test --format long' '
+	{
+		echo "$H1 (commit) -> $BLOB (blob)" &&
+		echo "$BLOB (blob) -> $REPLACED (blob)" &&
+		echo "$HT (tree) -> $H1 (commit)" &&
+		echo "$PARA3 (commit) -> $S (commit)" &&
+		echo "$MYTAG (tag) -> $HASH1 (commit)"
+	} | sort >expected &&
+	git replace --format=long | sort > actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'replace ref cleanup' '
+	test -n "$(git replace)" &&
+	git replace -d $(git replace) &&
+	test -z "$(git replace)"
 '
 
 test_done

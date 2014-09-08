@@ -28,7 +28,7 @@ people using 80-column terminals.
 	This is a shorthand for "--pretty=oneline --abbrev-commit"
 	used together.
 
---encoding[=<encoding>]::
+--encoding=<encoding>::
 	The commit objects record the encoding used for the log message
 	in their encoding header; this option can be used to tell the
 	command to re-code the commit log message in the encoding
@@ -39,7 +39,7 @@ people using 80-column terminals.
 	Show the notes (see linkgit:git-notes[1]) that annotate the
 	commit, when showing the commit log message.  This is the default
 	for `git log`, `git show` and `git whatchanged` commands when
-	there is no `--pretty`, `--format` nor `--oneline` option given
+	there is no `--pretty`, `--format`, or `--oneline` option given
 	on the command line.
 +
 By default, the notes shown are from the notes refs listed in the
@@ -66,3 +66,7 @@ being displayed. Examples: "--notes=foo" will show only notes from
 --[no-]standard-notes::
 	These options are deprecated. Use the above --notes/--no-notes
 	options instead.
+
+--show-signature::
+	Check the validity of a signed commit object by passing the signature
+	to `gpg --verify` and show the output.

@@ -153,36 +153,13 @@ static void check_safe_crlf(const char *path, enum crlf_action crlf_action,
 
 static int has_cr_in_index(const char *path)
 {
-	int pos, len;
 	unsigned long sz;
-	enum object_type type;
 	void *data;
 	int has_cr;
-	struct index_state *istate = &the_index;
 
-	len = strlen(path);
-	pos = index_name_pos(istate, path, len);
-	if (pos < 0) {
-		/*
-		 * We might be in the middle of a merge, in which
-		 * case we would read stage #2 (ours).
-		 */
-		int i;
-		for (i = -pos - 1;
-		     (pos < 0 && i < istate->cache_nr &&
-		      !strcmp(istate->cache[i]->name, path));
-		     i++)
-			if (ce_stage(istate->cache[i]) == 2)
-				pos = i;
-	}
-	if (pos < 0)
+	data = read_blob_data_from_cache(path, &sz);
+	if (!data)
 		return 0;
-	data = read_sha1_file(istate->cache[pos]->sha1, &type, &sz);
-	if (!data || type != OBJ_BLOB) {
-		free(data);
-		return 0;
-	}
-
 	has_cr = memchr(data, '\r', sz) != NULL;
 	free(data);
 	return has_cr;
@@ -452,11 +429,12 @@ static struct convert_driver {
 	struct convert_driver *next;
 	const char *smudge;
 	const char *clean;
+	int required;
 } *user_convert, **user_convert_tail;
 
 static int read_convert_config(const char *var, const char *value, void *cb)
 {
-	const char *ep, *name;
+	const char *key, *name;
 	int namelen;
 	struct convert_driver *drv;
 
@@ -464,10 +442,8 @@ static int read_convert_config(const char *var, const char *value, void *cb)
 	 * External conversion drivers are configured using
 	 * "filter.<name>.variable".
 	 */
-	if (prefixcmp(var, "filter.") || (ep = strrchr(var, '.')) == var + 6)
+	if (parse_config_key(var, "filter", &name, &namelen, &key) < 0 || !name)
 		return 0;
-	name = var + 7;
-	namelen = ep - name;
 	for (drv = user_convert; drv; drv = drv->next)
 		if (!strncmp(drv->name, name, namelen) && !drv->name[namelen])
 			break;
@@ -478,8 +454,6 @@ static int read_convert_config(const char *var, const char *value, void *cb)
 		user_convert_tail = &(drv->next);
 	}
 
-	ep++;
-
 	/*
 	 * filter.<name>.smudge and filter.<name>.clean specifies
 	 * the command line:
@@ -489,11 +463,16 @@ static int read_convert_config(const char *var, const char *value, void *cb)
 	 * The command-line will not be interpolated in any way.
 	 */
 
-	if (!strcmp("smudge", ep))
+	if (!strcmp("smudge", key))
 		return git_config_string(&drv->smudge, var, value);
 
-	if (!strcmp("clean", ep))
+	if (!strcmp("clean", key))
 		return git_config_string(&drv->clean, var, value);
+
+	if (!strcmp("required", key)) {
+		drv->required = git_config_bool(var, value);
+		return 0;
+	}
 
 	return 0;
 }
@@ -773,13 +752,19 @@ int convert_to_git(const char *path, const char *src, size_t len,
 {
 	int ret = 0;
 	const char *filter = NULL;
+	int required = 0;
 	struct conv_attrs ca;
 
 	convert_attrs(&ca, path);
-	if (ca.drv)
+	if (ca.drv) {
 		filter = ca.drv->clean;
+		required = ca.drv->required;
+	}
 
 	ret |= apply_filter(path, src, len, dst, filter);
+	if (!ret && required)
+		die("%s: clean filter '%s' failed", path, ca.drv->name);
+
 	if (ret && dst) {
 		src = dst->buf;
 		len = dst->len;
@@ -797,13 +782,16 @@ static int convert_to_working_tree_internal(const char *path, const char *src,
 					    size_t len, struct strbuf *dst,
 					    int normalizing)
 {
-	int ret = 0;
+	int ret = 0, ret_filter = 0;
 	const char *filter = NULL;
+	int required = 0;
 	struct conv_attrs ca;
 
 	convert_attrs(&ca, path);
-	if (ca.drv)
+	if (ca.drv) {
 		filter = ca.drv->smudge;
+		required = ca.drv->required;
+	}
 
 	ret |= ident_to_worktree(path, src, len, dst, ca.ident);
 	if (ret) {
@@ -822,7 +810,12 @@ static int convert_to_working_tree_internal(const char *path, const char *src,
 			len = dst->len;
 		}
 	}
-	return ret | apply_filter(path, src, len, dst, filter);
+
+	ret_filter = apply_filter(path, src, len, dst, filter);
+	if (!ret_filter && required)
+		die("%s: smudge filter %s failed", path, ca.drv->name);
+
+	return ret | ret_filter;
 }
 
 int convert_to_working_tree(const char *path, const char *src, size_t len, struct strbuf *dst)
@@ -842,7 +835,7 @@ int renormalize_buffer(const char *path, const char *src, size_t len, struct str
 
 /*****************************************************************
  *
- * Streaming converison support
+ * Streaming conversion support
  *
  *****************************************************************/
 
@@ -1128,7 +1121,7 @@ static int is_foreign_ident(const char *str)
 {
 	int i;
 
-	if (prefixcmp(str, "$Id: "))
+	if (!starts_with(str, "$Id: "))
 		return 0;
 	for (i = 5; str[i]; i++) {
 		if (isspace(str[i]) && str[i+1] != '$')

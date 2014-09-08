@@ -8,82 +8,117 @@
 #define NO_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
 
-/*
- * This removes bit 5 if bit 6 is set.
- *
- * That will make US-ASCII characters hash to their upper-case
- * equivalent. We could easily do this one whole word at a time,
- * but that's for future worries.
- */
-static inline unsigned char icase_hash(unsigned char c)
+struct dir_entry {
+	struct hashmap_entry ent;
+	struct dir_entry *parent;
+	struct cache_entry *ce;
+	int nr;
+	unsigned int namelen;
+};
+
+static int dir_entry_cmp(const struct dir_entry *e1,
+		const struct dir_entry *e2, const char *name)
 {
-	return c & ~((c & 0x40) >> 1);
+	return e1->namelen != e2->namelen || strncasecmp(e1->ce->name,
+			name ? name : e2->ce->name, e1->namelen);
 }
 
-static unsigned int hash_name(const char *name, int namelen)
+static struct dir_entry *find_dir_entry(struct index_state *istate,
+		const char *name, unsigned int namelen)
 {
-	unsigned int hash = 0x123;
-
-	do {
-		unsigned char c = *name++;
-		c = icase_hash(c);
-		hash = hash*101 + c;
-	} while (--namelen);
-	return hash;
+	struct dir_entry key;
+	hashmap_entry_init(&key, memihash(name, namelen));
+	key.namelen = namelen;
+	return hashmap_get(&istate->dir_hash, &key, name);
 }
 
-static void hash_index_entry_directories(struct index_state *istate, struct cache_entry *ce)
+static struct dir_entry *hash_dir_entry(struct index_state *istate,
+		struct cache_entry *ce, int namelen)
 {
 	/*
 	 * Throw each directory component in the hash for quick lookup
-	 * during a git status. Directory components are stored with their
+	 * during a git status. Directory components are stored without their
 	 * closing slash.  Despite submodules being a directory, they never
-	 * reach this point, because they are stored without a closing slash
-	 * in the cache.
+	 * reach this point, because they are stored
+	 * in index_state.name_hash (as ordinary cache_entries).
 	 *
-	 * Note that the cache_entry stored with the directory does not
-	 * represent the directory itself.  It is a pointer to an existing
-	 * filename, and its only purpose is to represent existence of the
-	 * directory in the cache.  It is very possible multiple directory
-	 * hash entries may point to the same cache_entry.
+	 * Note that the cache_entry stored with the dir_entry merely
+	 * supplies the name of the directory (up to dir_entry.namelen). We
+	 * track the number of 'active' files in a directory in dir_entry.nr,
+	 * so we can tell if the directory is still relevant, e.g. for git
+	 * status. However, if cache_entries are removed, we cannot pinpoint
+	 * an exact cache_entry that's still active. It is very possible that
+	 * multiple dir_entries point to the same cache_entry.
 	 */
-	unsigned int hash;
-	void **pos;
+	struct dir_entry *dir;
 
-	const char *ptr = ce->name;
-	while (*ptr) {
-		while (*ptr && *ptr != '/')
-			++ptr;
-		if (*ptr == '/') {
-			++ptr;
-			hash = hash_name(ce->name, ptr - ce->name);
-			pos = insert_hash(hash, ce, &istate->name_hash);
-			if (pos) {
-				ce->dir_next = *pos;
-				*pos = ce;
-			}
-		}
+	/* get length of parent directory */
+	while (namelen > 0 && !is_dir_sep(ce->name[namelen - 1]))
+		namelen--;
+	if (namelen <= 0)
+		return NULL;
+	namelen--;
+
+	/* lookup existing entry for that directory */
+	dir = find_dir_entry(istate, ce->name, namelen);
+	if (!dir) {
+		/* not found, create it and add to hash table */
+		dir = xcalloc(1, sizeof(struct dir_entry));
+		hashmap_entry_init(dir, memihash(ce->name, namelen));
+		dir->namelen = namelen;
+		dir->ce = ce;
+		hashmap_add(&istate->dir_hash, dir);
+
+		/* recursively add missing parent directories */
+		dir->parent = hash_dir_entry(istate, ce, namelen);
+	}
+	return dir;
+}
+
+static void add_dir_entry(struct index_state *istate, struct cache_entry *ce)
+{
+	/* Add reference to the directory entry (and parents if 0). */
+	struct dir_entry *dir = hash_dir_entry(istate, ce, ce_namelen(ce));
+	while (dir && !(dir->nr++))
+		dir = dir->parent;
+}
+
+static void remove_dir_entry(struct index_state *istate, struct cache_entry *ce)
+{
+	/*
+	 * Release reference to the directory entry. If 0, remove and continue
+	 * with parent directory.
+	 */
+	struct dir_entry *dir = hash_dir_entry(istate, ce, ce_namelen(ce));
+	while (dir && !(--dir->nr)) {
+		struct dir_entry *parent = dir->parent;
+		hashmap_remove(&istate->dir_hash, dir, NULL);
+		free(dir);
+		dir = parent;
 	}
 }
 
 static void hash_index_entry(struct index_state *istate, struct cache_entry *ce)
 {
-	void **pos;
-	unsigned int hash;
-
 	if (ce->ce_flags & CE_HASHED)
 		return;
 	ce->ce_flags |= CE_HASHED;
-	ce->next = ce->dir_next = NULL;
-	hash = hash_name(ce->name, ce_namelen(ce));
-	pos = insert_hash(hash, ce, &istate->name_hash);
-	if (pos) {
-		ce->next = *pos;
-		*pos = ce;
-	}
+	hashmap_entry_init(ce, memihash(ce->name, ce_namelen(ce)));
+	hashmap_add(&istate->name_hash, ce);
 
 	if (ignore_case)
-		hash_index_entry_directories(istate, ce);
+		add_dir_entry(istate, ce);
+}
+
+static int cache_entry_cmp(const struct cache_entry *ce1,
+		const struct cache_entry *ce2, const void *remove)
+{
+	/*
+	 * For remove_name_hash, find the exact entry (pointer equality); for
+	 * index_file_exists, find all entries with matching hash code and
+	 * decide whether the entry matches in same_name.
+	 */
+	return remove ? !(ce1 == ce2) : 0;
 }
 
 static void lazy_init_name_hash(struct index_state *istate)
@@ -92,6 +127,9 @@ static void lazy_init_name_hash(struct index_state *istate)
 
 	if (istate->name_hash_initialized)
 		return;
+	hashmap_init(&istate->name_hash, (hashmap_cmp_fn) cache_entry_cmp,
+			istate->cache_nr);
+	hashmap_init(&istate->dir_hash, (hashmap_cmp_fn) dir_entry_cmp, 0);
 	for (nr = 0; nr < istate->cache_nr; nr++)
 		hash_index_entry(istate, istate->cache[nr]);
 	istate->name_hash_initialized = 1;
@@ -99,9 +137,19 @@ static void lazy_init_name_hash(struct index_state *istate)
 
 void add_name_hash(struct index_state *istate, struct cache_entry *ce)
 {
-	ce->ce_flags &= ~CE_UNHASHED;
 	if (istate->name_hash_initialized)
 		hash_index_entry(istate, ce);
+}
+
+void remove_name_hash(struct index_state *istate, struct cache_entry *ce)
+{
+	if (!istate->name_hash_initialized || !(ce->ce_flags & CE_HASHED))
+		return;
+	ce->ce_flags &= ~CE_HASHED;
+	hashmap_remove(&istate->name_hash, ce, ce);
+
+	if (ignore_case)
+		remove_dir_entry(istate, ce);
 }
 
 static int slow_same_name(const char *name1, int len1, const char *name2, int len2)
@@ -137,54 +185,54 @@ static int same_name(const struct cache_entry *ce, const char *name, int namelen
 	if (!icase)
 		return 0;
 
-	/*
-	 * If the entry we're comparing is a filename (no trailing slash), then compare
-	 * the lengths exactly.
-	 */
-	if (name[namelen - 1] != '/')
-		return slow_same_name(name, namelen, ce->name, len);
-
-	/*
-	 * For a directory, we point to an arbitrary cache_entry filename.  Just
-	 * make sure the directory portion matches.
-	 */
-	return slow_same_name(name, namelen, ce->name, namelen < len ? namelen : len);
+	return slow_same_name(name, namelen, ce->name, len);
 }
 
-struct cache_entry *index_name_exists(struct index_state *istate, const char *name, int namelen, int icase)
+struct cache_entry *index_dir_exists(struct index_state *istate, const char *name, int namelen)
 {
-	unsigned int hash = hash_name(name, namelen);
 	struct cache_entry *ce;
+	struct dir_entry *dir;
 
 	lazy_init_name_hash(istate);
-	ce = lookup_hash(hash, &istate->name_hash);
-
-	while (ce) {
-		if (!(ce->ce_flags & CE_UNHASHED)) {
-			if (same_name(ce, name, namelen, icase))
-				return ce;
-		}
-		if (icase && name[namelen - 1] == '/')
-			ce = ce->dir_next;
-		else
-			ce = ce->next;
-	}
+	dir = find_dir_entry(istate, name, namelen);
+	if (dir && dir->nr)
+		return dir->ce;
 
 	/*
-	 * Might be a submodule.  Despite submodules being directories,
-	 * they are stored in the name hash without a closing slash.
-	 * When ignore_case is 1, directories are stored in the name hash
-	 * with their closing slash.
-	 *
-	 * The side effect of this storage technique is we have need to
-	 * remove the slash from name and perform the lookup again without
-	 * the slash.  If a match is made, S_ISGITLINK(ce->mode) will be
-	 * true.
+	 * It might be a submodule. Unlike plain directories, which are stored
+	 * in the dir-hash, submodules are stored in the name-hash, so check
+	 * there, as well.
 	 */
-	if (icase && name[namelen - 1] == '/') {
-		ce = index_name_exists(istate, name, namelen - 1, icase);
-		if (ce && S_ISGITLINK(ce->ce_mode))
+	ce = index_file_exists(istate, name, namelen, 1);
+	if (ce && S_ISGITLINK(ce->ce_mode))
+		return ce;
+
+	return NULL;
+}
+
+struct cache_entry *index_file_exists(struct index_state *istate, const char *name, int namelen, int icase)
+{
+	struct cache_entry *ce;
+	struct hashmap_entry key;
+
+	lazy_init_name_hash(istate);
+
+	hashmap_entry_init(&key, memihash(name, namelen));
+	ce = hashmap_get(&istate->name_hash, &key, NULL);
+	while (ce) {
+		if (same_name(ce, name, namelen, icase))
 			return ce;
+		ce = hashmap_get_next(&istate->name_hash, ce);
 	}
 	return NULL;
+}
+
+void free_name_hash(struct index_state *istate)
+{
+	if (!istate->name_hash_initialized)
+		return;
+	istate->name_hash_initialized = 0;
+
+	hashmap_free(&istate->name_hash, 0);
+	hashmap_free(&istate->dir_hash, 1);
 }

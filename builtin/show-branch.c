@@ -6,8 +6,8 @@
 #include "parse-options.h"
 
 static const char* show_branch_usage[] = {
-    "git show-branch [-a|--all] [-r|--remotes] [--topo-order | --date-order] [--current] [--color[=<when>] | --no-color] [--sparse] [--more=<n> | --list | --independent | --merge-base] [--no-name | --sha1-name] [--topics] [(<rev> | <glob>)...]",
-    "git show-branch (-g|--reflog)[=<n>[,<base>]] [--list] [<ref>]",
+    N_("git show-branch [-a|--all] [-r|--remotes] [--topo-order | --date-order] [--current] [--color[=<when>] | --no-color] [--sparse] [--more=<n> | --list | --independent | --merge-base] [--no-name | --sha1-name] [--topics] [(<rev> | <glob>)...]"),
+    N_("git show-branch (-g|--reflog)[=<n>[,<base>]] [--list] [<ref>]"),
     NULL
 };
 
@@ -162,29 +162,28 @@ static void name_commits(struct commit_list *list,
 			nth = 0;
 			while (parents) {
 				struct commit *p = parents->item;
-				char newname[1000], *en;
+				struct strbuf newname = STRBUF_INIT;
 				parents = parents->next;
 				nth++;
 				if (p->util)
 					continue;
-				en = newname;
 				switch (n->generation) {
 				case 0:
-					en += sprintf(en, "%s", n->head_name);
+					strbuf_addstr(&newname, n->head_name);
 					break;
 				case 1:
-					en += sprintf(en, "%s^", n->head_name);
+					strbuf_addf(&newname, "%s^", n->head_name);
 					break;
 				default:
-					en += sprintf(en, "%s~%d",
-						n->head_name, n->generation);
+					strbuf_addf(&newname, "%s~%d",
+						    n->head_name, n->generation);
 					break;
 				}
 				if (nth == 1)
-					en += sprintf(en, "^");
+					strbuf_addch(&newname, '^');
 				else
-					en += sprintf(en, "^%d", nth);
-				name_commit(p, xstrdup(newname), 0);
+					strbuf_addf(&newname, "^%d", nth);
+				name_commit(p, strbuf_detach(&newname, NULL), 0);
 				i++;
 				name_first_parent_chain(p);
 			}
@@ -228,8 +227,7 @@ static void join_revs(struct commit_list **list_p,
 			parents = parents->next;
 			if ((this_flag & flags) == flags)
 				continue;
-			if (!p->object.parsed)
-				parse_commit(p);
+			parse_commit(p);
 			if (mark_seen(p, seen_p) && !still_interesting)
 				extra--;
 			p->object.flags |= flags;
@@ -286,7 +284,7 @@ static void show_one_commit(struct commit *commit, int no_name)
 		pp_commit_easy(CMIT_FMT_ONELINE, commit, &pretty);
 		pretty_str = pretty.buf;
 	}
-	if (!prefixcmp(pretty_str, "[PATCH] "))
+	if (starts_with(pretty_str, "[PATCH] "))
 		pretty_str += 8;
 
 	if (!no_name) {
@@ -397,7 +395,7 @@ static int append_head_ref(const char *refname, const unsigned char *sha1, int f
 {
 	unsigned char tmp[20];
 	int ofs = 11;
-	if (prefixcmp(refname, "refs/heads/"))
+	if (!starts_with(refname, "refs/heads/"))
 		return 0;
 	/* If both heads/foo and tags/foo exists, get_sha1 would
 	 * get confused.
@@ -411,7 +409,7 @@ static int append_remote_ref(const char *refname, const unsigned char *sha1, int
 {
 	unsigned char tmp[20];
 	int ofs = 13;
-	if (prefixcmp(refname, "refs/remotes/"))
+	if (!starts_with(refname, "refs/remotes/"))
 		return 0;
 	/* If both heads/foo and tags/foo exists, get_sha1 would
 	 * get confused.
@@ -423,7 +421,7 @@ static int append_remote_ref(const char *refname, const unsigned char *sha1, int
 
 static int append_tag_ref(const char *refname, const unsigned char *sha1, int flag, void *cb_data)
 {
-	if (prefixcmp(refname, "refs/tags/"))
+	if (!starts_with(refname, "refs/tags/"))
 		return 0;
 	return append_ref(refname + 5, sha1, 0);
 }
@@ -452,11 +450,11 @@ static int append_matching_ref(const char *refname, const unsigned char *sha1, i
 			slash--;
 	if (!*tail)
 		return 0;
-	if (fnmatch(match_ref_pattern, tail, 0))
+	if (wildmatch(match_ref_pattern, tail, 0, NULL))
 		return 0;
-	if (!prefixcmp(refname, "refs/heads/"))
+	if (starts_with(refname, "refs/heads/"))
 		return append_head_ref(refname, sha1, flag, cb_data);
-	if (!prefixcmp(refname, "refs/tags/"))
+	if (starts_with(refname, "refs/tags/"))
 		return append_tag_ref(refname, sha1, flag, cb_data);
 	return append_ref(refname, sha1, 0);
 }
@@ -481,11 +479,11 @@ static int rev_is_head(char *head, int headlen, char *name,
 	if ((!head[0]) ||
 	    (head_sha1 && sha1 && hashcmp(head_sha1, sha1)))
 		return 0;
-	if (!prefixcmp(head, "refs/heads/"))
+	if (starts_with(head, "refs/heads/"))
 		head += 11;
-	if (!prefixcmp(name, "refs/heads/"))
+	if (starts_with(name, "refs/heads/"))
 		name += 11;
-	else if (!prefixcmp(name, "heads/"))
+	else if (starts_with(name, "heads/"))
 		name += 6;
 	return !strcmp(head, name);
 }
@@ -631,7 +629,7 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 	int num_rev, i, extra = 0;
 	int all_heads = 0, all_remotes = 0;
 	int all_mask, all_revs;
-	int lifo = 1;
+	enum rev_sort_order sort_order = REV_SORT_IN_GRAPH_ORDER;
 	char head[128];
 	const char *head_p;
 	int head_len;
@@ -647,37 +645,39 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 	int dense = 1;
 	const char *reflog_base = NULL;
 	struct option builtin_show_branch_options[] = {
-		OPT_BOOLEAN('a', "all", &all_heads,
-			    "show remote-tracking and local branches"),
-		OPT_BOOLEAN('r', "remotes", &all_remotes,
-			    "show remote-tracking branches"),
+		OPT_BOOL('a', "all", &all_heads,
+			 N_("show remote-tracking and local branches")),
+		OPT_BOOL('r', "remotes", &all_remotes,
+			 N_("show remote-tracking branches")),
 		OPT__COLOR(&showbranch_use_color,
-			    "color '*!+-' corresponding to the branch"),
-		{ OPTION_INTEGER, 0, "more", &extra, "n",
-			    "show <n> more commits after the common ancestor",
+			    N_("color '*!+-' corresponding to the branch")),
+		{ OPTION_INTEGER, 0, "more", &extra, N_("n"),
+			    N_("show <n> more commits after the common ancestor"),
 			    PARSE_OPT_OPTARG, NULL, (intptr_t)1 },
-		OPT_SET_INT(0, "list", &extra, "synonym to more=-1", -1),
-		OPT_BOOLEAN(0, "no-name", &no_name, "suppress naming strings"),
-		OPT_BOOLEAN(0, "current", &with_current_branch,
-			    "include the current branch"),
-		OPT_BOOLEAN(0, "sha1-name", &sha1_name,
-			    "name commits with their object names"),
-		OPT_BOOLEAN(0, "merge-base", &merge_base,
-			    "show possible merge bases"),
-		OPT_BOOLEAN(0, "independent", &independent,
-			    "show refs unreachable from any other ref"),
-		OPT_BOOLEAN(0, "topo-order", &lifo,
-			    "show commits in topological order"),
-		OPT_BOOLEAN(0, "topics", &topics,
-			    "show only commits not on the first branch"),
+		OPT_SET_INT(0, "list", &extra, N_("synonym to more=-1"), -1),
+		OPT_BOOL(0, "no-name", &no_name, N_("suppress naming strings")),
+		OPT_BOOL(0, "current", &with_current_branch,
+			 N_("include the current branch")),
+		OPT_BOOL(0, "sha1-name", &sha1_name,
+			 N_("name commits with their object names")),
+		OPT_BOOL(0, "merge-base", &merge_base,
+			 N_("show possible merge bases")),
+		OPT_BOOL(0, "independent", &independent,
+			    N_("show refs unreachable from any other ref")),
+		OPT_SET_INT(0, "topo-order", &sort_order,
+			    N_("show commits in topological order"),
+			    REV_SORT_IN_GRAPH_ORDER),
+		OPT_BOOL(0, "topics", &topics,
+			 N_("show only commits not on the first branch")),
 		OPT_SET_INT(0, "sparse", &dense,
-			    "show merges reachable from only one tip", 0),
-		OPT_SET_INT(0, "date-order", &lifo,
-			    "show commits where no parent comes before its "
-			    "children", 0),
-		{ OPTION_CALLBACK, 'g', "reflog", &reflog_base, "<n>[,<base>]",
-			    "show <n> most recent ref-log entries starting at "
-			    "base",
+			    N_("show merges reachable from only one tip"), 0),
+		OPT_SET_INT(0, "date-order", &sort_order,
+			    N_("topologically sort, maintaining date order "
+			       "where possible"),
+			    REV_SORT_BY_COMMIT_DATE),
+		{ OPTION_CALLBACK, 'g', "reflog", &reflog_base, N_("<n>[,<base>]"),
+			    N_("show <n> most recent ref-log entries starting at "
+			       "base"),
 			    PARSE_OPT_OPTARG | PARSE_OPT_LITERAL_ARGHELP,
 			    parse_reflog_param },
 		OPT_END()
@@ -812,7 +812,7 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 				has_head++;
 		}
 		if (!has_head) {
-			int offset = !prefixcmp(head, "refs/heads/") ? 11 : 0;
+			int offset = starts_with(head, "refs/heads/") ? 11 : 0;
 			append_one_rev(head + offset);
 		}
 	}
@@ -901,7 +901,7 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 		exit(0);
 
 	/* Sort topologically */
-	sort_in_topological_order(&seen, lifo);
+	sort_in_topological_order(&seen, sort_order);
 
 	/* Give names to commits */
 	if (!sha1_name && !no_name)

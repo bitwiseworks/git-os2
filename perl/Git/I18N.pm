@@ -2,7 +2,16 @@ package Git::I18N;
 use 5.008;
 use strict;
 use warnings;
-use Exporter 'import';
+BEGIN {
+	require Exporter;
+	if ($] < 5.008003) {
+		*import = \&Exporter::import;
+	} else {
+		# Exporter 5.57 which supports this invocation was
+		# released with perl 5.8.3
+		Exporter->import('import');
+	}
+}
 
 our @EXPORT = qw(__);
 our @EXPORT_OK = @EXPORT;
@@ -59,7 +68,7 @@ Git::I18N - Perl interface to Git's Gettext localizations
 
 	print __("Welcome to Git!\n");
 
-	printf __("The following error occured: %s\n"), $error;
+	printf __("The following error occurred: %s\n"), $error;
 
 =head1 DESCRIPTION
 

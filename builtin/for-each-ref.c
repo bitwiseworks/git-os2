@@ -9,6 +9,7 @@
 #include "quote.h"
 #include "parse-options.h"
 #include "remote.h"
+#include "color.h"
 
 /* Quoting styles */
 #define QUOTE_NONE 0
@@ -75,6 +76,8 @@ static struct {
 	{ "upstream" },
 	{ "symref" },
 	{ "flag" },
+	{ "HEAD" },
+	{ "color" },
 };
 
 /*
@@ -89,7 +92,8 @@ static struct {
  */
 static const char **used_atom;
 static cmp_type *used_atom_type;
-static int used_atom_cnt, sort_atom_limit, need_tagged, need_symref;
+static int used_atom_cnt, need_tagged, need_symref;
+static int need_color_reset_at_eol;
 
 /*
  * Used to parse format string and sort specifiers
@@ -176,13 +180,21 @@ static const char *find_next(const char *cp)
 static int verify_format(const char *format)
 {
 	const char *cp, *sp;
+	static const char color_reset[] = "color:reset";
+
+	need_color_reset_at_eol = 0;
 	for (cp = format; *cp && (sp = find_next(cp)); ) {
 		const char *ep = strchr(sp, ')');
+		int at;
+
 		if (!ep)
 			return error("malformed format string %s", sp);
 		/* sp points at "%(" and ep points at the closing ")" */
-		parse_atom(sp + 2, ep);
+		at = parse_atom(sp + 2, ep);
 		cp = ep + 1;
+
+		if (!memcmp(used_atom[at], "color:", 6))
+			need_color_reset_at_eol = !!strcmp(used_atom[at], color_reset);
 	}
 	return 0;
 }
@@ -205,6 +217,22 @@ static void *get_obj(const unsigned char *sha1, struct object **obj, unsigned lo
 	return buf;
 }
 
+static int grab_objectname(const char *name, const unsigned char *sha1,
+			    struct atom_value *v)
+{
+	if (!strcmp(name, "objectname")) {
+		char *s = xmalloc(41);
+		strcpy(s, sha1_to_hex(sha1));
+		v->s = s;
+		return 1;
+	}
+	if (!strcmp(name, "objectname:short")) {
+		v->s = xstrdup(find_unique_abbrev(sha1, DEFAULT_ABBREV));
+		return 1;
+	}
+	return 0;
+}
+
 /* See grab_values */
 static void grab_common_values(struct atom_value *val, int deref, struct object *obj, void *buf, unsigned long sz)
 {
@@ -225,15 +253,8 @@ static void grab_common_values(struct atom_value *val, int deref, struct object 
 			v->ul = sz;
 			v->s = s;
 		}
-		else if (!strcmp(name, "objectname")) {
-			char *s = xmalloc(41);
-			strcpy(s, sha1_to_hex(obj->sha1));
-			v->s = s;
-		}
-		else if (!strcmp(name, "objectname:short")) {
-			v->s = xstrdup(find_unique_abbrev(obj->sha1,
-							  DEFAULT_ABBREV));
-		}
+		else if (deref)
+			grab_objectname(name, obj->sha1, v);
 	}
 }
 
@@ -432,7 +453,7 @@ static void grab_person(const char *who, struct atom_value *val, int deref, stru
 		if (name[wholen] != 0 &&
 		    strcmp(name + wholen, "name") &&
 		    strcmp(name + wholen, "email") &&
-		    prefixcmp(name + wholen, "date"))
+		    !starts_with(name + wholen, "date"))
 			continue;
 		if (!wholine)
 			wholine = find_wholine(who, wholen, buf, sz);
@@ -444,7 +465,7 @@ static void grab_person(const char *who, struct atom_value *val, int deref, stru
 			v->s = copy_name(wholine);
 		else if (!strcmp(name + wholen, "email"))
 			v->s = copy_email(wholine);
-		else if (!prefixcmp(name + wholen, "date"))
+		else if (starts_with(name + wholen, "date"))
 			grab_date(wholine, v, name);
 	}
 
@@ -466,7 +487,7 @@ static void grab_person(const char *who, struct atom_value *val, int deref, stru
 		if (deref)
 			name++;
 
-		if (!prefixcmp(name, "creatordate"))
+		if (starts_with(name, "creatordate"))
 			grab_date(wholine, v, name);
 		else if (!strcmp(name, "creator"))
 			v->s = copy_line(wholine);
@@ -640,20 +661,20 @@ static void populate_value(struct refinfo *ref)
 		int deref = 0;
 		const char *refname;
 		const char *formatp;
+		struct branch *branch = NULL;
 
 		if (*name == '*') {
 			deref = 1;
 			name++;
 		}
 
-		if (!prefixcmp(name, "refname"))
+		if (starts_with(name, "refname"))
 			refname = ref->refname;
-		else if (!prefixcmp(name, "symref"))
+		else if (starts_with(name, "symref"))
 			refname = ref->symref ? ref->symref : "";
-		else if (!prefixcmp(name, "upstream")) {
-			struct branch *branch;
+		else if (starts_with(name, "upstream")) {
 			/* only local branches may have an upstream */
-			if (prefixcmp(ref->refname, "refs/heads/"))
+			if (!starts_with(ref->refname, "refs/heads/"))
 				continue;
 			branch = branch_get(ref->refname + 11);
 
@@ -661,8 +682,13 @@ static void populate_value(struct refinfo *ref)
 			    !branch->merge[0]->dst)
 				continue;
 			refname = branch->merge[0]->dst;
-		}
-		else if (!strcmp(name, "flag")) {
+		} else if (starts_with(name, "color:")) {
+			char color[COLOR_MAXLEN] = "";
+
+			color_parse(name + 6, "--format", color);
+			v->s = xstrdup(color);
+			continue;
+		} else if (!strcmp(name, "flag")) {
 			char buf[256], *cp = buf;
 			if (ref->flag & REF_ISSYMREF)
 				cp = copy_advance(cp, ",symref");
@@ -675,18 +701,62 @@ static void populate_value(struct refinfo *ref)
 				v->s = xstrdup(buf + 1);
 			}
 			continue;
-		}
-		else
+		} else if (!deref && grab_objectname(name, ref->objectname, v)) {
+			continue;
+		} else if (!strcmp(name, "HEAD")) {
+			const char *head;
+			unsigned char sha1[20];
+
+			head = resolve_ref_unsafe("HEAD", sha1, 1, NULL);
+			if (!strcmp(ref->refname, head))
+				v->s = "*";
+			else
+				v->s = " ";
+			continue;
+		} else
 			continue;
 
 		formatp = strchr(name, ':');
-		/* look for "short" refname format */
 		if (formatp) {
+			int num_ours, num_theirs;
+
 			formatp++;
 			if (!strcmp(formatp, "short"))
 				refname = shorten_unambiguous_ref(refname,
 						      warn_ambiguous_refs);
-			else
+			else if (!strcmp(formatp, "track") &&
+				 starts_with(name, "upstream")) {
+				char buf[40];
+
+				stat_tracking_info(branch, &num_ours, &num_theirs);
+				if (!num_ours && !num_theirs)
+					v->s = "";
+				else if (!num_ours) {
+					sprintf(buf, "[behind %d]", num_theirs);
+					v->s = xstrdup(buf);
+				} else if (!num_theirs) {
+					sprintf(buf, "[ahead %d]", num_ours);
+					v->s = xstrdup(buf);
+				} else {
+					sprintf(buf, "[ahead %d, behind %d]",
+						num_ours, num_theirs);
+					v->s = xstrdup(buf);
+				}
+				continue;
+			} else if (!strcmp(formatp, "trackshort") &&
+				   starts_with(name, "upstream")) {
+				assert(branch);
+				stat_tracking_info(branch, &num_ours, &num_theirs);
+				if (!num_ours && !num_theirs)
+					v->s = "=";
+				else if (!num_ours)
+					v->s = "<";
+				else if (!num_theirs)
+					v->s = ">";
+				else
+					v->s = "<>";
+				continue;
+			} else
 				die("unknown %.*s format %s",
 				    (int)(formatp - name), name, formatp);
 		}
@@ -794,7 +864,7 @@ static int grab_single_ref(const char *refname, const unsigned char *sha1, int f
 			     refname[plen] == '/' ||
 			     p[plen-1] == '/'))
 				break;
-			if (!fnmatch(p, refname, FNM_PATHNAME))
+			if (!wildmatch(p, refname, WM_PATHNAME, NULL))
 				break;
 		}
 		if (!*pattern)
@@ -864,26 +934,29 @@ static void sort_refs(struct ref_sort *sort, struct refinfo **refs, int num_refs
 	qsort(refs, num_refs, sizeof(struct refinfo *), compare_refs);
 }
 
-static void print_value(struct refinfo *ref, int atom, int quote_style)
+static void print_value(struct atom_value *v, int quote_style)
 {
-	struct atom_value *v;
-	get_value(ref, atom, &v);
+	struct strbuf sb = STRBUF_INIT;
 	switch (quote_style) {
 	case QUOTE_NONE:
 		fputs(v->s, stdout);
 		break;
 	case QUOTE_SHELL:
-		sq_quote_print(stdout, v->s);
+		sq_quote_buf(&sb, v->s);
 		break;
 	case QUOTE_PERL:
-		perl_quote_print(stdout, v->s);
+		perl_quote_buf(&sb, v->s);
 		break;
 	case QUOTE_PYTHON:
-		python_quote_print(stdout, v->s);
+		python_quote_buf(&sb, v->s);
 		break;
 	case QUOTE_TCL:
-		tcl_quote_print(stdout, v->s);
+		tcl_quote_buf(&sb, v->s);
 		break;
+	}
+	if (quote_style != QUOTE_NONE) {
+		fputs(sb.buf, stdout);
+		strbuf_release(&sb);
 	}
 }
 
@@ -930,14 +1003,25 @@ static void show_ref(struct refinfo *info, const char *format, int quote_style)
 	const char *cp, *sp, *ep;
 
 	for (cp = format; *cp && (sp = find_next(cp)); cp = ep + 1) {
+		struct atom_value *atomv;
+
 		ep = strchr(sp, ')');
 		if (cp < sp)
 			emit(cp, sp);
-		print_value(info, parse_atom(sp + 2, ep), quote_style);
+		get_value(info, parse_atom(sp + 2, ep), &atomv);
+		print_value(atomv, quote_style);
 	}
 	if (*cp) {
 		sp = cp + strlen(cp);
 		emit(cp, sp);
+	}
+	if (need_color_reset_at_eol) {
+		struct atom_value resetv;
+		char color[COLOR_MAXLEN] = "";
+
+		color_parse("reset", "--format", color);
+		resetv.s = color;
+		print_value(&resetv, quote_style);
 	}
 	putchar('\n');
 }
@@ -962,7 +1046,9 @@ static int opt_parse_sort(const struct option *opt, const char *arg, int unset)
 	if (!arg) /* should --no-sort void the list ? */
 		return -1;
 
-	*sort_tail = s = xcalloc(1, sizeof(*s));
+	s = xcalloc(1, sizeof(*s));
+	s->next = *sort_tail;
+	*sort_tail = s;
 
 	if (*arg == '-') {
 		s->reverse = 1;
@@ -974,7 +1060,7 @@ static int opt_parse_sort(const struct option *opt, const char *arg, int unset)
 }
 
 static char const * const for_each_ref_usage[] = {
-	"git for-each-ref [options] [<pattern>]",
+	N_("git for-each-ref [options] [<pattern>]"),
 	NULL
 };
 
@@ -989,19 +1075,19 @@ int cmd_for_each_ref(int argc, const char **argv, const char *prefix)
 
 	struct option opts[] = {
 		OPT_BIT('s', "shell", &quote_style,
-		        "quote placeholders suitably for shells", QUOTE_SHELL),
+			N_("quote placeholders suitably for shells"), QUOTE_SHELL),
 		OPT_BIT('p', "perl",  &quote_style,
-		        "quote placeholders suitably for perl", QUOTE_PERL),
+			N_("quote placeholders suitably for perl"), QUOTE_PERL),
 		OPT_BIT(0 , "python", &quote_style,
-		        "quote placeholders suitably for python", QUOTE_PYTHON),
+			N_("quote placeholders suitably for python"), QUOTE_PYTHON),
 		OPT_BIT(0 , "tcl",  &quote_style,
-		        "quote placeholders suitably for tcl", QUOTE_TCL),
+			N_("quote placeholders suitably for tcl"), QUOTE_TCL),
 
 		OPT_GROUP(""),
-		OPT_INTEGER( 0 , "count", &maxcount, "show only <n> matched refs"),
-		OPT_STRING(  0 , "format", &format, "format", "format to use for the output"),
-		OPT_CALLBACK(0 , "sort", sort_tail, "key",
-		            "field name to sort on", &opt_parse_sort),
+		OPT_INTEGER( 0 , "count", &maxcount, N_("show only <n> matched refs")),
+		OPT_STRING(  0 , "format", &format, N_("format"), N_("format to use for the output")),
+		OPT_CALLBACK(0 , "sort", sort_tail, N_("key"),
+			    N_("field name to sort on"), &opt_parse_sort),
 		OPT_END(),
 	};
 
@@ -1019,7 +1105,6 @@ int cmd_for_each_ref(int argc, const char **argv, const char *prefix)
 
 	if (!sort)
 		sort = default_sort();
-	sort_atom_limit = used_atom_cnt;
 
 	/* for warn_ambiguous_refs */
 	git_config(git_default_config, NULL);

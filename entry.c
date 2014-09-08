@@ -44,33 +44,33 @@ static void create_directories(const char *path, int path_len,
 	free(buf);
 }
 
-static void remove_subtree(const char *path)
+static void remove_subtree(struct strbuf *path)
 {
-	DIR *dir = opendir(path);
+	DIR *dir = opendir(path->buf);
 	struct dirent *de;
-	char pathbuf[PATH_MAX];
-	char *name;
+	int origlen = path->len;
 
 	if (!dir)
-		die_errno("cannot opendir '%s'", path);
-	strcpy(pathbuf, path);
-	name = pathbuf + strlen(path);
-	*name++ = '/';
+		die_errno("cannot opendir '%s'", path->buf);
 	while ((de = readdir(dir)) != NULL) {
 		struct stat st;
+
 		if (is_dot_or_dotdot(de->d_name))
 			continue;
-		strcpy(name, de->d_name);
-		if (lstat(pathbuf, &st))
-			die_errno("cannot lstat '%s'", pathbuf);
+
+		strbuf_addch(path, '/');
+		strbuf_addstr(path, de->d_name);
+		if (lstat(path->buf, &st))
+			die_errno("cannot lstat '%s'", path->buf);
 		if (S_ISDIR(st.st_mode))
-			remove_subtree(pathbuf);
-		else if (unlink(pathbuf))
-			die_errno("cannot unlink '%s'", pathbuf);
+			remove_subtree(path);
+		else if (unlink(path->buf))
+			die_errno("cannot unlink '%s'", path->buf);
+		strbuf_setlen(path, origlen);
 	}
 	closedir(dir);
-	if (rmdir(path))
-		die_errno("cannot rmdir '%s'", path);
+	if (rmdir(path->buf))
+		die_errno("cannot rmdir '%s'", path->buf);
 }
 
 static int create_file(const char *path, unsigned int mode)
@@ -79,7 +79,7 @@ static int create_file(const char *path, unsigned int mode)
 	return open(path, O_WRONLY | O_CREAT | O_EXCL, mode);
 }
 
-static void *read_blob_entry(struct cache_entry *ce, unsigned long *size)
+static void *read_blob_entry(const struct cache_entry *ce, unsigned long *size)
 {
 	enum object_type type;
 	void *new = read_sha1_file(ce->sha1, &type, size);
@@ -92,7 +92,7 @@ static void *read_blob_entry(struct cache_entry *ce, unsigned long *size)
 	return NULL;
 }
 
-static int open_output_fd(char *path, struct cache_entry *ce, int to_tempfile)
+static int open_output_fd(char *path, const struct cache_entry *ce, int to_tempfile)
 {
 	int symlink = (ce->ce_mode & S_IFMT) != S_IFREG;
 	if (to_tempfile) {
@@ -115,69 +115,29 @@ static int fstat_output(int fd, const struct checkout *state, struct stat *st)
 	return 0;
 }
 
-static int streaming_write_entry(struct cache_entry *ce, char *path,
+static int streaming_write_entry(const struct cache_entry *ce, char *path,
 				 struct stream_filter *filter,
 				 const struct checkout *state, int to_tempfile,
 				 int *fstat_done, struct stat *statbuf)
 {
-	struct git_istream *st;
-	enum object_type type;
-	unsigned long sz;
-	int result = -1;
-	ssize_t kept = 0;
-	int fd = -1;
-
-	st = open_istream(ce->sha1, &type, &sz, filter);
-	if (!st)
-		return -1;
-	if (type != OBJ_BLOB)
-		goto close_and_exit;
+	int result = 0;
+	int fd;
 
 	fd = open_output_fd(path, ce, to_tempfile);
 	if (fd < 0)
-		goto close_and_exit;
+		return -1;
 
-	for (;;) {
-		char buf[1024 * 16];
-		ssize_t wrote, holeto;
-		ssize_t readlen = read_istream(st, buf, sizeof(buf));
-
-		if (!readlen)
-			break;
-		if (sizeof(buf) == readlen) {
-			for (holeto = 0; holeto < readlen; holeto++)
-				if (buf[holeto])
-					break;
-			if (readlen == holeto) {
-				kept += holeto;
-				continue;
-			}
-		}
-
-		if (kept && lseek(fd, kept, SEEK_CUR) == (off_t) -1)
-			goto close_and_exit;
-		else
-			kept = 0;
-		wrote = write_in_full(fd, buf, readlen);
-
-		if (wrote != readlen)
-			goto close_and_exit;
-	}
-	if (kept && (lseek(fd, kept - 1, SEEK_CUR) == (off_t) -1 ||
-		     write(fd, "", 1) != 1))
-		goto close_and_exit;
+	result |= stream_blob_to_fd(fd, ce->sha1, filter, 1);
 	*fstat_done = fstat_output(fd, state, statbuf);
+	result |= close(fd);
 
-close_and_exit:
-	close_istream(st);
-	if (0 <= fd)
-		result = close(fd);
-	if (result && 0 <= fd)
+	if (result)
 		unlink(path);
 	return result;
 }
 
-static int write_entry(struct cache_entry *ce, char *path, const struct checkout *state, int to_tempfile)
+static int write_entry(struct cache_entry *ce,
+		       char *path, const struct checkout *state, int to_tempfile)
 {
 	unsigned int ce_mode_s_ifmt = ce->ce_mode & S_IFMT;
 	int fd, ret, fstat_done = 0;
@@ -188,7 +148,7 @@ static int write_entry(struct cache_entry *ce, char *path, const struct checkout
 	struct stat st;
 
 	if (ce_mode_s_ifmt == S_IFREG) {
-		struct stream_filter *filter = get_stream_filter(path, ce->sha1);
+		struct stream_filter *filter = get_stream_filter(ce->name, ce->sha1);
 		if (filter &&
 		    !streaming_write_entry(ce, path, filter,
 					   state, to_tempfile,
@@ -240,9 +200,9 @@ static int write_entry(struct cache_entry *ce, char *path, const struct checkout
 		break;
 	case S_IFGITLINK:
 		if (to_tempfile)
-			return error("cannot create temporary subproject %s", path);
+			return error("cannot create temporary submodule %s", path);
 		if (mkdir(path, 0777) < 0)
-			return error("cannot create subproject directory %s", path);
+			return error("cannot create submodule directory %s", path);
 		break;
 	default:
 		return error("unknown file mode for %s in index", path);
@@ -274,26 +234,36 @@ static int check_path(const char *path, int len, struct stat *st, int skiplen)
 	return lstat(path, st);
 }
 
-int checkout_entry(struct cache_entry *ce, const struct checkout *state, char *topath)
+/*
+ * Write the contents from ce out to the working tree.
+ *
+ * When topath[] is not NULL, instead of writing to the working tree
+ * file named by ce, a temporary file is created by this function and
+ * its name is returned in topath[], which must be able to hold at
+ * least TEMPORARY_FILENAME_LENGTH bytes long.
+ */
+int checkout_entry(struct cache_entry *ce,
+		   const struct checkout *state, char *topath)
 {
-	static char path[PATH_MAX + 1];
+	static struct strbuf path = STRBUF_INIT;
 	struct stat st;
-	int len = state->base_dir_len;
 
 	if (topath)
 		return write_entry(ce, topath, state, 1);
 
-	memcpy(path, state->base_dir, len);
-	strcpy(path + len, ce->name);
-	len += ce_namelen(ce);
+	strbuf_reset(&path);
+	strbuf_add(&path, state->base_dir, state->base_dir_len);
+	strbuf_add(&path, ce->name, ce_namelen(ce));
 
-	if (!check_path(path, len, &st, state->base_dir_len)) {
+	if (!check_path(path.buf, path.len, &st, state->base_dir_len)) {
 		unsigned changed = ce_match_stat(ce, &st, CE_MATCH_IGNORE_VALID|CE_MATCH_IGNORE_SKIP_WORKTREE);
 		if (!changed)
 			return 0;
 		if (!state->force) {
 			if (!state->quiet)
-				fprintf(stderr, "%s already exists, no checkout\n", path);
+				fprintf(stderr,
+					"%s already exists, no checkout\n",
+					path.buf);
 			return -1;
 		}
 
@@ -308,12 +278,14 @@ int checkout_entry(struct cache_entry *ce, const struct checkout *state, char *t
 			if (S_ISGITLINK(ce->ce_mode))
 				return 0;
 			if (!state->force)
-				return error("%s is a directory", path);
-			remove_subtree(path);
-		} else if (unlink(path))
-			return error("unable to unlink old '%s' (%s)", path, strerror(errno));
+				return error("%s is a directory", path.buf);
+			remove_subtree(&path);
+		} else if (unlink(path.buf))
+			return error("unable to unlink old '%s' (%s)",
+				     path.buf, strerror(errno));
 	} else if (state->not_new)
 		return 0;
-	create_directories(path, len, state);
-	return write_entry(ce, path, state, 0);
+
+	create_directories(path.buf, path.len, state);
+	return write_entry(ce, path.buf, state, 0);
 }

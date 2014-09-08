@@ -1,10 +1,10 @@
 MERGE STRATEGIES
 ----------------
 
-The merge mechanism ('git-merge' and 'git-pull' commands) allows the
+The merge mechanism (`git merge` and `git pull` commands) allows the
 backend 'merge strategies' to be chosen with `-s` option.  Some strategies
 can also take their own options, which can be passed by giving `-X<option>`
-arguments to 'git-merge' and/or 'git-pull'.
+arguments to `git merge` and/or `git pull`.
 
 resolve::
 	This can only resolve two heads (i.e. the current branch
@@ -20,7 +20,7 @@ recursive::
 	merged tree of the common ancestors and uses that as
 	the reference tree for the 3-way merge.  This has been
 	reported to result in fewer merge conflicts without
-	causing mis-merges by tests done on actual merge commits
+	causing mismerges by tests done on actual merge commits
 	taken from Linux 2.6 kernel development history.
 	Additionally this can detect and handle merges involving
 	renames.  This is the default merge strategy when
@@ -32,13 +32,14 @@ ours;;
 	This option forces conflicting hunks to be auto-resolved cleanly by
 	favoring 'our' version.  Changes from the other tree that do not
 	conflict with our side are reflected to the merge result.
+	For a binary file, the entire contents are taken from our side.
 +
 This should not be confused with the 'ours' merge strategy, which does not
 even look at what the other tree contains at all.  It discards everything
 the other tree did, declaring 'our' history contains all that happened in it.
 
 theirs;;
-	This is opposite of 'ours'.
+	This is the opposite of 'ours'.
 
 patience;;
 	With this option, 'merge-recursive' spends a little extra time
@@ -46,6 +47,12 @@ patience;;
 	matching lines (e.g., braces from distinct functions).  Use
 	this when the branches to be merged have diverged wildly.
 	See also linkgit:git-diff[1] `--patience`.
+
+diff-algorithm=[patience|minimal|histogram|myers];;
+	Tells 'merge-recursive' to use a different diff algorithm, which
+	can help avoid mismerges that occur due to unimportant matching
+	lines (such as braces from distinct functions).  See also
+	linkgit:git-diff[1] `--diff-algorithm`.
 
 ignore-space-change;;
 ignore-all-space;;
@@ -106,3 +113,11 @@ subtree::
 	match the tree structure of A, instead of reading the trees at
 	the same level. This adjustment is also done to the common
 	ancestor tree.
+
+With the strategies that use 3-way merge (including the default, 'recursive'),
+if a change is made on both branches, but later reverted on one of the
+branches, that change will be present in the merged result; some people find
+this behavior confusing.  It occurs because only the heads and the merge base
+are considered when performing a merge, not the individual commits.  The merge
+algorithm therefore considers the reverted change as no change at all, and
+substitutes the changed version instead.
