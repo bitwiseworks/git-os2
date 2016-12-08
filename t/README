@@ -82,6 +82,12 @@ appropriately before running "make".
 	numbers matching <pattern>.  The number matched against is
 	simply the running count of the test within the file.
 
+-x::
+	Turn on shell tracing (i.e., `set -x`) during the tests
+	themselves. Implies `--verbose`. Note that in non-bash shells,
+	this can cause failures in some tests which redirect and test
+	the output of shell functions. Use with caution.
+
 -d::
 --debug::
 	This may help the person who is developing a new test.
@@ -147,6 +153,12 @@ appropriately before running "make".
 	As the names depend on the tests' file names, it is safe to
 	run the tests with this option in parallel.
 
+--verbose-log::
+	Write verbose output to the same logfile as `--tee`, but do
+	_not_ write it to stdout. Unlike `--tee --verbose`, this option
+	is safe to use when stdout is being consumed by a TAP parser
+	like `prove`. Implies `--tee` and `--verbose`.
+
 --with-dashes::
 	By default tests are run without dashed forms of
 	commands (like git-commit) in the PATH (it only uses
@@ -161,6 +173,16 @@ appropriately before running "make".
 	testing under <directory>, instead of the t/ directory.
 	Using this option with a RAM-based filesystem (such as tmpfs)
 	can massively speed up the test suite.
+
+--chain-lint::
+--no-chain-lint::
+	If --chain-lint is enabled, the test harness will check each
+	test to make sure that it properly "&&-chains" all commands (so
+	that a failure in the middle does not go unnoticed by the final
+	exit code of the test). This check is performed in addition to
+	running the tests themselves. You may also enable or disable
+	this feature by setting the GIT_TEST_CHAIN_LINT environment
+	variable to "1" or "0", respectively.
 
 You can also set the GIT_TEST_INSTALLED environment variable to
 the bindir of an existing git installation to test that installation.
@@ -249,7 +271,7 @@ right, so this:
     $ sh ./t9200-git-cvsexport-commit.sh --run='1-4 !3'
 
 will run tests 1, 2, and 4.  Items that comes later have higher
-precendence.  It means that this:
+precedence.  It means that this:
 
     $ sh ./t9200-git-cvsexport-commit.sh --run='!3 1-4'
 
@@ -412,7 +434,8 @@ Don't:
    dies in an unexpected way (e.g. segfault).
 
    On the other hand, don't use test_must_fail for running regular
-   platform commands; just use '! cmd'.
+   platform commands; just use '! cmd'.  We are not in the business
+   of verifying that the world given to us sanely works.
 
  - use perl without spelling it as "$PERL_PATH". This is to help our
    friends on Windows where the platform Perl often adds CR before
@@ -545,6 +568,11 @@ library for your script to use.
    when the test script is started with --debug command line
    argument.  This is primarily meant for use during the
    development of a new test script.
+
+ - debug <git-command>
+
+   Run a git command inside a debugger. This is primarily meant for
+   use when debugging a failing test script.
 
  - test_done
 

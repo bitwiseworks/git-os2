@@ -5,6 +5,7 @@
  */
 
 #include "cache.h"
+#include "lockfile.h"
 #include "object.h"
 #include "tree.h"
 #include "tree-walk.h"
@@ -33,7 +34,7 @@ static int list_tree(unsigned char *sha1)
 }
 
 static const char * const read_tree_usage[] = {
-	N_("git read-tree [[-m [--trivial] [--aggressive] | --reset | --prefix=<prefix>] [-u [--exclude-per-directory=<gitignore>] | -i]] [--no-sparse-checkout] [--index-output=<file>] (--empty | <tree-ish1> [<tree-ish2> [<tree-ish3>]])"),
+	N_("git read-tree [(-m [--trivial] [--aggressive] | --reset | --prefix=<prefix>) [-u [--exclude-per-directory=<gitignore>] | -i]] [--no-sparse-checkout] [--index-output=<file>] (--empty | <tree-ish1> [<tree-ish2> [<tree-ish3>]])"),
 	NULL
 };
 
@@ -77,7 +78,7 @@ static void debug_stage(const char *label, const struct cache_entry *ce,
 	else
 		printf("%06o #%d %s %.8s\n",
 		       ce->ce_mode, ce_stage(ce), ce->name,
-		       sha1_to_hex(ce->sha1));
+		       oid_to_hex(&ce->oid));
 }
 
 static int debug_merge(const struct cache_entry * const *stages,
@@ -89,7 +90,7 @@ static int debug_merge(const struct cache_entry * const *stages,
 	debug_stage("index", stages[0], o);
 	for (i = 1; i <= o->merge_size; i++) {
 		char buf[24];
-		sprintf(buf, "ent#%d", i);
+		xsnprintf(buf, sizeof(buf), "ent#%d", i);
 		debug_stage(buf, stages[i], o);
 	}
 	return 0;

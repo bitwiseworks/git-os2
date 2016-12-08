@@ -2,6 +2,7 @@
 
 test_description='signed commit tests'
 . ./test-lib.sh
+GNUPGHOME_NOT_USED=$GNUPGHOME
 . "$TEST_DIRECTORY/lib-gpg.sh"
 
 test_expect_success GPG 'create signed commits' '
@@ -42,15 +43,21 @@ test_expect_success GPG 'create signed commits' '
 	git tag seventh-unsigned &&
 
 	test_tick && git rebase -f HEAD^^ && git tag sixth-signed HEAD^ &&
-	git tag seventh-signed
+	git tag seventh-signed &&
 
 	echo 8 >file && test_tick && git commit -a -m eighth -SB7227189 &&
-	git tag eighth-signed-alt
+	git tag eighth-signed-alt &&
+
+	# commit.gpgsign is still on but this must not be signed
+	git tag ninth-unsigned $(echo 9 | git commit-tree HEAD^{tree}) &&
+	# explicit -S of course must sign.
+	git tag tenth-signed $(echo 9 | git commit-tree -S HEAD^{tree})
 '
 
 test_expect_success GPG 'verify and show signatures' '
 	(
-		for commit in initial second merge fourth-signed fifth-signed sixth-signed seventh-signed
+		for commit in initial second merge fourth-signed \
+			fifth-signed sixth-signed seventh-signed tenth-signed
 		do
 			git verify-commit $commit &&
 			git show --pretty=short --show-signature $commit >actual &&
@@ -60,7 +67,8 @@ test_expect_success GPG 'verify and show signatures' '
 		done
 	) &&
 	(
-		for commit in merge^2 fourth-unsigned sixth-unsigned seventh-unsigned
+		for commit in merge^2 fourth-unsigned sixth-unsigned \
+			seventh-unsigned ninth-unsigned
 		do
 			test_must_fail git verify-commit $commit &&
 			git show --pretty=short --show-signature $commit >actual &&
@@ -81,13 +89,51 @@ test_expect_success GPG 'verify and show signatures' '
 	)
 '
 
+test_expect_success GPG 'verify-commit exits success on untrusted signature' '
+	git verify-commit eighth-signed-alt 2>actual &&
+	grep "Good signature from" actual &&
+	! grep "BAD signature from" actual &&
+	grep "not certified" actual
+'
+
+test_expect_success GPG 'verify signatures with --raw' '
+	(
+		for commit in initial second merge fourth-signed fifth-signed sixth-signed seventh-signed
+		do
+			git verify-commit --raw $commit 2>actual &&
+			grep "GOODSIG" actual &&
+			! grep "BADSIG" actual &&
+			echo $commit OK || exit 1
+		done
+	) &&
+	(
+		for commit in merge^2 fourth-unsigned sixth-unsigned seventh-unsigned
+		do
+			test_must_fail git verify-commit --raw $commit 2>actual &&
+			! grep "GOODSIG" actual &&
+			! grep "BADSIG" actual &&
+			echo $commit OK || exit 1
+		done
+	) &&
+	(
+		for commit in eighth-signed-alt
+		do
+			git verify-commit --raw $commit 2>actual &&
+			grep "GOODSIG" actual &&
+			! grep "BADSIG" actual &&
+			grep "TRUST_UNDEFINED" actual &&
+			echo $commit OK || exit 1
+		done
+	)
+'
+
 test_expect_success GPG 'show signed commit with signature' '
 	git show -s initial >commit &&
 	git show -s --show-signature initial >show &&
 	git verify-commit -v initial >verify.1 2>verify.2 &&
 	git cat-file commit initial >cat &&
-	grep -v "gpg: " show >show.commit &&
-	grep "gpg: " show >show.gpg &&
+	grep -v -e "gpg: " -e "Warning: " show >show.commit &&
+	grep -e "gpg: " -e "Warning: " show >show.gpg &&
 	grep -v "^ " cat | grep -v "^gpgsig " >cat.commit &&
 	test_cmp show.commit commit &&
 	test_cmp show.gpg verify.2 &&
@@ -145,13 +191,23 @@ test_expect_success GPG 'show bad signature with custom format' '
 	test_cmp expect actual
 '
 
-test_expect_success GPG 'show unknown signature with custom format' '
+test_expect_success GPG 'show untrusted signature with custom format' '
 	cat >expect <<-\EOF &&
 	U
 	61092E85B7227189
 	Eris Discordia <discord@example.net>
 	EOF
 	git log -1 --format="%G?%n%GK%n%GS" eighth-signed-alt >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success GPG 'show unknown signature with custom format' '
+	cat >expect <<-\EOF &&
+	E
+	61092E85B7227189
+
+	EOF
+	GNUPGHOME="$GNUPGHOME_NOT_USED" git log -1 --format="%G?%n%GK%n%GS" eighth-signed-alt >actual &&
 	test_cmp expect actual
 '
 
@@ -163,6 +219,13 @@ test_expect_success GPG 'show lack of signature with custom format' '
 	EOF
 	git log -1 --format="%G?%n%GK%n%GS" seventh-unsigned >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success GPG 'log.showsignature behaves like --show-signature' '
+	test_config log.showsignature true &&
+	git show initial >actual &&
+	grep "gpg: Signature made" actual &&
+	grep "gpg: Good signature" actual
 '
 
 test_done

@@ -65,4 +65,32 @@ test_expect_success '--cacheinfo mode,sha1,path (new syntax)' '
 	test_cmp expect actual
 '
 
+test_expect_success '.lock files cleaned up' '
+	mkdir cleanup &&
+	(
+	cd cleanup &&
+	mkdir worktree &&
+	git init repo &&
+	cd repo &&
+	git config core.worktree ../../worktree &&
+	# --refresh triggers late setup_work_tree,
+	# active_cache_changed is zero, rollback_lock_file fails
+	git update-index --refresh &&
+	! test -f .git/index.lock
+	)
+'
+
+test_expect_success '--chmod=+x and chmod=-x in the same argument list' '
+	>A &&
+	>B &&
+	git add A B &&
+	git update-index --chmod=+x A --chmod=-x B &&
+	cat >expect <<-\EOF &&
+	100755 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0	A
+	100644 e69de29bb2d1d6434b8b29ae775ad8c2e48c5391 0	B
+	EOF
+	git ls-files --stage A B >actual &&
+	test_cmp expect actual
+'
+
 test_done

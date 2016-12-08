@@ -5,6 +5,8 @@
 #include "run-command.h"
 #include "remote.h"
 
+struct string_list;
+
 struct git_transport_options {
 	unsigned thin : 1;
 	unsigned keep : 1;
@@ -12,10 +14,19 @@ struct git_transport_options {
 	unsigned check_self_contained_and_connected : 1;
 	unsigned self_contained_and_connected : 1;
 	unsigned update_shallow : 1;
+	unsigned deepen_relative : 1;
 	int depth;
+	const char *deepen_since;
+	const struct string_list *deepen_not;
 	const char *uploadpack;
 	const char *receivepack;
 	struct push_cas_option *cas;
+};
+
+enum transport_family {
+	TRANSPORT_FAMILY_ALL = 0,
+	TRANSPORT_FAMILY_IPV4,
+	TRANSPORT_FAMILY_IPV6
 };
 
 struct transport {
@@ -41,6 +52,12 @@ struct transport {
 	 * normal fetch. IOW the repository is guaranteed empty.
 	 */
 	unsigned cloning : 1;
+
+	/*
+	 * These strings will be passed to the {pre, post}-receive hook,
+	 * on the remote side, if both sides support the push options capability.
+	 */
+	const struct string_list *push_options;
 
 	/**
 	 * Returns 0 if successful, positive if the option is not
@@ -74,15 +91,15 @@ struct transport {
 	/**
 	 * Push the objects and refs. Send the necessary objects, and
 	 * then, for any refs where peer_ref is set and
-	 * peer_ref->new_sha1 is different from old_sha1, tell the
-	 * remote side to update each ref in the list from old_sha1 to
-	 * peer_ref->new_sha1.
+	 * peer_ref->new_oid is different from old_oid, tell the
+	 * remote side to update each ref in the list from old_oid to
+	 * peer_ref->new_oid.
 	 *
 	 * Where possible, set the status for each ref appropriately.
 	 *
 	 * The transport must modify new_sha1 in the ref to the new
 	 * value if the remote accepted the change. Note that this
-	 * could be a different value from peer_ref->new_sha1 if the
+	 * could be a different value from peer_ref->new_oid if the
 	 * process involved generating new commits.
 	 **/
 	int (*push_refs)(struct transport *transport, struct ref *refs, int flags);
@@ -110,6 +127,8 @@ struct transport {
 	 * actually turns out to be smart.
 	 */
 	struct git_transport_options *smart_options;
+
+	enum transport_family family;
 };
 
 #define TRANSPORT_PUSH_ALL 1
@@ -123,12 +142,33 @@ struct transport {
 #define TRANSPORT_RECURSE_SUBMODULES_ON_DEMAND 256
 #define TRANSPORT_PUSH_NO_HOOK 512
 #define TRANSPORT_PUSH_FOLLOW_TAGS 1024
+#define TRANSPORT_PUSH_CERT_ALWAYS 2048
+#define TRANSPORT_PUSH_CERT_IF_ASKED 4096
+#define TRANSPORT_PUSH_ATOMIC 8192
+#define TRANSPORT_PUSH_OPTIONS 16384
 
-#define TRANSPORT_SUMMARY_WIDTH (2 * DEFAULT_ABBREV + 3)
-#define TRANSPORT_SUMMARY(x) (int)(TRANSPORT_SUMMARY_WIDTH + strlen(x) - gettext_width(x)), (x)
+extern int transport_summary_width(const struct ref *refs);
 
 /* Returns a transport suitable for the url */
 struct transport *transport_get(struct remote *, const char *);
+
+/*
+ * Check whether a transport is allowed by the environment. Type should
+ * generally be the URL scheme, as described in Documentation/git.txt
+ */
+int is_transport_allowed(const char *type);
+
+/*
+ * Check whether a transport is allowed by the environment,
+ * and die otherwise.
+ */
+void transport_check_allowed(const char *type);
+
+/*
+ * Returns true if the user has attempted to turn on protocol
+ * restrictions at all.
+ */
+int transport_restrict_protocols(void);
 
 /* Transport options which apply to git:// and scp-style URLs */
 
@@ -150,11 +190,23 @@ struct transport *transport_get(struct remote *, const char *);
 /* Limit the depth of the fetch if not null */
 #define TRANS_OPT_DEPTH "depth"
 
+/* Limit the depth of the fetch based on time if not null */
+#define TRANS_OPT_DEEPEN_SINCE "deepen-since"
+
+/* Limit the depth of the fetch based on revs if not null */
+#define TRANS_OPT_DEEPEN_NOT "deepen-not"
+
+/* Limit the deepen of the fetch if not null */
+#define TRANS_OPT_DEEPEN_RELATIVE "deepen-relative"
+
 /* Aggressively fetch annotated tags if possible */
 #define TRANS_OPT_FOLLOWTAGS "followtags"
 
 /* Accept refs that may update .git/shallow without --depth */
 #define TRANS_OPT_UPDATE_SHALLOW "updateshallow"
+
+/* Send push certificates */
+#define TRANS_OPT_PUSH_CERT "pushcert"
 
 /**
  * Returns 0 if the option was used, non-zero otherwise. Prints a

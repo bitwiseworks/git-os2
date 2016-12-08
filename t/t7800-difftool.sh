@@ -20,7 +20,7 @@ difftool_test_setup ()
 prompt_given ()
 {
 	prompt="$1"
-	test "$prompt" = "Launch 'test-tool' [Y/n]: branch"
+	test "$prompt" = "Launch 'test-tool' [Y/n]? branch"
 }
 
 # Create a file on master and change it on branch
@@ -74,6 +74,60 @@ test_expect_success PERL 'difftool forwards arguments to diff' '
 	test_cmp expect actual &&
 	git reset -- for-diff &&
 	rm for-diff
+'
+
+test_expect_success PERL 'difftool ignores exit code' '
+	test_config difftool.error.cmd false &&
+	git difftool -y -t error branch
+'
+
+test_expect_success PERL 'difftool forwards exit code with --trust-exit-code' '
+	test_config difftool.error.cmd false &&
+	test_must_fail git difftool -y --trust-exit-code -t error branch
+'
+
+test_expect_success PERL 'difftool forwards exit code with --trust-exit-code for built-ins' '
+	test_config difftool.vimdiff.path false &&
+	test_must_fail git difftool -y --trust-exit-code -t vimdiff branch
+'
+
+test_expect_success PERL 'difftool honors difftool.trustExitCode = true' '
+	test_config difftool.error.cmd false &&
+	test_config difftool.trustExitCode true &&
+	test_must_fail git difftool -y -t error branch
+'
+
+test_expect_success PERL 'difftool honors difftool.trustExitCode = false' '
+	test_config difftool.error.cmd false &&
+	test_config difftool.trustExitCode false &&
+	git difftool -y -t error branch
+'
+
+test_expect_success PERL 'difftool ignores exit code with --no-trust-exit-code' '
+	test_config difftool.error.cmd false &&
+	test_config difftool.trustExitCode true &&
+	git difftool -y --no-trust-exit-code -t error branch
+'
+
+test_expect_success PERL 'difftool stops on error with --trust-exit-code' '
+	test_when_finished "rm -f for-diff .git/fail-right-file" &&
+	test_when_finished "git reset -- for-diff" &&
+	write_script .git/fail-right-file <<-\EOF &&
+	echo "$2"
+	exit 1
+	EOF
+	>for-diff &&
+	git add for-diff &&
+	echo file >expect &&
+	test_must_fail git difftool -y --trust-exit-code \
+		--extcmd .git/fail-right-file branch >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success PERL 'difftool honors exit status if command not found' '
+	test_config difftool.nonexistent.cmd i-dont-exist &&
+	test_config difftool.trustExitCode false &&
+	test_must_fail git difftool -y -t nonexistent branch
 '
 
 test_expect_success PERL 'difftool honors --gui' '
@@ -301,6 +355,14 @@ test_expect_success PERL 'say no to the second file' '
 	! grep br2 output
 '
 
+test_expect_success PERL 'ending prompt input with EOF' '
+	git difftool -x cat branch </dev/null >output &&
+	! grep master output &&
+	! grep branch output &&
+	! grep m2 output &&
+	! grep br2 output
+'
+
 test_expect_success PERL 'difftool --tool-help' '
 	git difftool --tool-help >output &&
 	grep tool output
@@ -356,6 +418,20 @@ run_dir_diff_test 'difftool --dir-diff from subdirectory' '
 	)
 '
 
+run_dir_diff_test 'difftool --dir-diff from subdirectory with GIT_DIR set' '
+	(
+		GIT_DIR=$(pwd)/.git &&
+		export GIT_DIR &&
+		GIT_WORK_TREE=$(pwd) &&
+		export GIT_WORK_TREE &&
+		cd sub &&
+		git difftool --dir-diff $symlinks --extcmd ls \
+			branch -- sub >output &&
+		grep sub output &&
+		! grep file output
+	)
+'
+
 run_dir_diff_test 'difftool --dir-diff when worktree file is missing' '
 	test_when_finished git reset --hard &&
 	rm file2 &&
@@ -363,22 +439,45 @@ run_dir_diff_test 'difftool --dir-diff when worktree file is missing' '
 	grep file2 output
 '
 
+run_dir_diff_test 'difftool --dir-diff with unmerged files' '
+	test_when_finished git reset --hard &&
+	test_config difftool.echo.cmd "echo ok" &&
+	git checkout -B conflict-a &&
+	git checkout -B conflict-b &&
+	git checkout conflict-a &&
+	echo a >>file &&
+	git add file &&
+	git commit -m conflict-a &&
+	git checkout conflict-b &&
+	echo b >>file &&
+	git add file &&
+	git commit -m conflict-b &&
+	git checkout master &&
+	git merge conflict-a &&
+	test_must_fail git merge conflict-b &&
+	cat >expect <<-EOF &&
+		ok
+	EOF
+	git difftool --dir-diff $symlinks -t echo >actual &&
+	test_cmp expect actual
+'
+
 write_script .git/CHECK_SYMLINKS <<\EOF
 for f in file file2 sub/sub
 do
 	echo "$f"
-	readlink "$2/$f"
+	ls -ld "$2/$f" | sed -e 's/.* -> //'
 done >actual
 EOF
 
 test_expect_success PERL,SYMLINKS 'difftool --dir-diff --symlink without unstaged changes' '
 	cat >expect <<-EOF &&
 	file
-	$(pwd)/file
+	$PWD/file
 	file2
-	$(pwd)/file2
+	$PWD/file2
 	sub/sub
-	$(pwd)/sub/sub
+	$PWD/sub/sub
 	EOF
 	git difftool --dir-diff --symlink \
 		--extcmd "./.git/CHECK_SYMLINKS" branch HEAD &&
@@ -392,14 +491,14 @@ EOF
 run_dir_diff_test 'difftool --dir-diff syncs worktree with unstaged change' '
 	test_when_finished git reset --hard &&
 	echo "orig content" >file &&
-	git difftool -d $symlinks --extcmd "$(pwd)/modify-right-file" branch &&
+	git difftool -d $symlinks --extcmd "$PWD/modify-right-file" branch &&
 	echo "new content" >expect &&
 	test_cmp expect file
 '
 
 run_dir_diff_test 'difftool --dir-diff syncs worktree without unstaged change' '
 	test_when_finished git reset --hard &&
-	git difftool -d $symlinks --extcmd "$(pwd)/modify-right-file" branch &&
+	git difftool -d $symlinks --extcmd "$PWD/modify-right-file" branch &&
 	echo "new content" >expect &&
 	test_cmp expect file
 '
@@ -410,7 +509,7 @@ EOF
 
 test_expect_success PERL 'difftool --no-symlinks does not overwrite working tree file ' '
 	echo "orig content" >file &&
-	git difftool --dir-diff --no-symlinks --extcmd "$(pwd)/modify-file" branch &&
+	git difftool --dir-diff --no-symlinks --extcmd "$PWD/modify-file" branch &&
 	echo "new content" >expect &&
 	test_cmp expect file
 '
@@ -426,7 +525,7 @@ test_expect_success PERL 'difftool --no-symlinks detects conflict ' '
 		TMPDIR=$TRASH_DIRECTORY &&
 		export TMPDIR &&
 		echo "orig content" >file &&
-		test_must_fail git difftool --dir-diff --no-symlinks --extcmd "$(pwd)/modify-both-files" branch &&
+		test_must_fail git difftool --dir-diff --no-symlinks --extcmd "$PWD/modify-both-files" branch &&
 		echo "wt content" >expect &&
 		test_cmp expect file &&
 		echo "tmp content" >expect &&
@@ -436,12 +535,31 @@ test_expect_success PERL 'difftool --no-symlinks detects conflict ' '
 
 test_expect_success PERL 'difftool properly honors gitlink and core.worktree' '
 	git submodule add ./. submod/ule &&
+	test_config -C submod/ule diff.tool checktrees &&
+	test_config -C submod/ule difftool.checktrees.cmd '\''
+		test -d "$LOCAL" && test -d "$REMOTE" && echo good
+		'\'' &&
 	(
 		cd submod/ule &&
-		test_config diff.tool checktrees &&
-		test_config difftool.checktrees.cmd '\''
-			test -d "$LOCAL" && test -d "$REMOTE" && echo good
-		'\'' &&
+		echo good >expect &&
+		git difftool --tool=checktrees --dir-diff HEAD~ >actual &&
+		test_cmp expect actual
+	)
+'
+
+test_expect_success PERL,SYMLINKS 'difftool --dir-diff symlinked directories' '
+	git init dirlinks &&
+	(
+		cd dirlinks &&
+		git config diff.tool checktrees &&
+		git config difftool.checktrees.cmd "echo good" &&
+		mkdir foo &&
+		: >foo/bar &&
+		git add foo/bar &&
+		test_commit symlink-one &&
+		ln -s foo link &&
+		git add link &&
+		test_commit symlink-two &&
 		echo good >expect &&
 		git difftool --tool=checktrees --dir-diff HEAD~ >actual &&
 		test_cmp expect actual

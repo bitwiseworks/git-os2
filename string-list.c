@@ -43,8 +43,7 @@ static int add_entry(int insert_at, struct string_list *list, const char *string
 
 	if (list->nr + 1 >= list->alloc) {
 		list->alloc += 32;
-		list->items = xrealloc(list->items, list->alloc
-				* sizeof(struct string_list_item));
+		REALLOC_ARRAY(list->items, list->alloc);
 	}
 	if (index < list->nr)
 		memmove(list->items + index + 1, list->items + index,
@@ -60,13 +59,7 @@ static int add_entry(int insert_at, struct string_list *list, const char *string
 
 struct string_list_item *string_list_insert(struct string_list *list, const char *string)
 {
-	return string_list_insert_at_index(list, -1, string);
-}
-
-struct string_list_item *string_list_insert_at_index(struct string_list *list,
-						     int insert_at, const char *string)
-{
-	int index = add_entry(insert_at, list, string);
+	int index = add_entry(-1, list, string);
 
 	if (index < 0)
 		index = -1 - index;
@@ -221,7 +214,7 @@ struct string_list_item *string_list_append(struct string_list *list,
 /* Yuck */
 static compare_strings_fn compare_for_qsort;
 
-/* Only call this from inside sort_string_list! */
+/* Only call this from inside string_list_sort! */
 static int cmp_items(const void *a, const void *b)
 {
 	const struct string_list_item *one = a;
@@ -229,21 +222,21 @@ static int cmp_items(const void *a, const void *b)
 	return compare_for_qsort(one->string, two->string);
 }
 
-void sort_string_list(struct string_list *list)
+void string_list_sort(struct string_list *list)
 {
 	compare_for_qsort = list->cmp ? list->cmp : strcmp;
-	qsort(list->items, list->nr, sizeof(*list->items), cmp_items);
+	QSORT(list->items, list->nr, cmp_items);
 }
 
 struct string_list_item *unsorted_string_list_lookup(struct string_list *list,
 						     const char *string)
 {
-	int i;
+	struct string_list_item *item;
 	compare_strings_fn cmp = list->cmp ? list->cmp : strcmp;
 
-	for (i = 0; i < list->nr; i++)
-		if (!cmp(string, list->items[i].string))
-			return list->items + i;
+	for_each_string_list_item(item, list)
+		if (!cmp(string, item->string))
+			return item;
 	return NULL;
 }
 

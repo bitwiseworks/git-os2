@@ -14,7 +14,7 @@ static int write_bitmaps;
 static char *packdir, *packtmp;
 
 static const char *const git_repack_usage[] = {
-	N_("git repack [options]"),
+	N_("git repack [<options>]"),
 	NULL
 };
 
@@ -133,9 +133,8 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 		{".idx"},
 		{".bitmap", 1},
 	};
-	struct child_process cmd;
+	struct child_process cmd = CHILD_PROCESS_INIT;
 	struct string_list_item *item;
-	struct argv_array cmd_args = ARGV_ARRAY_INIT;
 	struct string_list names = STRING_LIST_INIT_DUP;
 	struct string_list rollback = STRING_LIST_INIT_NODUP;
 	struct string_list existing_packs = STRING_LIST_INIT_DUP;
@@ -147,6 +146,7 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	int pack_everything = 0;
 	int delete_redundant = 0;
 	const char *unpack_unreachable = NULL;
+	int keep_unreachable = 0;
 	const char *window = NULL, *window_memory = NULL;
 	const char *depth = NULL;
 	const char *max_pack_size = NULL;
@@ -176,6 +176,8 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 				N_("write bitmap index")),
 		OPT_STRING(0, "unpack-unreachable", &unpack_unreachable, N_("approxidate"),
 				N_("with -A, do not loosen objects older than this")),
+		OPT_BOOL('k', "keep-unreachable", &keep_unreachable,
+				N_("with -a, repack unreachable objects")),
 		OPT_STRING(0, "window", &window, N_("n"),
 				N_("size of the window used for delta compression")),
 		OPT_STRING(0, "window-memory", &window_memory, N_("bytes"),
@@ -194,6 +196,13 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	argc = parse_options(argc, argv, prefix, builtin_repack_options,
 				git_repack_usage, 0);
 
+	if (delete_redundant && repository_format_precious_objects)
+		die(_("cannot delete packs in a precious-objects repo"));
+
+	if (keep_unreachable &&
+	    (unpack_unreachable || (pack_everything & LOOSEN_UNREACHABLE)))
+		die(_("--keep-unreachable and -A are incompatible"));
+
 	if (pack_kept_objects < 0)
 		pack_kept_objects = write_bitmaps;
 
@@ -202,56 +211,62 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 
 	sigchain_push_common(remove_pack_on_signal);
 
-	argv_array_push(&cmd_args, "pack-objects");
-	argv_array_push(&cmd_args, "--keep-true-parents");
+	argv_array_push(&cmd.args, "pack-objects");
+	argv_array_push(&cmd.args, "--keep-true-parents");
 	if (!pack_kept_objects)
-		argv_array_push(&cmd_args, "--honor-pack-keep");
-	argv_array_push(&cmd_args, "--non-empty");
-	argv_array_push(&cmd_args, "--all");
-	argv_array_push(&cmd_args, "--reflog");
+		argv_array_push(&cmd.args, "--honor-pack-keep");
+	argv_array_push(&cmd.args, "--non-empty");
+	argv_array_push(&cmd.args, "--all");
+	argv_array_push(&cmd.args, "--reflog");
+	argv_array_push(&cmd.args, "--indexed-objects");
 	if (window)
-		argv_array_pushf(&cmd_args, "--window=%s", window);
+		argv_array_pushf(&cmd.args, "--window=%s", window);
 	if (window_memory)
-		argv_array_pushf(&cmd_args, "--window-memory=%s", window_memory);
+		argv_array_pushf(&cmd.args, "--window-memory=%s", window_memory);
 	if (depth)
-		argv_array_pushf(&cmd_args, "--depth=%s", depth);
+		argv_array_pushf(&cmd.args, "--depth=%s", depth);
 	if (max_pack_size)
-		argv_array_pushf(&cmd_args, "--max-pack-size=%s", max_pack_size);
+		argv_array_pushf(&cmd.args, "--max-pack-size=%s", max_pack_size);
 	if (no_reuse_delta)
-		argv_array_pushf(&cmd_args, "--no-reuse-delta");
+		argv_array_pushf(&cmd.args, "--no-reuse-delta");
 	if (no_reuse_object)
-		argv_array_pushf(&cmd_args, "--no-reuse-object");
+		argv_array_pushf(&cmd.args, "--no-reuse-object");
 	if (write_bitmaps)
-		argv_array_push(&cmd_args, "--write-bitmap-index");
+		argv_array_push(&cmd.args, "--write-bitmap-index");
 
 	if (pack_everything & ALL_INTO_ONE) {
 		get_non_kept_pack_filenames(&existing_packs);
 
 		if (existing_packs.nr && delete_redundant) {
-			if (unpack_unreachable)
-				argv_array_pushf(&cmd_args,
+			if (unpack_unreachable) {
+				argv_array_pushf(&cmd.args,
 						"--unpack-unreachable=%s",
 						unpack_unreachable);
-			else if (pack_everything & LOOSEN_UNREACHABLE)
-				argv_array_push(&cmd_args,
+				argv_array_push(&cmd.env_array, "GIT_REF_PARANOIA=1");
+			} else if (pack_everything & LOOSEN_UNREACHABLE) {
+				argv_array_push(&cmd.args,
 						"--unpack-unreachable");
+			} else if (keep_unreachable) {
+				argv_array_push(&cmd.args, "--keep-unreachable");
+				argv_array_push(&cmd.args, "--pack-loose-unreachable");
+			} else {
+				argv_array_push(&cmd.env_array, "GIT_REF_PARANOIA=1");
+			}
 		}
 	} else {
-		argv_array_push(&cmd_args, "--unpacked");
-		argv_array_push(&cmd_args, "--incremental");
+		argv_array_push(&cmd.args, "--unpacked");
+		argv_array_push(&cmd.args, "--incremental");
 	}
 
 	if (local)
-		argv_array_push(&cmd_args,  "--local");
+		argv_array_push(&cmd.args,  "--local");
 	if (quiet)
-		argv_array_push(&cmd_args,  "--quiet");
+		argv_array_push(&cmd.args,  "--quiet");
 	if (delta_base_offset)
-		argv_array_push(&cmd_args,  "--delta-base-offset");
+		argv_array_push(&cmd.args,  "--delta-base-offset");
 
-	argv_array_push(&cmd_args, packtmp);
+	argv_array_push(&cmd.args, packtmp);
 
-	memset(&cmd, 0, sizeof(cmd));
-	cmd.argv = cmd_args.argv;
 	cmd.git_cmd = 1;
 	cmd.out = -1;
 	cmd.no_stdin = 1;
@@ -261,7 +276,7 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 		return ret;
 
 	out = xfdopen(cmd.out, "r");
-	while (strbuf_getline(&line, out, '\n') != EOF) {
+	while (strbuf_getline_lf(&line, out) != EOF) {
 		if (line.len != 40)
 			die("repack: Expecting 40 character sha1 lines only from pack-objects.");
 		string_list_append(&names, line.buf);
@@ -270,7 +285,6 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	ret = finish_command(&cmd);
 	if (ret)
 		return ret;
-	argv_array_clear(&cmd_args);
 
 	if (!names.nr && !quiet)
 		printf("Nothing new to pack.\n");
@@ -292,7 +306,7 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 				continue;
 			}
 
-			fname_old = mkpath("%s/old-%s%s", packdir,
+			fname_old = mkpathdup("%s/old-%s%s", packdir,
 						item->string, exts[ext].name);
 			if (file_exists(fname_old))
 				if (unlink(fname_old))
@@ -300,10 +314,12 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 
 			if (!failed && rename(fname, fname_old)) {
 				free(fname);
+				free(fname_old);
 				failed = 1;
 				break;
 			} else {
 				string_list_append(&rollback, fname);
+				free(fname_old);
 			}
 		}
 		if (failed)
@@ -314,10 +330,11 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 		for_each_string_list_item(item, &rollback) {
 			char *fname, *fname_old;
 			fname = mkpathdup("%s/%s", packdir, item->string);
-			fname_old = mkpath("%s/old-%s", packdir, item->string);
+			fname_old = mkpathdup("%s/old-%s", packdir, item->string);
 			if (rename(fname_old, fname))
 				string_list_append(&rollback_failure, fname);
 			free(fname);
+			free(fname_old);
 		}
 
 		if (rollback_failure.nr) {
@@ -366,19 +383,21 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 	for_each_string_list_item(item, &names) {
 		for (ext = 0; ext < ARRAY_SIZE(exts); ext++) {
 			char *fname;
-			fname = mkpath("%s/old-%s%s",
-					packdir,
-					item->string,
-					exts[ext].name);
+			fname = mkpathdup("%s/old-%s%s",
+					  packdir,
+					  item->string,
+					  exts[ext].name);
 			if (remove_path(fname))
-				warning(_("removing '%s' failed"), fname);
+				warning(_("failed to remove '%s'"), fname);
+			free(fname);
 		}
 	}
 
 	/* End of pack replacement. */
 
 	if (delete_redundant) {
-		sort_string_list(&names);
+		int opts = 0;
+		string_list_sort(&names);
 		for_each_string_list_item(item, &existing_packs) {
 			char *sha1;
 			size_t len = strlen(item->string);
@@ -388,25 +407,13 @@ int cmd_repack(int argc, const char **argv, const char *prefix)
 			if (!string_list_has_string(&names, sha1))
 				remove_redundant_pack(packdir, item->string);
 		}
-		argv_array_push(&cmd_args, "prune-packed");
-		if (quiet)
-			argv_array_push(&cmd_args, "--quiet");
-
-		memset(&cmd, 0, sizeof(cmd));
-		cmd.argv = cmd_args.argv;
-		cmd.git_cmd = 1;
-		run_command(&cmd);
-		argv_array_clear(&cmd_args);
+		if (!quiet && isatty(2))
+			opts |= PRUNE_PACKED_VERBOSE;
+		prune_packed_objects(opts);
 	}
 
-	if (!no_update_server_info) {
-		argv_array_push(&cmd_args, "update-server-info");
-		memset(&cmd, 0, sizeof(cmd));
-		cmd.argv = cmd_args.argv;
-		cmd.git_cmd = 1;
-		run_command(&cmd);
-		argv_array_clear(&cmd_args);
-	}
+	if (!no_update_server_info)
+		update_server_info(0);
 	remove_temporary_files();
 	string_list_clear(&names, 0);
 	string_list_clear(&rollback, 0);
