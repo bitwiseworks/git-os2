@@ -81,8 +81,7 @@ static void compute_column_width(struct column_data *data)
  */
 static void shrink_columns(struct column_data *data)
 {
-	data->width = xrealloc(data->width,
-			       sizeof(*data->width) * data->cols);
+	REALLOC_ARRAY(data->width, data->cols);
 	while (data->rows > 1) {
 		int x, total_width, cols, rows;
 		rows = data->rows;
@@ -91,8 +90,7 @@ static void shrink_columns(struct column_data *data)
 		data->rows--;
 		data->cols = DIV_ROUND_UP(data->list->nr, data->rows);
 		if (data->cols != cols)
-			data->width = xrealloc(data->width,
-					       sizeof(*data->width) * data->cols);
+			REALLOC_ARRAY(data->width, data->cols);
 		compute_column_width(data);
 
 		total_width = strlen(data->opts.indent);
@@ -166,7 +164,7 @@ static void display_table(const struct string_list *list,
 	data.colopts = colopts;
 	data.opts = *opts;
 
-	data.len = xmalloc(sizeof(*data.len) * list->nr);
+	ALLOC_ARRAY(data.len, list->nr);
 	for (i = 0; i < list->nr; i++)
 		data.len[i] = item_length(colopts, list->items[i].string);
 
@@ -175,9 +173,8 @@ static void display_table(const struct string_list *list,
 	if (colopts & COL_DENSE)
 		shrink_columns(&data);
 
-	empty_cell = xmalloc(initial_width + 1);
+	empty_cell = xmallocz(initial_width);
 	memset(empty_cell, ' ', initial_width);
-	empty_cell[initial_width] = '\0';
 	for (y = 0; y < data.rows; y++) {
 		for (x = 0; x < data.cols; x++)
 			if (display_cell(&data, initial_width, empty_cell, x, y))
@@ -367,7 +364,7 @@ int parseopt_column_callback(const struct option *opt,
 }
 
 static int fd_out = -1;
-static struct child_process column_process;
+static struct child_process column_process = CHILD_PROCESS_INIT;
 
 int run_column_filter(int colopts, const struct column_options *opts)
 {
@@ -376,7 +373,7 @@ int run_column_filter(int colopts, const struct column_options *opts)
 	if (fd_out != -1)
 		return -1;
 
-	memset(&column_process, 0, sizeof(column_process));
+	child_process_init(&column_process);
 	argv = &column_process.args;
 
 	argv_array_push(argv, "column");

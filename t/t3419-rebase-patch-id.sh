@@ -4,8 +4,6 @@ test_description='git rebase - test patch id computation'
 
 . ./test-lib.sh
 
-test -n "$GIT_PATCHID_TIMING_TESTS" && test_set_prereq EXPENSIVE
-
 count () {
 	i=0
 	while test $i -lt $1
@@ -75,17 +73,17 @@ do_tests () {
 		run git format-patch --stdout --ignore-if-in-upstream master
 	"
 
-	test_expect_success $pr 'detect upstream patch' "
+	test_expect_success $pr 'detect upstream patch' '
 		git checkout -q master &&
 		scramble file &&
 		git add file &&
-		git commit -q -m 'change big file again' &&
+		git commit -q -m "change big file again" &&
 		git checkout -q other^{} &&
 		git rebase master &&
-		test_must_fail test -n \"\$(git rev-list master...HEAD~)\"
-	"
+		test_must_fail test -n "$(git rev-list master...HEAD~)"
+	'
 
-	test_expect_success $pr 'do not drop patch' "
+	test_expect_success $pr 'do not drop patch' '
 		git branch -f squashed master &&
 		git checkout -q -f squashed &&
 		git reset -q --soft HEAD~2 &&
@@ -93,7 +91,7 @@ do_tests () {
 		git checkout -q other^{} &&
 		test_must_fail git rebase squashed &&
 		rm -rf .git/rebase-apply
-	"
+	'
 }
 
 do_tests 500

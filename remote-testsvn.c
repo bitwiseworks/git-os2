@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "refs.h"
 #include "remote.h"
 #include "strbuf.h"
 #include "url.h"
@@ -153,7 +154,7 @@ static void check_or_regenerate_marks(int latestrev)
 		fclose(marksfile);
 	} else {
 		strbuf_addf(&sb, ":%d ", latestrev);
-		while (strbuf_getline(&line, marksfile, '\n') != EOF) {
+		while (strbuf_getline_lf(&line, marksfile) != EOF) {
 			if (starts_with(line.buf, sb.buf)) {
 				found++;
 				break;
@@ -175,7 +176,7 @@ static int cmd_import(const char *line)
 	char *note_msg;
 	unsigned char head_sha1[20];
 	unsigned int startrev;
-	struct child_process svndump_proc;
+	struct child_process svndump_proc = CHILD_PROCESS_INIT;
 	const char *command = "svnrdump";
 
 	if (read_ref(private_ref, head_sha1))
@@ -200,7 +201,6 @@ static int cmd_import(const char *line)
 		if(dumpin_fd < 0)
 			die_errno("Couldn't open svn dump file %s.", url);
 	} else {
-		memset(&svndump_proc, 0, sizeof(struct child_process));
 		svndump_proc.out = -1;
 		argv_array_push(&svndump_proc.args, command);
 		argv_array_push(&svndump_proc.args, "dump");
@@ -284,7 +284,7 @@ static int do_command(struct strbuf *line)
 	return 0;
 }
 
-int main(int argc, char **argv)
+int cmd_main(int argc, const char **argv)
 {
 	struct strbuf buf = STRBUF_INIT, url_sb = STRBUF_INIT,
 			private_ref_sb = STRBUF_INIT, marksfilename_sb = STRBUF_INIT,
@@ -292,7 +292,6 @@ int main(int argc, char **argv)
 	static struct remote *remote;
 	const char *url_in;
 
-	git_extract_argv0_path(argv[0]);
 	setup_git_directory();
 	if (argc < 2 || argc > 3) {
 		usage("git-remote-svn <remote-name> [<url>]");
@@ -322,7 +321,7 @@ int main(int argc, char **argv)
 	marksfilename = marksfilename_sb.buf;
 
 	while (1) {
-		if (strbuf_getline(&buf, stdin, '\n') == EOF) {
+		if (strbuf_getline_lf(&buf, stdin) == EOF) {
 			if (ferror(stdin))
 				die("Error reading command stream");
 			else

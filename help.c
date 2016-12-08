@@ -11,11 +11,9 @@
 
 void add_cmdname(struct cmdnames *cmds, const char *name, int len)
 {
-	struct cmdname *ent = xmalloc(sizeof(*ent) + len + 1);
-
+	struct cmdname *ent;
+	FLEX_ALLOC_MEM(ent, name, name, len);
 	ent->len = len;
-	memcpy(ent->name, name, len);
-	ent->name[len] = 0;
 
 	ALLOC_GROW(cmds->names, cmds->cnt + 1, cmds->alloc);
 	cmds->names[cmds->cnt++] = ent;
@@ -172,8 +170,7 @@ void load_command_list(const char *prefix,
 
 	if (exec_path) {
 		list_commands_in_dir(main_cmds, exec_path, prefix);
-		qsort(main_cmds->names, main_cmds->cnt,
-		      sizeof(*main_cmds->names), cmdname_compare);
+		QSORT(main_cmds->names, main_cmds->cnt, cmdname_compare);
 		uniq(main_cmds);
 	}
 
@@ -192,8 +189,7 @@ void load_command_list(const char *prefix,
 		}
 		free(paths);
 
-		qsort(other_cmds->names, other_cmds->cnt,
-		      sizeof(*other_cmds->names), cmdname_compare);
+		QSORT(other_cmds->names, other_cmds->cnt, cmdname_compare);
 		uniq(other_cmds);
 	}
 	exclude_cmds(other_cmds, main_cmds);
@@ -218,17 +214,38 @@ void list_commands(unsigned int colopts,
 	}
 }
 
+static int cmd_group_cmp(const void *elem1, const void *elem2)
+{
+	const struct cmdname_help *e1 = elem1;
+	const struct cmdname_help *e2 = elem2;
+
+	if (e1->group < e2->group)
+		return -1;
+	if (e1->group > e2->group)
+		return 1;
+	return strcmp(e1->name, e2->name);
+}
+
 void list_common_cmds_help(void)
 {
 	int i, longest = 0;
+	int current_grp = -1;
 
 	for (i = 0; i < ARRAY_SIZE(common_cmds); i++) {
 		if (longest < strlen(common_cmds[i].name))
 			longest = strlen(common_cmds[i].name);
 	}
 
-	puts(_("The most commonly used git commands are:"));
+	QSORT(common_cmds, ARRAY_SIZE(common_cmds), cmd_group_cmp);
+
+	puts(_("These are common Git commands used in various situations:"));
+
 	for (i = 0; i < ARRAY_SIZE(common_cmds); i++) {
+		if (common_cmds[i].group != current_grp) {
+			printf("\n%s\n", _(common_cmd_groups[common_cmds[i].group]));
+			current_grp = common_cmds[i].group;
+		}
+
 		printf("   %s   ", common_cmds[i].name);
 		mput_char(' ', longest - strlen(common_cmds[i].name));
 		puts(_(common_cmds[i].help));
@@ -304,8 +321,7 @@ const char *help_unknown_cmd(const char *cmd)
 
 	add_cmd_list(&main_cmds, &aliases);
 	add_cmd_list(&main_cmds, &other_cmds);
-	qsort(main_cmds.names, main_cmds.cnt,
-	      sizeof(main_cmds.names), cmdname_compare);
+	QSORT(main_cmds.names, main_cmds.cnt, cmdname_compare);
 	uniq(&main_cmds);
 
 	/* This abuses cmdname->len for levenshtein distance */
@@ -339,8 +355,7 @@ const char *help_unknown_cmd(const char *cmd)
 			levenshtein(cmd, candidate, 0, 2, 1, 3) + 1;
 	}
 
-	qsort(main_cmds.names, main_cmds.cnt,
-	      sizeof(*main_cmds.names), levenshtein_compare);
+	QSORT(main_cmds.names, main_cmds.cnt, levenshtein_compare);
 
 	if (!main_cmds.cnt)
 		die(_("Uh oh. Your system reports no Git commands at all."));
@@ -372,7 +387,7 @@ const char *help_unknown_cmd(const char *cmd)
 		if (autocorrect > 0) {
 			fprintf_ln(stderr, _("in %0.1f seconds automatically..."),
 				(float)autocorrect/10.0);
-			poll(NULL, 0, autocorrect * 100);
+			sleep_millisec(autocorrect * 100);
 		}
 		return assumed;
 	}
@@ -399,6 +414,12 @@ int cmd_version(int argc, const char **argv, const char *prefix)
 	 * with external projects that rely on the output of "git version".
 	 */
 	printf("git version %s\n", git_version_string);
+	while (*++argv) {
+		if (!strcmp(*argv, "--build-options")) {
+			printf("sizeof-long: %d\n", (int)sizeof(long));
+			/* NEEDSWORK: also save and output GIT-BUILD_OPTIONS? */
+		}
+	}
 	return 0;
 }
 
@@ -407,7 +428,7 @@ struct similar_ref_cb {
 	struct string_list *similar_refs;
 };
 
-static int append_similar_ref(const char *refname, const unsigned char *sha1,
+static int append_similar_ref(const char *refname, const struct object_id *oid,
 			      int flags, void *cb_data)
 {
 	struct similar_ref_cb *cb = (struct similar_ref_cb *)(cb_data);

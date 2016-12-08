@@ -239,13 +239,6 @@ int is_utf8(const char *text)
 	return 1;
 }
 
-static void strbuf_addchars(struct strbuf *sb, int c, size_t n)
-{
-	strbuf_grow(sb, n);
-	memset(sb->buf + sb->len, c, n);
-	strbuf_setlen(sb, sb->len + n);
-}
-
 static void strbuf_add_indented_text(struct strbuf *buf, const char *text,
 				     int indent, int indent2)
 {
@@ -381,6 +374,9 @@ void strbuf_utf8_replace(struct strbuf *sb_src, int pos, int width,
 			src += n;
 			dst += n;
 		}
+
+		if (src >= end)
+			break;
 
 		old = src;
 		n = utf8_width((const char**)&src, NULL);
@@ -564,4 +560,108 @@ int mbs_chrlen(const char **text, size_t *remainder_p, const char *encoding)
 		*remainder_p -= chrlen;
 
 	return chrlen;
+}
+
+/*
+ * Pick the next char from the stream, ignoring codepoints an HFS+ would.
+ * Note that this is _not_ complete by any means. It's just enough
+ * to make is_hfs_dotgit() work, and should not be used otherwise.
+ */
+static ucs_char_t next_hfs_char(const char **in)
+{
+	while (1) {
+		ucs_char_t out = pick_one_utf8_char(in, NULL);
+		/*
+		 * check for malformed utf8. Technically this
+		 * gets converted to a percent-sequence, but
+		 * returning 0 is good enough for is_hfs_dotgit
+		 * to realize it cannot be .git
+		 */
+		if (!*in)
+			return 0;
+
+		/* these code points are ignored completely */
+		switch (out) {
+		case 0x200c: /* ZERO WIDTH NON-JOINER */
+		case 0x200d: /* ZERO WIDTH JOINER */
+		case 0x200e: /* LEFT-TO-RIGHT MARK */
+		case 0x200f: /* RIGHT-TO-LEFT MARK */
+		case 0x202a: /* LEFT-TO-RIGHT EMBEDDING */
+		case 0x202b: /* RIGHT-TO-LEFT EMBEDDING */
+		case 0x202c: /* POP DIRECTIONAL FORMATTING */
+		case 0x202d: /* LEFT-TO-RIGHT OVERRIDE */
+		case 0x202e: /* RIGHT-TO-LEFT OVERRIDE */
+		case 0x206a: /* INHIBIT SYMMETRIC SWAPPING */
+		case 0x206b: /* ACTIVATE SYMMETRIC SWAPPING */
+		case 0x206c: /* INHIBIT ARABIC FORM SHAPING */
+		case 0x206d: /* ACTIVATE ARABIC FORM SHAPING */
+		case 0x206e: /* NATIONAL DIGIT SHAPES */
+		case 0x206f: /* NOMINAL DIGIT SHAPES */
+		case 0xfeff: /* ZERO WIDTH NO-BREAK SPACE */
+			continue;
+		}
+
+		return out;
+	}
+}
+
+int is_hfs_dotgit(const char *path)
+{
+	ucs_char_t c;
+
+	c = next_hfs_char(&path);
+	if (c != '.')
+		return 0;
+	c = next_hfs_char(&path);
+
+	/*
+	 * there's a great deal of other case-folding that occurs
+	 * in HFS+, but this is enough to catch anything that will
+	 * convert to ".git"
+	 */
+	if (c != 'g' && c != 'G')
+		return 0;
+	c = next_hfs_char(&path);
+	if (c != 'i' && c != 'I')
+		return 0;
+	c = next_hfs_char(&path);
+	if (c != 't' && c != 'T')
+		return 0;
+	c = next_hfs_char(&path);
+	if (c && !is_dir_sep(c))
+		return 0;
+
+	return 1;
+}
+
+const char utf8_bom[] = "\357\273\277";
+
+int skip_utf8_bom(char **text, size_t len)
+{
+	if (len < strlen(utf8_bom) ||
+	    memcmp(*text, utf8_bom, strlen(utf8_bom)))
+		return 0;
+	*text += strlen(utf8_bom);
+	return 1;
+}
+
+void strbuf_utf8_align(struct strbuf *buf, align_type position, unsigned int width,
+		       const char *s)
+{
+	int slen = strlen(s);
+	int display_len = utf8_strnwidth(s, slen, 0);
+	int utf8_compensation = slen - display_len;
+
+	if (display_len >= width) {
+		strbuf_addstr(buf, s);
+		return;
+	}
+
+	if (position == ALIGN_LEFT)
+		strbuf_addf(buf, "%-*s", width + utf8_compensation, s);
+	else if (position == ALIGN_MIDDLE) {
+		int left = (width - display_len) / 2;
+		strbuf_addf(buf, "%*s%-*s", left, "", width - left + utf8_compensation, s);
+	} else if (position == ALIGN_RIGHT)
+		strbuf_addf(buf, "%*s", width + utf8_compensation, s);
 }
