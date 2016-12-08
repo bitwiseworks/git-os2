@@ -1634,7 +1634,7 @@ int git_config_set_multivar_in_file(const char *config_filename,
 			MAP_PRIVATE, in_fd, 0);
 		close(in_fd);
 
-		if (chmod(lock->filename, st.st_mode & 07777) < 0) {
+		if (fchmod(fd, st.st_mode & 07777) < 0) {
 			error("chmod on %s failed: %s",
 				lock->filename, strerror(errno));
 			ret = CONFIG_NO_WRITE;
