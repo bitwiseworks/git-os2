@@ -267,7 +267,7 @@ static void append_msg_id(struct strbuf *sb, const char *msg_id)
 	strbuf_addstr(sb, ": ");
 }
 
-__attribute__((format (printf, 4, 5)))
+__attribute__((__format__ (__printf__, 4, 5)))
 static int report(struct fsck_options *options, struct object *object,
 	enum fsck_msg_id id, const char *fmt, ...)
 {

@@ -72,6 +72,6 @@ int is_worktree_being_bisected(const struct worktree *wt, const char *target);
  */
 extern const char *worktree_git_path(const struct worktree *wt,
 				     const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 
 #endif

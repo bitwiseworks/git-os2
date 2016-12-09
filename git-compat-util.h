@@ -415,7 +415,7 @@ extern NORETURN void die(const char *err, ...) __attribute__((__format__ (__prin
 extern NORETURN void die_errno(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
 extern int error(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
 extern int error_errno(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
-extern void warning(const char *err, ...) __attribute__((__format__ (__printf__f, 1, 2)));
+extern void warning(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
 extern void warning_errno(const char *err, ...) __attribute__((__format__ (__printf__, 1, 2)));
 
 #ifndef NO_OPENSSL
@@ -883,7 +883,7 @@ static inline size_t xsize_t(off_t len)
 	return (size_t)len;
 }
 
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 extern int xsnprintf(char *dst, size_t max, const char *fmt, ...);
 
 /* in ctype.c, for kwset users */

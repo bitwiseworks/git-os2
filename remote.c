@@ -1659,7 +1659,7 @@ int branch_merge_matches(struct branch *branch,
 	return refname_match(branch->merge[i]->src, refname);
 }
 
-__attribute__((format (printf,2,3)))
+__attribute__((__format__ (__printf__,2,3)))
 static const char *error_buf(struct strbuf *err, const char *fmt, ...)
 {
 	if (err) {

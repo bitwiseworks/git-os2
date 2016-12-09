@@ -22,23 +22,23 @@ extern void trace_verbatim(struct trace_key *key, const void *buf, unsigned len)
 
 #ifndef HAVE_VARIADIC_MACROS
 
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 extern void trace_printf(const char *format, ...);
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 extern void trace_printf_key(struct trace_key *key, const char *format, ...);
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 extern void trace_argv_printf(const char **argv, const char *format, ...);
 
 extern void trace_strbuf(struct trace_key *key, const struct strbuf *data);
 
 /* Prints elapsed time (in nanoseconds) if GIT_TRACE_PERFORMANCE is enabled. */
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 extern void trace_performance(uint64_t nanos, const char *format, ...);
 
 /* Prints elapsed time since 'start' if GIT_TRACE_PERFORMANCE is enabled. */
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 extern void trace_performance_since(uint64_t start, const char *format, ...);
 
 #else

@@ -826,18 +826,18 @@ extern void check_repository_format(void);
  * using the safer "dup" or "strbuf" formats below (in some cases, the
  * unsafe versions have already been removed).
  */
-extern const char *mkpath(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
-extern const char *git_path(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
-extern const char *git_common_path(const char *fmt, ...) __attribute__((format (printf, 1, 2)));
+extern const char *mkpath(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
+extern const char *git_path(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
+extern const char *git_common_path(const char *fmt, ...) __attribute__((__format__ (__printf__, 1, 2)));
 
 extern char *mksnpath(char *buf, size_t n, const char *fmt, ...)
 	__attribute__((__format__ (__printf__, 3, 4)));
 extern void strbuf_git_path(struct strbuf *sb, const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 extern void strbuf_git_common_path(struct strbuf *sb, const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 extern char *git_path_buf(struct strbuf *buf, const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 extern int strbuf_git_path_submodule(struct strbuf *sb, const char *path,
 				     const char *fmt, ...)
 	__attribute__((__format__ (__printf__, 3, 4)));
@@ -1836,7 +1836,7 @@ struct key_value_info {
 	enum config_scope scope;
 };
 
-extern NORETURN void git_die_config(const char *key, const char *err, ...) __attribute__((format(printf, 2, 3)));
+extern NORETURN void git_die_config(const char *key, const char *err, ...) __attribute__((__format__ (__printf__, 2, 3)));
 extern NORETURN void git_die_config_linenr(const char *key, const char *filename, int linenr);
 
 extern int committer_ident_sufficiently_given(void);
@@ -1849,7 +1849,7 @@ extern const char *git_mailmap_blob;
 
 /* IO helper functions */
 extern void maybe_flush_or_die(FILE *, const char *);
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 extern void fprintf_or_die(FILE *, const char *fmt, ...);
 
 #define COPY_READ_ERROR (-2)
@@ -1883,7 +1883,7 @@ extern void write_file_buf(const char *path, const char *buf, size_t len);
  *
  *   write_file(path, "counter: %d", ctr);
  */
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 extern void write_file(const char *path, const char *fmt, ...);
 
 /* pager.c */

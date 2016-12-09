@@ -61,7 +61,7 @@ static int collect_expect(const struct option *opt, const char *arg, int unset)
 	return 0;
 }
 
-__attribute__((format (printf,3,4)))
+__attribute__((__format__ (__printf__,3,4)))
 static void show(struct string_list *expect, int *status, const char *fmt, ...)
 {
 	struct string_list_item *item;

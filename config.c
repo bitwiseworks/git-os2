@@ -1719,7 +1719,7 @@ void git_die_config_linenr(const char *key, const char *filename, int linenr)
 		    key, filename, linenr);
 }
 
-NORETURN __attribute__((format(printf, 2, 3)))
+NORETURN __attribute__((__format__(__printf__, 2, 3)))
 void git_die_config(const char *key, const char *err, ...)
 {
 	const struct string_list *values;

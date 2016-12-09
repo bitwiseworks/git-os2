@@ -52,7 +52,7 @@ static int non_common_revs, multi_ack, use_sideband;
 #define ALLOW_REACHABLE_SHA1	02
 static unsigned int allow_unadvertised_object_request;
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 static inline void print_verbose(const struct fetch_pack_args *args,
 				 const char *fmt, ...)
 {
