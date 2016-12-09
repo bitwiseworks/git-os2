@@ -104,7 +104,7 @@ static int is_executable(const char *name)
 	    !S_ISREG(st.st_mode))
 		return 0;
 
-#if defined(GIT_WINDOWS_NATIVE) || defined(__KLIBC__)
+#if defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE)
 {	/* cannot trust the executable bit, peek into the file instead */
 	char buf[3] = { 0 };
 	int n;
@@ -114,7 +114,7 @@ static int is_executable(const char *name)
 		n = read(fd, buf, 2);
 		if (n == 2)
 			/* DOS executables start with "MZ" */
-#if defined(__KLIBC__)
+#if defined(GIT_OS2_NATIVE)
 			if (!strcmp(buf, "#!") || !strcmp(buf, "MZ") || !strcmp(buf, "LX"))
 #else
 			if (!strcmp(buf, "#!") || !strcmp(buf, "MZ"))

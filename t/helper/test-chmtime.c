@@ -87,7 +87,7 @@ int cmd_main(int argc, const char **argv)
 			return 1;
 		}
 
-#ifdef GIT_WINDOWS_NATIVE
+#if defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE)
 		if (!(sb.st_mode & S_IWUSR) &&
 				chmod(argv[i], sb.st_mode | S_IWUSR)) {
 			fprintf(stderr, "Could not make user-writable %s: %s",

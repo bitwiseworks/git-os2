@@ -1,4 +1,6 @@
+#define GIT_OS2_NATIVE
 
+#include <ctype.h>
 #ifndef NO_ICONV
 # include <iconv.h>
 # if defined(__INNOTEK_LIBC__) && defined(__ICONV_H__)
@@ -54,17 +56,38 @@ extern int wrapped_execvp_for_os2 (const char *, char **);
 # define execvp wrapped_execvp_for_os2
 #endif
 
+/*
+ * git specific compatibility
+ */
 
-//#ifndef _SOCKLEN_T_DECLARED
-//typedef int socklen_t;
-//# define _SOCKLEN_T_DECLARED
-//#endif
-
-#define has_dos_drive_prefix(path) (isalpha(*(path)) && (path)[1] == ':')
+#define has_dos_drive_prefix(path) \
+	(isalpha(*(path)) && (path)[1] == ':' ? 2 : 0)
+static inline int os2_skip_dos_drive_prefix(char **path)
+{
+	int ret = has_dos_drive_prefix(*path);
+	*path += ret;
+	return ret;
+}
+#define skip_dos_drive_prefix os2_skip_dos_drive_prefix
 #define is_dir_sep(c) ((c) == '/' || (c) == '\\')
+static inline char *os2_find_last_dir_sep(const char *path)
+{
+	char *ret = NULL;
+	for (; *path; ++path)
+		if (is_dir_sep(*path))
+			ret = (char *)path;
+	return ret;
+}
+static inline void convert_slashes(char *path)
+{
+	for (; *path; path++)
+		if (*path == '\\')
+			*path = '/';
+}
+#define find_last_dir_sep os2_find_last_dir_sep
+int os2_offset_1st_component(const char *path);
+#define offset_1st_component os2_offset_1st_component
 #define PATH_SEP ';'
-
-
 
 #define main(c,v) dummy_decl_git_os2_main(); \
 extern int git_os2_main_prepare(int *, char ** *); \
@@ -75,4 +98,3 @@ int main(int argc, char **argv) \
   return git_os2_main(argc,argv); \
 } \
 int git_os2_main(c,v)
-

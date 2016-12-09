@@ -655,7 +655,7 @@ char *expand_user_path(const char *path)
 			if (!home)
 				goto return_null;
 			strbuf_addstr(&user_path, home);
-#ifdef GIT_WINDOWS_NATIVE
+#if defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE)
 			convert_slashes(user_path.buf);
 #endif
 		} else {

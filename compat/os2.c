@@ -717,9 +717,6 @@ int wrapped_execlp_for_os2 (const char *progname, char *argv0, ...)
   return rc;
 }
 
-
-
-
 static
 int setbinmode_to_file(int fd)
 {
@@ -731,6 +728,26 @@ int setbinmode_to_file(int fd)
     rc = setmode(fd, S_ISCHR(st.st_mode) ? O_TEXT : O_BINARY);
   }
   return rc;
+}
+
+int os2_offset_1st_component(const char *path)
+{
+	char *pos = (char *)path;
+
+	/* unc paths */
+	if (!skip_dos_drive_prefix(&pos) &&
+			is_dir_sep(pos[0]) && is_dir_sep(pos[1])) {
+		/* skip server name */
+		pos = strpbrk(pos + 2, "\\/");
+		if (!pos)
+			return 0; /* Error: malformed unc path */
+
+		do {
+			pos++;
+		} while (*pos && !is_dir_sep(*pos));
+	}
+
+	return pos + is_dir_sep(*pos) - path;
 }
 
 int git_os2_main_prepare (int * p_argc, char ** * p_argv)
@@ -767,4 +784,3 @@ int git_os2_main_prepare (int * p_argc, char ** * p_argv)
   
   return 0;
 }
-

@@ -160,7 +160,7 @@ const char *absolute_path(const char *path)
 const char *prefix_filename(const char *pfx, int pfx_len, const char *arg)
 {
 	static struct strbuf path = STRBUF_INIT;
-#if !(defined(GIT_WINDOWS_NATIVE) || defined(__OS2__))
+#if !(defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE))
 	if (!pfx_len || is_absolute_path(arg))
 		return arg;
 	strbuf_reset(&path);
