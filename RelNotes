@@ -1,0 +1,1 @@
+Symlinks don't work well in SVN for OS/2 yet. Once they work, this should symlink to Documentation/RelNotes/XYZ.txt.
