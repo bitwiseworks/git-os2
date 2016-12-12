@@ -620,11 +620,17 @@ ifeq ($(uname_S),OS/2)
 	PTHREAD_LIBS=-lpthread
 	NO_SYMLINK_HEAD = YesPlease
 	NO_TCLTK = YesPlease
+	HAVE_GETDELIM = YesPlease
+	OBJECT_CREATION_USES_RENAMES = UnfortunatelyNeedsTo
+	SANE_TEXT_GREP=-a
 	COMPAT_CFLAGS += -Icompat
 	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
 	COMPAT_OBJS += compat/os2.o
 	BASIC_CFLAGS += -g -Zomf -Wno-format-zero-length
-	BASIC_LDFLAGS += -g -Zmap -Zbin-files -Zhigh-mem -Zomf -Zargs-wild -Zargs-resp
-	EXTLIBS += -lmmap
+	BASIC_LDFLAGS += -g -Zmap -Zbin-files -Zhigh-mem -Zomf -Zargs-wild -Zargs-resp -Zstack 0x2000
+	EXTLIBS += -lcx
+	# Git uses overlapped mappings but LIBCx doesn't support them ATM, see
+	# https://github.com/bitwiseworks/libcx/issues/29 for more info.
+	NO_MMAP = YesPlease
 	X = .exe
 endif
