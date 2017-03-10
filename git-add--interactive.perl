@@ -5,7 +5,11 @@ use strict;
 use warnings;
 use Git;
 
-binmode(STDOUT, ":raw");
+if (grep $_ eq 'crlf', PerlIO::get_layers(STDOUT)) {
+	binmode(STDOUT, ":raw :crlf");
+} else {
+	binmode(STDOUT, ":raw");
+}
 
 my $repo = Git->repository();
 
