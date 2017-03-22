@@ -609,7 +609,6 @@ ifeq ($(uname_S),OS/2)
 	CC_LD_DYNPATH =
 	INSTALL = install -p
 	HAVE_PATHS_H=YesPlease
-	NO_POLL = YesPlease
 	NO_SOCKADDR_STORAGE=YesPlease
 	NO_MEMMEM=YesPlease
 	NO_IPV6 = YesPlease

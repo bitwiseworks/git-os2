@@ -181,9 +181,7 @@
 #include <utime.h>
 #include <syslog.h>
 #ifndef NO_SYS_POLL_H
-#ifndef __KLIBC__
 #include <sys/poll.h>
-#endif
 #else
 #include <poll.h>
 #endif

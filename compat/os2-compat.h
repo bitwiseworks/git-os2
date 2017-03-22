@@ -16,23 +16,6 @@ extern struct passwd * wrapped_getpwuid_for_klibc (uid_t);
 extern int wrapped_unlink_for_dosish_system (const char *);
 extern char * wrapped_getenv_for_os2 (const char *);
 
-#ifndef NO_POLL
-#ifndef _NFDS_T_DECLARED
-typedef unsigned int  nfds_t;
-# define _NFDS_T_DECLARED
-#endif
-
-struct pollfd {
-  int fd;
-  short events;
-  short revents;
-};
-#define POLLIN 1
-#define POLLHUP 2
-
-extern int poll (struct pollfd *, nfds_t, int);
-#endif
-
 #define SHUT_RD         0               /* shut down the reading side */
 #define SHUT_WR         1               /* shut down the writing side */
 #define SHUT_RDWR       2               /* shut down both sides */
