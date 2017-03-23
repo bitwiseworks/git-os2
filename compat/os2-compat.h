@@ -12,31 +12,13 @@
 # endif
 #endif
 
-extern struct passwd * wrapped_getpwuid_for_klibc (uid_t);
-extern int wrapped_unlink_for_dosish_system (const char *);
-extern char * wrapped_getenv_for_os2 (const char *);
-
 #define SHUT_RD         0               /* shut down the reading side */
 #define SHUT_WR         1               /* shut down the writing side */
 #define SHUT_RDWR       2               /* shut down both sides */
 
-extern int wrapped_execl_for_os2 (const char *, char *, ...);
-extern int wrapped_execlp_for_os2 (const char *, char *, ...);
-extern int wrapped_execv_for_os2 (const char *, char * const *);
-extern int wrapped_execvp_for_os2 (const char *, char **);
-
-#ifndef BUILDING_COMPAT_OS2
-# ifdef __EMX__
-#  define chdir(d) _chdir2(d)
-#  define getcwd(d,n) _getcwd2(d,n)
-# endif
-# define getenv(e) wrapped_getenv_for_os2 (e)
-# define getpwuid(u) wrapped_getpwuid_for_klibc (u)
-# define unlink(f) wrapped_unlink_for_dosish_system (f)
-# define execl wrapped_execl_for_os2
-# define execlp wrapped_execlp_for_os2
-# define execv wrapped_execv_for_os2
-# define execvp wrapped_execvp_for_os2
+#ifdef __EMX__
+# define chdir(d) _chdir2(d)
+# define getcwd(d,n) _getcwd2(d,n)
 #endif
 
 /*
@@ -72,12 +54,16 @@ int os2_offset_1st_component(const char *path);
 #define offset_1st_component os2_offset_1st_component
 #define PATH_SEP ';'
 
-#define main(c,v) dummy_decl_git_os2_main(); \
-extern int git_os2_main_prepare(int *, char ** *); \
-extern int git_os2_main(c,v); \
-int main(int argc, char **argv) \
+/*
+ * A replacement of main() that adds OS/2 specific initialization.
+ */
+
+void os2_startup(void);
+#define main(c,v) dummy_decl_os2_main(void); \
+static int os2_main(c,v); \
+int main(int argc, const char **argv) \
 { \
-  git_os2_main_prepare(&argc,&argv); \
-  return git_os2_main(argc,argv); \
+	os2_startup(); \
+	return os2_main(argc, argv); \
 } \
-int git_os2_main(c,v)
+static int os2_main(c,v)
