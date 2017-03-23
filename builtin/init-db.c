@@ -3,6 +3,12 @@
  *
  * Copyright (C) Linus Torvalds, 2005
  */
+#ifdef __OS2__
+#define OS2EMX_PLAIN_CHAR
+#define INCL_BASE
+#include <os2.h>
+#undef OBJ_ANY /* conflicts with git definitions */
+#endif
 #include "cache.h"
 #include "refs.h"
 #include "builtin.h"
@@ -360,6 +366,20 @@ int init_db(const char *git_dir, const char *real_git_dir,
 	startup_info->have_repository = 1;
 
 	safe_create_dir(git_dir, 0);
+
+#ifdef __OS2__
+	/* Make the git directory truly hidden on OS/2 */
+	{
+		FILESTATUS3 stat;
+		APIRET arc = DosQueryPathInfo(git_dir, FIL_STANDARD, &stat, sizeof(stat));
+		if (!arc) {
+			stat.attrFile |= FILE_HIDDEN;
+			arc = DosSetPathInfo(git_dir, FIL_STANDARD, &stat, sizeof(stat), 0);
+		}
+		if (arc)
+			warning(("could not set hidden attribute on %s (OS/2 error %ld)"), git_dir, arc);
+	}
+#endif
 
 	init_is_bare_repository = is_bare_repository();
 
