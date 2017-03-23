@@ -628,8 +628,5 @@ ifeq ($(uname_S),OS/2)
 	BASIC_CFLAGS += -g -Zomf -Wno-format-zero-length
 	BASIC_LDFLAGS += -g -Zmap -Zbin-files -Zhigh-mem -Zomf -Zargs-wild -Zargs-resp -Zstack 0x2000
 	EXTLIBS += -lcx
-	# Git uses overlapped mappings but LIBCx doesn't support them ATM, see
-	# https://github.com/bitwiseworks/libcx/issues/29 for more info.
-	NO_MMAP = YesPlease
 	X = .exe
 endif
