@@ -2416,7 +2416,7 @@ int git_config_rename_section_in_file(const char *config_filename,
 
 	fstat(fileno(config_file), &st);
 
-	if (chmod(get_lock_file_path(lock), st.st_mode & 07777) < 0) {
+	if (fchmod(out_fd, st.st_mode & 07777) < 0) {
 		ret = error_errno("chmod on %s failed",
 				  get_lock_file_path(lock));
 		goto out;
