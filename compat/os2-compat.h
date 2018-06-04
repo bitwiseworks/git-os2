@@ -16,6 +16,10 @@
 #define SHUT_WR         1               /* shut down the writing side */
 #define SHUT_RDWR       2               /* shut down both sides */
 
+#if !defined O_CLOEXEC && defined O_NOINHERIT
+#define O_CLOEXEC	O_NOINHERIT
+#endif
+
 #ifdef __EMX__
 # define chdir(d) _chdir2(d)
 # define getcwd(d,n) _getcwd2(d,n)
