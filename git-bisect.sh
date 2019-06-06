@@ -566,7 +566,7 @@ write_terms () {
 	fi
 	check_term_format "$TERM_BAD" bad
 	check_term_format "$TERM_GOOD" good
-	printf '%s\n%s\n' "$TERM_BAD" "$TERM_GOOD" >"$GIT_DIR/BISECT_TERMS"
+	printf '%s\n%s\n' "$TERM_BAD" "$TERM_GOOD" | tr -d '\r' >"$GIT_DIR/BISECT_TERMS"
 }
 
 check_term_format () {
