@@ -17,6 +17,29 @@ test_expect_success setup '
 	export GIT_ALLOC_LIMIT
 '
 
+# add a large file with different settings
+while read expect config
+do
+	test_expect_success "add with $config" '
+		test_when_finished "rm -f .git/objects/pack/pack-*.* .git/index" &&
+		git $config add large1 &&
+		sz=$(test_file_size .git/objects/pack/pack-*.pack) &&
+		case "$expect" in
+		small) test "$sz" -le 100000 ;;
+		large) test "$sz" -ge 100000 ;;
+		esac
+	'
+done <<\EOF
+large -c core.compression=0
+small -c core.compression=9
+large -c core.compression=0 -c pack.compression=0
+large -c core.compression=9 -c pack.compression=0
+small -c core.compression=0 -c pack.compression=9
+small -c core.compression=9 -c pack.compression=9
+large -c pack.compression=0
+small -c pack.compression=9
+EOF
+
 test_expect_success 'add a large file or two' '
 	git add large1 huge large2 &&
 	# make sure we got a single packfile and no loose objects
@@ -24,7 +47,8 @@ test_expect_success 'add a large file or two' '
 	for p in .git/objects/pack/pack-*.pack
 	do
 		count=$(( $count + 1 ))
-		if test -f "$p" && idx=${p%.pack}.idx && test -f "$idx"
+		if test_path_is_file "$p" &&
+		   idx=${p%.pack}.idx && test_path_is_file "$idx"
 		then
 			continue
 		fi
@@ -34,9 +58,9 @@ test_expect_success 'add a large file or two' '
 	test $count = 1 &&
 	cnt=$(git show-index <"$idx" | wc -l) &&
 	test $cnt = 2 &&
-	for l in .git/objects/??/??????????????????????????????????????
+	for l in .git/objects/$OIDPATH_REGEX
 	do
-		test -f "$l" || continue
+		test_path_is_file "$l" || continue
 		bad=t
 	done &&
 	test -z "$bad" &&
@@ -47,7 +71,8 @@ test_expect_success 'add a large file or two' '
 	for p in .git/objects/pack/pack-*.pack
 	do
 		count=$(( $count + 1 ))
-		if test -f "$p" && idx=${p%.pack}.idx && test -f "$idx"
+		if test_path_is_file "$p" &&
+		   idx=${p%.pack}.idx && test_path_is_file "$idx"
 		then
 			continue
 		fi
@@ -74,21 +99,21 @@ test_expect_success 'packsize limit' '
 		# mid1 and mid2 will fit within 256k limit but
 		# appending mid3 will bust the limit and will
 		# result in a separate packfile.
-		test-genrandom "a" $(( 66 * 1024 )) >mid1 &&
-		test-genrandom "b" $(( 80 * 1024 )) >mid2 &&
-		test-genrandom "c" $(( 128 * 1024 )) >mid3 &&
+		test-tool genrandom "a" $(( 66 * 1024 )) >mid1 &&
+		test-tool genrandom "b" $(( 80 * 1024 )) >mid2 &&
+		test-tool genrandom "c" $(( 128 * 1024 )) >mid3 &&
 		git add mid1 mid2 mid3 &&
 
-		count=0
+		count=0 &&
 		for pi in .git/objects/pack/pack-*.idx
 		do
-			test -f "$pi" && count=$(( $count + 1 ))
+			test_path_is_file "$pi" && count=$(( $count + 1 ))
 		done &&
 		test $count = 2 &&
 
 		(
-			git hash-object --stdin <mid1
-			git hash-object --stdin <mid2
+			git hash-object --stdin <mid1 &&
+			git hash-object --stdin <mid2 &&
 			git hash-object --stdin <mid3
 		) |
 		sort >expect &&
@@ -146,7 +171,8 @@ test_expect_success 'git-show a large file' '
 
 test_expect_success 'index-pack' '
 	git clone file://"$(pwd)"/.git foo &&
-	GIT_DIR=non-existent git index-pack --strict --verify foo/.git/objects/pack/*.pack
+	GIT_DIR=non-existent git index-pack --object-format=$(test_oid algo) \
+		--strict --verify foo/.git/objects/pack/*.pack
 '
 
 test_expect_success 'repack' '
@@ -165,15 +191,15 @@ test_expect_success 'pack-objects with large loose object' '
 	test_cmp huge actual
 '
 
-test_expect_success 'tar achiving' '
+test_expect_success 'tar archiving' '
 	git archive --format=tar HEAD >/dev/null
 '
 
-test_expect_success 'zip achiving, store only' '
+test_expect_success 'zip archiving, store only' '
 	git archive --format=zip -0 HEAD >/dev/null
 '
 
-test_expect_success 'zip achiving, deflate' '
+test_expect_success 'zip archiving, deflate' '
 	git archive --format=zip HEAD >/dev/null
 '
 

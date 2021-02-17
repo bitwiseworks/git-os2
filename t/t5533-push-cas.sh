@@ -13,6 +13,46 @@ setup_srcdst_basic () {
 	)
 }
 
+# For tests with "--force-if-includes".
+setup_src_dup_dst () {
+	rm -fr src dup dst &&
+	git init --bare dst &&
+	git clone --no-local dst src &&
+	git clone --no-local dst dup
+	(
+		cd src &&
+		test_commit A &&
+		test_commit B &&
+		test_commit C &&
+		git push origin
+	) &&
+	(
+		cd dup &&
+		git fetch &&
+		git merge origin/master &&
+		git switch -c branch master~2 &&
+		test_commit D &&
+		test_commit E &&
+		git push origin --all
+	) &&
+	(
+		cd src &&
+		git switch master &&
+		git fetch --all &&
+		git branch branch --track origin/branch &&
+		git rebase origin/master
+	) &&
+	(
+		cd dup &&
+		git switch master &&
+		test_commit F &&
+		test_commit G &&
+		git switch branch &&
+		test_commit H &&
+		git push origin --all
+	)
+}
+
 test_expect_success setup '
 	# create template repository
 	test_commit A &&
@@ -142,9 +182,8 @@ test_expect_success 'push to delete (protected, forced)' '
 		cd dst &&
 		git push --force --force-with-lease=master:master^ origin :master
 	) &&
-	>expect &&
 	git ls-remote src refs/heads/master >actual &&
-	test_cmp expect actual
+	test_must_be_empty actual
 '
 
 test_expect_success 'push to delete (allowed)' '
@@ -154,9 +193,8 @@ test_expect_success 'push to delete (allowed)' '
 		git push --force-with-lease=master origin :master 2>err &&
 		grep deleted err
 	) &&
-	>expect &&
 	git ls-remote src refs/heads/master >actual &&
-	test_cmp expect actual
+	test_must_be_empty actual
 '
 
 test_expect_success 'cover everything with default force-with-lease (protected)' '
@@ -226,6 +264,132 @@ test_expect_success 'new branch already exists' '
 		cd dst &&
 		git branch branch master &&
 		test_must_fail git push --force-with-lease=branch: origin branch
+	)
+'
+
+test_expect_success 'background updates of REMOTE can be mitigated with a non-updated REMOTE-push' '
+	rm -rf src dst &&
+	git init --bare src.bare &&
+	test_when_finished "rm -rf src.bare" &&
+	git clone --no-local src.bare dst &&
+	test_when_finished "rm -rf dst" &&
+	(
+		cd dst &&
+		test_commit G &&
+		git remote add origin-push ../src.bare &&
+		git push origin-push master:master
+	) &&
+	git clone --no-local src.bare dst2 &&
+	test_when_finished "rm -rf dst2" &&
+	(
+		cd dst2 &&
+		test_commit H &&
+		git push
+	) &&
+	(
+		cd dst &&
+		test_commit I &&
+		git fetch origin &&
+		test_must_fail git push --force-with-lease origin-push &&
+		git fetch origin-push &&
+		git push --force-with-lease origin-push
+	)
+'
+
+test_expect_success 'background updates to remote can be mitigated with "--force-if-includes"' '
+	setup_src_dup_dst &&
+	test_when_finished "rm -fr dst src dup" &&
+	git ls-remote dst refs/heads/master >expect.master &&
+	git ls-remote dst refs/heads/branch >expect.branch &&
+	(
+		cd src &&
+		git switch branch &&
+		test_commit I &&
+		git switch master &&
+		test_commit J &&
+		git fetch --all &&
+		test_must_fail git push --force-with-lease --force-if-includes --all
+	) &&
+	git ls-remote dst refs/heads/master >actual.master &&
+	git ls-remote dst refs/heads/branch >actual.branch &&
+	test_cmp expect.master actual.master &&
+	test_cmp expect.branch actual.branch
+'
+
+test_expect_success 'background updates to remote can be mitigated with "push.useForceIfIncludes"' '
+	setup_src_dup_dst &&
+	test_when_finished "rm -fr dst src dup" &&
+	git ls-remote dst refs/heads/master >expect.master &&
+	(
+		cd src &&
+		git switch branch &&
+		test_commit I &&
+		git switch master &&
+		test_commit J &&
+		git fetch --all &&
+		git config --local push.useForceIfIncludes true &&
+		test_must_fail git push --force-with-lease=master origin master
+	) &&
+	git ls-remote dst refs/heads/master >actual.master &&
+	test_cmp expect.master actual.master
+'
+
+test_expect_success '"--force-if-includes" should be disabled for --force-with-lease="<refname>:<expect>"' '
+	setup_src_dup_dst &&
+	test_when_finished "rm -fr dst src dup" &&
+	git ls-remote dst refs/heads/master >expect.master &&
+	(
+		cd src &&
+		git switch branch &&
+		test_commit I &&
+		git switch master &&
+		test_commit J &&
+		remote_head="$(git rev-parse refs/remotes/origin/master)" &&
+		git fetch --all &&
+		test_must_fail git push --force-if-includes --force-with-lease="master:$remote_head" 2>err &&
+		grep "stale info" err
+	) &&
+	git ls-remote dst refs/heads/master >actual.master &&
+	test_cmp expect.master actual.master
+'
+
+test_expect_success '"--force-if-includes" should allow forced update after a rebase ("pull --rebase")' '
+	setup_src_dup_dst &&
+	test_when_finished "rm -fr dst src dup" &&
+	(
+		cd src &&
+		git switch branch &&
+		test_commit I &&
+		git switch master &&
+		test_commit J &&
+		git pull --rebase origin master &&
+		git push --force-if-includes --force-with-lease="master"
+	)
+'
+
+test_expect_success '"--force-if-includes" should allow forced update after a rebase ("pull --rebase", local rebase)' '
+	setup_src_dup_dst &&
+	test_when_finished "rm -fr dst src dup" &&
+	(
+		cd src &&
+		git switch branch &&
+		test_commit I &&
+		git switch master &&
+		test_commit J &&
+		git pull --rebase origin master &&
+		git rebase --onto HEAD~4 HEAD~1 &&
+		git push --force-if-includes --force-with-lease="master"
+	)
+'
+
+test_expect_success '"--force-if-includes" should allow deletes' '
+	setup_src_dup_dst &&
+	test_when_finished "rm -fr dst src dup" &&
+	(
+		cd src &&
+		git switch branch &&
+		git pull --rebase origin branch &&
+		git push --force-if-includes --force-with-lease="branch" origin :branch
 	)
 '
 

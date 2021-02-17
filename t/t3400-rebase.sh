@@ -59,6 +59,14 @@ test_expect_success 'rebase against master' '
 	git rebase master
 '
 
+test_expect_success 'rebase sets ORIG_HEAD to pre-rebase state' '
+	git checkout -b orig-head topic &&
+	pre="$(git rev-parse --verify HEAD)" &&
+	git rebase master &&
+	test_cmp_rev "$pre" ORIG_HEAD &&
+	test_cmp_rev ! "$pre" HEAD
+'
+
 test_expect_success 'rebase, with <onto> and <upstream> specified as :/quuxery' '
 	test_when_finished "git branch -D torebase" &&
 	git checkout -b torebase my-topic-branch^ &&
@@ -135,11 +143,11 @@ test_expect_success 'setup: recover' '
 
 test_expect_success 'Show verbose error when HEAD could not be detached' '
 	>B &&
+	test_when_finished "rm -f B" &&
 	test_must_fail git rebase topic 2>output.err >output.out &&
 	test_i18ngrep "The following untracked working tree files would be overwritten by checkout:" output.err &&
 	test_i18ngrep B output.err
 '
-rm -f B
 
 test_expect_success 'fail when upstream arg is missing and not on branch' '
 	git checkout topic &&
@@ -151,19 +159,43 @@ test_expect_success 'fail when upstream arg is missing and not configured' '
 	test_must_fail git rebase
 '
 
-test_expect_success 'default to common base in @{upstream}s reflog if no upstream arg' '
+test_expect_success 'rebase works with format.useAutoBase' '
+	test_config format.useAutoBase true &&
+	git checkout topic &&
+	git rebase master
+'
+
+test_expect_success 'default to common base in @{upstream}s reflog if no upstream arg (--merge)' '
 	git checkout -b default-base master &&
 	git checkout -b default topic &&
 	git config branch.default.remote . &&
 	git config branch.default.merge refs/heads/default-base &&
-	git rebase &&
+	git rebase --merge &&
 	git rev-parse --verify default-base >expect &&
 	git rev-parse default~1 >actual &&
 	test_cmp expect actual &&
 	git checkout default-base &&
 	git reset --hard HEAD^ &&
 	git checkout default &&
-	git rebase &&
+	git rebase --merge &&
+	git rev-parse --verify default-base >expect &&
+	git rev-parse default~1 >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'default to common base in @{upstream}s reflog if no upstream arg (--apply)' '
+	git checkout -B default-base master &&
+	git checkout -B default topic &&
+	git config branch.default.remote . &&
+	git config branch.default.merge refs/heads/default-base &&
+	git rebase --apply &&
+	git rev-parse --verify default-base >expect &&
+	git rev-parse default~1 >actual &&
+	test_cmp expect actual &&
+	git checkout default-base &&
+	git reset --hard HEAD^ &&
+	git checkout default &&
+	git rebase --apply &&
 	git rev-parse --verify default-base >expect &&
 	git rev-parse default~1 >actual &&
 	test_cmp expect actual
@@ -183,27 +215,33 @@ test_expect_success 'cherry-picked commits and fork-point work together' '
 	test_commit final_B B "Final B" &&
 	git rebase &&
 	echo Amended >expect &&
-	test_cmp A expect &&
+	test_cmp expect A &&
 	echo "Final B" >expect &&
-	test_cmp B expect &&
+	test_cmp expect B &&
 	echo C >expect &&
-	test_cmp C expect &&
+	test_cmp expect C &&
 	echo D >expect &&
-	test_cmp D expect
+	test_cmp expect D
 '
 
-test_expect_success 'rebase -q is quiet' '
+test_expect_success 'rebase --apply -q is quiet' '
 	git checkout -b quiet topic &&
-	git rebase -q master >output.out 2>&1 &&
+	git rebase --apply -q master >output.out 2>&1 &&
+	test_must_be_empty output.out
+'
+
+test_expect_success 'rebase --merge -q is quiet' '
+	git checkout -B quiet topic &&
+	git rebase --merge -q master >output.out 2>&1 &&
 	test_must_be_empty output.out
 '
 
 test_expect_success 'Rebase a commit that sprinkles CRs in' '
 	(
-		echo "One"
-		echo "TwoQ"
-		echo "Three"
-		echo "FQur"
+		echo "One" &&
+		echo "TwoQ" &&
+		echo "Three" &&
+		echo "FQur" &&
 		echo "Five"
 	) | q_to_cr >CR &&
 	git add CR &&
@@ -253,6 +291,132 @@ test_expect_success 'rebase commit with an ancient timestamp' '
 
 	git cat-file commit HEAD >actual &&
 	grep "author .* 34567 +0600$" actual
+'
+
+test_expect_success 'rebase with "From " line in commit message' '
+	git checkout -b preserve-from master~1 &&
+	cat >From_.msg <<EOF &&
+Somebody embedded an mbox in a commit message
+
+This is from so-and-so:
+
+From a@b Mon Sep 17 00:00:00 2001
+From: John Doe <nobody@example.com>
+Date: Sat, 11 Nov 2017 00:00:00 +0000
+Subject: not this message
+
+something
+EOF
+	>From_ &&
+	git add From_ &&
+	git commit -F From_.msg &&
+	git rebase master &&
+	git log -1 --pretty=format:%B >out &&
+	test_cmp From_.msg out
+'
+
+test_expect_success 'rebase --apply and --show-current-patch' '
+	test_create_repo conflict-apply &&
+	(
+		cd conflict-apply &&
+		test_commit init &&
+		echo one >>init.t &&
+		git commit -a -m one &&
+		echo two >>init.t &&
+		git commit -a -m two &&
+		git tag two &&
+		test_must_fail git rebase --apply -f --onto init HEAD^ &&
+		GIT_TRACE=1 git rebase --show-current-patch >/dev/null 2>stderr &&
+		grep "show.*$(git rev-parse two)" stderr
+	)
+'
+
+test_expect_success 'rebase --apply and .gitattributes' '
+	test_create_repo attributes &&
+	(
+		cd attributes &&
+		test_commit init &&
+		git config filter.test.clean "sed -e '\''s/smudged/clean/g'\''" &&
+		git config filter.test.smudge "sed -e '\''s/clean/smudged/g'\''" &&
+
+		test_commit second &&
+		git checkout -b test HEAD^ &&
+
+		echo "*.txt filter=test" >.gitattributes &&
+		git add .gitattributes &&
+		test_commit third &&
+
+		echo "This text is smudged." >a.txt &&
+		git add a.txt &&
+		test_commit fourth &&
+
+		git checkout -b removal HEAD^ &&
+		git rm .gitattributes &&
+		git add -u &&
+		test_commit fifth &&
+		git cherry-pick test &&
+
+		git checkout test &&
+		git rebase master &&
+		grep "smudged" a.txt &&
+
+		git checkout removal &&
+		git reset --hard &&
+		git rebase master &&
+		grep "clean" a.txt
+	)
+'
+
+test_expect_success 'rebase--merge.sh and --show-current-patch' '
+	test_create_repo conflict-merge &&
+	(
+		cd conflict-merge &&
+		test_commit init &&
+		echo one >>init.t &&
+		git commit -a -m one &&
+		echo two >>init.t &&
+		git commit -a -m two &&
+		git tag two &&
+		test_must_fail git rebase --merge --onto init HEAD^ &&
+		git rebase --show-current-patch >actual.patch &&
+		GIT_TRACE=1 git rebase --show-current-patch >/dev/null 2>stderr &&
+		grep "show.*REBASE_HEAD" stderr &&
+		test "$(git rev-parse REBASE_HEAD)" = "$(git rev-parse two)"
+	)
+'
+
+test_expect_success 'rebase -c rebase.useBuiltin=false warning' '
+	expected="rebase.useBuiltin support has been removed" &&
+
+	# Only warn when the legacy rebase is requested...
+	test_must_fail git -c rebase.useBuiltin=false rebase 2>err &&
+	test_i18ngrep "$expected" err &&
+	test_must_fail env GIT_TEST_REBASE_USE_BUILTIN=false git rebase 2>err &&
+	test_i18ngrep "$expected" err &&
+
+	# ...not when we would have used the built-in anyway
+	test_must_fail git -c rebase.useBuiltin=true rebase 2>err &&
+	test_must_be_empty err &&
+	test_must_fail env GIT_TEST_REBASE_USE_BUILTIN=true git rebase 2>err &&
+	test_must_be_empty err
+'
+
+test_expect_success 'switch to branch checked out here' '
+	git checkout master &&
+	git rebase master master
+'
+
+test_expect_success 'switch to branch not checked out' '
+	git checkout master &&
+	git branch other &&
+	git rebase master other
+'
+
+test_expect_success 'refuse to switch to branch checked out elsewhere' '
+	git checkout master &&
+	git worktree add wt &&
+	test_must_fail git -C wt rebase master master 2>err &&
+	test_i18ngrep "already checked out" err
 '
 
 test_done

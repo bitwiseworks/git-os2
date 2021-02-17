@@ -3,8 +3,10 @@
 
 #include "string-list.h"
 #include "run-command.h"
+#include "protocol.h"
+#include "list-objects-filter-options.h"
 
-struct sha1_array;
+struct oid_array;
 
 struct fetch_pack_args {
 	const char *uploadpack;
@@ -12,6 +14,15 @@ struct fetch_pack_args {
 	int depth;
 	const char *deepen_since;
 	const struct string_list *deepen_not;
+	struct list_objects_filter_options filter_options;
+	const struct string_list *server_options;
+
+	/*
+	 * If not NULL, during packfile negotiation, fetch-pack will send "have"
+	 * lines only with these tips and their ancestors.
+	 */
+	const struct oid_array *negotiation_tips;
+
 	unsigned deepen_relative:1;
 	unsigned quiet:1;
 	unsigned keep_pack:1;
@@ -29,6 +40,30 @@ struct fetch_pack_args {
 	unsigned cloning:1;
 	unsigned update_shallow:1;
 	unsigned deepen:1;
+
+	/*
+	 * Indicate that the remote of this request is a promisor remote. The
+	 * pack received does not need all referred-to objects to be present in
+	 * the local object store, and fetch-pack will store the pack received
+	 * together with a ".promisor" file indicating that the aforementioned
+	 * pack is a promisor pack.
+	 */
+	unsigned from_promisor:1;
+
+	/*
+	 * Because fetch_pack() overwrites the shallow file upon a
+	 * successful deepening non-clone fetch, if this struct
+	 * specifies such a fetch, fetch_pack() needs to perform a
+	 * connectivity check before deciding if a fetch is successful
+	 * (and overwriting the shallow file). fetch_pack() sets this
+	 * field to 1 if such a connectivity check was performed.
+	 *
+	 * This is different from check_self_contained_and_connected
+	 * in that the former allows existing objects in the
+	 * repository to satisfy connectivity needs, whereas the
+	 * latter doesn't.
+	 */
+	unsigned connectivity_checked:1;
 };
 
 /*
@@ -37,12 +72,18 @@ struct fetch_pack_args {
  * marked as such.
  */
 struct ref *fetch_pack(struct fetch_pack_args *args,
-		       int fd[], struct child_process *conn,
+		       int fd[],
 		       const struct ref *ref,
-		       const char *dest,
 		       struct ref **sought,
 		       int nr_sought,
-		       struct sha1_array *shallow,
-		       char **pack_lockfile);
+		       struct oid_array *shallow,
+		       struct string_list *pack_lockfiles,
+		       enum protocol_version version);
+
+/*
+ * Print an appropriate error message for each sought ref that wasn't
+ * matched.  Return 0 if all sought refs were matched, otherwise 1.
+ */
+int report_unmatched_refs(struct ref **sought, int nr_sought);
 
 #endif

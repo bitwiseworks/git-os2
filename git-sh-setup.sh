@@ -101,6 +101,7 @@ $LONG_USAGE")"
 	case "$1" in
 		-h)
 		echo "$LONG_USAGE"
+		case "$0" in *git-legacy-stash) exit 129;; esac
 		exit
 	esac
 fi
@@ -196,14 +197,14 @@ require_work_tree_exists () {
 	if test "z$(git rev-parse --is-bare-repository)" != zfalse
 	then
 		program_name=$0
-		die "$(gettext "fatal: \$program_name cannot be used without a working tree.")"
+		die "$(eval_gettext "fatal: \$program_name cannot be used without a working tree.")"
 	fi
 }
 
 require_work_tree () {
 	test "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true || {
 		program_name=$0
-		die "$(gettext "fatal: \$program_name cannot be used without a working tree.")"
+		die "$(eval_gettext "fatal: \$program_name cannot be used without a working tree.")"
 	}
 }
 

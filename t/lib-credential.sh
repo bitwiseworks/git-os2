@@ -1,4 +1,5 @@
-#!/bin/sh
+# Shell library for testing credential handling including helpers. See t0302
+# for an example of testing a specific helper.
 
 # Try a set of credential helpers; the expected stdin,
 # stdout and stderr should be provided on stdin,
@@ -19,7 +20,7 @@ check() {
 		false
 	fi &&
 	test_cmp expect-stdout stdout &&
-	test_cmp expect-stderr stderr
+	test_i18ncmp expect-stderr stderr
 }
 
 read_chunk() {
@@ -44,6 +45,7 @@ helper_test_clean() {
 	reject $1 https example.com user2
 	reject $1 http path.tld user
 	reject $1 https timeout.tld user
+	reject $1 https sso.tld
 }
 
 reject() {
@@ -248,6 +250,24 @@ helper_test() {
 		host=example.com
 		username=user2
 		password=pass2
+		EOF
+	'
+
+	test_expect_success "helper ($HELPER) can store empty username" '
+		check approve $HELPER <<-\EOF &&
+		protocol=https
+		host=sso.tld
+		username=
+		password=
+		EOF
+		check fill $HELPER <<-\EOF
+		protocol=https
+		host=sso.tld
+		--
+		protocol=https
+		host=sso.tld
+		username=
+		password=
 		EOF
 	'
 }

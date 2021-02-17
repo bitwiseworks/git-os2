@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "config.h"
 #include "color.h"
 
 static int git_use_color_default = GIT_COLOR_AUTO;
@@ -21,6 +22,14 @@ const char *column_colors_ansi[] = {
 	GIT_COLOR_BOLD_MAGENTA,
 	GIT_COLOR_BOLD_CYAN,
 	GIT_COLOR_RESET,
+};
+
+enum {
+	COLOR_BACKGROUND_OFFSET = 10,
+	COLOR_FOREGROUND_ANSI = 30,
+	COLOR_FOREGROUND_RGB = 38,
+	COLOR_FOREGROUND_256 = 38,
+	COLOR_FOREGROUND_BRIGHT_ANSI = 90,
 };
 
 /* Ignore the RESET at the end when giving the size */
@@ -60,15 +69,38 @@ static int get_hex_color(const char *in, unsigned char *out)
 	return 0;
 }
 
-static int parse_color(struct color *out, const char *name, int len)
+/*
+ * If an ANSI color is recognized in "name", fill "out" and return 0.
+ * Otherwise, leave out unchanged and return -1.
+ */
+static int parse_ansi_color(struct color *out, const char *name, int len)
 {
 	/* Positions in array must match ANSI color codes */
 	static const char * const color_names[] = {
 		"black", "red", "green", "yellow",
 		"blue", "magenta", "cyan", "white"
 	};
-	char *end;
 	int i;
+	int color_offset = COLOR_FOREGROUND_ANSI;
+
+	if (strncasecmp(name, "bright", 6) == 0) {
+		color_offset = COLOR_FOREGROUND_BRIGHT_ANSI;
+		name += 6;
+		len -= 6;
+	}
+	for (i = 0; i < ARRAY_SIZE(color_names); i++) {
+		if (match_word(name, len, color_names[i])) {
+			out->type = COLOR_ANSI;
+			out->value = i + color_offset;
+			return 0;
+		}
+	}
+	return -1;
+}
+
+static int parse_color(struct color *out, const char *name, int len)
+{
+	char *end;
 	long val;
 
 	/* First try the special word "normal"... */
@@ -88,12 +120,8 @@ static int parse_color(struct color *out, const char *name, int len)
 	}
 
 	/* Then pick from our human-readable color names... */
-	for (i = 0; i < ARRAY_SIZE(color_names); i++) {
-		if (match_word(name, len, color_names[i])) {
-			out->type = COLOR_ANSI;
-			out->value = i;
-			return 0;
-		}
+	if (parse_ansi_color(out, name, len) == 0) {
+		return 0;
 	}
 
 	/* And finally try a literal 256-color-mode number */
@@ -108,10 +136,15 @@ static int parse_color(struct color *out, const char *name, int len)
 		else if (val < 0) {
 			out->type = COLOR_NORMAL;
 			return 0;
-		/* Rewrite low numbers as more-portable standard colors. */
+		/* Rewrite 0-7 as more-portable standard colors. */
 		} else if (val < 8) {
 			out->type = COLOR_ANSI;
-			out->value = val;
+			out->value = val + COLOR_FOREGROUND_ANSI;
+			return 0;
+		/* Rewrite 8-15 as more-portable aixterm colors. */
+		} else if (val < 16) {
+			out->type = COLOR_ANSI;
+			out->value = val - 8 + COLOR_FOREGROUND_BRIGHT_ANSI;
 			return 0;
 		} else if (val < 256) {
 			out->type = COLOR_256;
@@ -160,33 +193,31 @@ int color_parse(const char *value, char *dst)
 	return color_parse_mem(value, strlen(value), dst);
 }
 
-void color_set(char *dst, const char *color_bytes)
-{
-	xsnprintf(dst, COLOR_MAXLEN, "%s", color_bytes);
-}
-
 /*
  * Write the ANSI color codes for "c" to "out"; the string should
  * already have the ANSI escape code in it. "out" should have enough
  * space in it to fit any color.
  */
-static char *color_output(char *out, int len, const struct color *c, char type)
+static char *color_output(char *out, int len, const struct color *c, int background)
 {
+	int offset = 0;
+
+	if (background)
+		offset = COLOR_BACKGROUND_OFFSET;
 	switch (c->type) {
 	case COLOR_UNSPECIFIED:
 	case COLOR_NORMAL:
 		break;
 	case COLOR_ANSI:
-		if (len < 2)
-			die("BUG: color parsing ran out of space");
-		*out++ = type;
-		*out++ = '0' + c->value;
+		out += xsnprintf(out, len, "%d", c->value + offset);
 		break;
 	case COLOR_256:
-		out += xsnprintf(out, len, "%c8;5;%d", type, c->value);
+		out += xsnprintf(out, len, "%d;5;%d", COLOR_FOREGROUND_256 + offset,
+				 c->value);
 		break;
 	case COLOR_RGB:
-		out += xsnprintf(out, len, "%c8;2;%d;%d;%d", type,
+		out += xsnprintf(out, len, "%d;2;%d;%d;%d",
+				 COLOR_FOREGROUND_RGB + offset,
 				 c->red, c->green, c->blue);
 		break;
 	}
@@ -207,7 +238,17 @@ int color_parse_mem(const char *value, int value_len, char *dst)
 	struct color fg = { COLOR_UNSPECIFIED };
 	struct color bg = { COLOR_UNSPECIFIED };
 
-	if (!strncasecmp(value, "reset", len)) {
+	while (len > 0 && isspace(*ptr)) {
+		ptr++;
+		len--;
+	}
+
+	if (!len) {
+		dst[0] = '\0';
+		return 0;
+	}
+
+	if (!strncasecmp(ptr, "reset", len)) {
 		xsnprintf(dst, end - dst, GIT_COLOR_RESET);
 		return 0;
 	}
@@ -250,7 +291,7 @@ int color_parse_mem(const char *value, int value_len, char *dst)
 #undef OUT
 #define OUT(x) do { \
 	if (dst == end) \
-		die("BUG: color parsing ran out of space"); \
+		BUG("color parsing ran out of space"); \
 	*dst++ = (x); \
 } while(0)
 
@@ -273,14 +314,12 @@ int color_parse_mem(const char *value, int value_len, char *dst)
 		if (!color_empty(&fg)) {
 			if (sep++)
 				OUT(';');
-			/* foreground colors are all in the 3x range */
-			dst = color_output(dst, end - dst, &fg, '3');
+			dst = color_output(dst, end - dst, &fg, 0);
 		}
 		if (!color_empty(&bg)) {
 			if (sep++)
 				OUT(';');
-			/* background colors are all in the 4x range */
-			dst = color_output(dst, end - dst, &bg, '4');
+			dst = color_output(dst, end - dst, &bg, 1);
 		}
 		OUT('m');
 	}
@@ -313,29 +352,40 @@ int git_config_colorbool(const char *var, const char *value)
 	return GIT_COLOR_AUTO;
 }
 
-static int check_auto_color(void)
+static int check_auto_color(int fd)
 {
-	if (color_stdout_is_tty < 0)
-		color_stdout_is_tty = isatty(1);
-	if (color_stdout_is_tty || (pager_in_use() && pager_use_color)) {
-		char *term = getenv("TERM");
-		if (term && strcmp(term, "dumb"))
+	static int color_stderr_is_tty = -1;
+	int *is_tty_p = fd == 1 ? &color_stdout_is_tty : &color_stderr_is_tty;
+	if (*is_tty_p < 0)
+		*is_tty_p = isatty(fd);
+	if (*is_tty_p || (fd == 1 && pager_in_use() && pager_use_color)) {
+		if (!is_terminal_dumb())
 			return 1;
 	}
 	return 0;
 }
 
-int want_color(int var)
+int want_color_fd(int fd, int var)
 {
-	static int want_auto = -1;
+	/*
+	 * NEEDSWORK: This function is sometimes used from multiple threads, and
+	 * we end up using want_auto racily. That "should not matter" since
+	 * we always write the same value, but it's still wrong. This function
+	 * is listed in .tsan-suppressions for the time being.
+	 */
+
+	static int want_auto[3] = { -1, -1, -1 };
+
+	if (fd < 1 || fd >= ARRAY_SIZE(want_auto))
+		BUG("file descriptor out of range: %d", fd);
 
 	if (var < 0)
 		var = git_use_color_default;
 
 	if (var == GIT_COLOR_AUTO) {
-		if (want_auto < 0)
-			want_auto = check_auto_color();
-		return want_auto;
+		if (want_auto[fd] < 0)
+			want_auto[fd] = check_auto_color(fd);
+		return want_auto[fd];
 	}
 	return var;
 }
@@ -381,8 +431,6 @@ static int color_vfprintf(FILE *fp, const char *color, const char *fmt,
 		r += fprintf(fp, "%s", trail);
 	return r;
 }
-
-
 
 int color_fprintf(FILE *fp, const char *color, const char *fmt, ...)
 {

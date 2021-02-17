@@ -171,4 +171,61 @@ test_expect_success 'mailinfo with mailinfo.scissors config' '
 '
 
 
+test_expect_success 'mailinfo no options' '
+	subj="$(echo "Subject: [PATCH] [other] [PATCH] message" |
+		git mailinfo /dev/null /dev/null)" &&
+	test z"$subj" = z"Subject: message"
+'
+
+test_expect_success 'mailinfo -k' '
+	subj="$(echo "Subject: [PATCH] [other] [PATCH] message" |
+		git mailinfo -k /dev/null /dev/null)" &&
+	test z"$subj" = z"Subject: [PATCH] [other] [PATCH] message"
+'
+
+test_expect_success 'mailinfo -b no [PATCH]' '
+	subj="$(echo "Subject: [other] message" |
+		git mailinfo -b /dev/null /dev/null)" &&
+	test z"$subj" = z"Subject: [other] message"
+'
+
+test_expect_success 'mailinfo -b leading [PATCH]' '
+	subj="$(echo "Subject: [PATCH] [other] message" |
+		git mailinfo -b /dev/null /dev/null)" &&
+	test z"$subj" = z"Subject: [other] message"
+'
+
+test_expect_success 'mailinfo -b double [PATCH]' '
+	subj="$(echo "Subject: [PATCH] [PATCH] message" |
+		git mailinfo -b /dev/null /dev/null)" &&
+	test z"$subj" = z"Subject: message"
+'
+
+test_expect_failure 'mailinfo -b trailing [PATCH]' '
+	subj="$(echo "Subject: [other] [PATCH] message" |
+		git mailinfo -b /dev/null /dev/null)" &&
+	test z"$subj" = z"Subject: [other] message"
+'
+
+test_expect_failure 'mailinfo -b separated double [PATCH]' '
+	subj="$(echo "Subject: [PATCH] [other] [PATCH] message" |
+		git mailinfo -b /dev/null /dev/null)" &&
+	test z"$subj" = z"Subject: [other] message"
+'
+
+test_expect_success 'mailinfo handles unusual header whitespace' '
+	git mailinfo /dev/null /dev/null >actual <<-\EOF &&
+	From:Real Name <user@example.com>
+	Subject:    extra spaces
+	EOF
+
+	cat >expect <<-\EOF &&
+	Author: Real Name
+	Email: user@example.com
+	Subject: extra spaces
+
+	EOF
+	test_cmp expect actual
+'
+
 test_done

@@ -43,7 +43,16 @@ show_tool_names () {
 
 	shown_any=
 	( cd "$MERGE_TOOLS_DIR" && ls ) | {
-		while read toolname
+		while read scriptname
+		do
+			setup_tool "$scriptname" 2>/dev/null
+			# We need an actual line feed here
+			variants="$variants
+$(list_tool_variants)"
+		done
+		variants="$(echo "$variants" | sort -u)"
+
+		for toolname in $variants
 		do
 			if setup_tool "$toolname" 2>/dev/null &&
 				(eval "$condition" "$toolname")
@@ -80,12 +89,16 @@ show_tool_names () {
 	}
 }
 
-diff_mode() {
+diff_mode () {
 	test "$TOOL_MODE" = diff
 }
 
-merge_mode() {
+merge_mode () {
 	test "$TOOL_MODE" = merge
+}
+
+gui_mode () {
+	test "$GIT_MERGETOOL_GUI" = true
 }
 
 translate_merge_tool_path () {
@@ -125,16 +138,11 @@ setup_user_tool () {
 	}
 
 	merge_cmd () {
-		trust_exit_code=$(git config --bool \
-			"mergetool.$1.trustExitCode" || echo false)
-		if test "$trust_exit_code" = "false"
-		then
-			touch "$BACKUP"
-			( eval $merge_tool_cmd )
-			check_unchanged
-		else
-			( eval $merge_tool_cmd )
-		fi
+		( eval $merge_tool_cmd )
+	}
+
+	list_tool_variants () {
+		echo "$tool"
 	}
 }
 
@@ -162,17 +170,50 @@ setup_tool () {
 		echo "$1"
 	}
 
-	if ! test -f "$MERGE_TOOLS_DIR/$tool"
+	list_tool_variants () {
+		echo "$tool"
+	}
+
+	# Most tools' exit codes cannot be trusted, so By default we ignore
+	# their exit code and check the merged file's modification time in
+	# check_unchanged() to determine whether or not the merge was
+	# successful.  The return value from run_merge_cmd, by default, is
+	# determined by check_unchanged().
+	#
+	# When a tool's exit code can be trusted then the return value from
+	# run_merge_cmd is simply the tool's exit code, and check_unchanged()
+	# is not called.
+	#
+	# The return value of exit_code_trustable() tells us whether or not we
+	# can trust the tool's exit code.
+	#
+	# User-defined and built-in tools default to false.
+	# Built-in tools advertise that their exit code is trustable by
+	# redefining exit_code_trustable() to true.
+
+	exit_code_trustable () {
+		false
+	}
+
+	if test -f "$MERGE_TOOLS_DIR/$tool"
 	then
+		. "$MERGE_TOOLS_DIR/$tool"
+	elif test -f "$MERGE_TOOLS_DIR/${tool%[0-9]}"
+	then
+		. "$MERGE_TOOLS_DIR/${tool%[0-9]}"
+	else
 		setup_user_tool
 		return $?
 	fi
 
-	# Load the redefined functions
-	. "$MERGE_TOOLS_DIR/$tool"
 	# Now let the user override the default command for the tool.  If
 	# they have not done so then this will return 1 which we ignore.
 	setup_user_tool
+
+	if ! list_tool_variants | grep -q "^$tool$"
+	then
+		return 1
+	fi
 
 	if merge_mode && ! can_merge
 	then
@@ -196,6 +237,19 @@ get_merge_tool_cmd () {
 		git config "mergetool.$merge_tool.cmd"
 	fi
 }
+
+trust_exit_code () {
+	if git config --bool "mergetool.$1.trustExitCode"
+	then
+		:; # OK
+	elif exit_code_trustable
+	then
+		echo true
+	else
+		echo false
+	fi
+}
+
 
 # Entry point for running tools
 run_merge_tool () {
@@ -225,7 +279,15 @@ run_diff_cmd () {
 
 # Run a either a configured or built-in merge tool
 run_merge_cmd () {
-	merge_cmd "$1"
+	mergetool_trust_exit_code=$(trust_exit_code "$1")
+	if test "$mergetool_trust_exit_code" = "true"
+	then
+		merge_cmd "$1"
+	else
+		touch "$BACKUP"
+		merge_cmd "$1"
+		check_unchanged
+	fi
 }
 
 list_merge_tool_candidates () {
@@ -245,13 +307,17 @@ list_merge_tool_candidates () {
 		fi
 		tools="$tools gvimdiff diffuse diffmerge ecmerge"
 		tools="$tools p4merge araxis bc codecompare"
+		tools="$tools smerge"
 	fi
 	case "${VISUAL:-$EDITOR}" in
+	*nvim*)
+		tools="$tools nvimdiff vimdiff emerge"
+		;;
 	*vim*)
-		tools="$tools vimdiff emerge"
+		tools="$tools vimdiff nvimdiff emerge"
 		;;
 	*)
-		tools="$tools emerge vimdiff"
+		tools="$tools emerge vimdiff nvimdiff"
 		;;
 	esac
 }
@@ -316,17 +382,39 @@ guess_merge_tool () {
 }
 
 get_configured_merge_tool () {
-	# Diff mode first tries diff.tool and falls back to merge.tool.
-	# Merge mode only checks merge.tool
+	keys=
 	if diff_mode
 	then
-		merge_tool=$(git config diff.tool || git config merge.tool)
+		if gui_mode
+		then
+			keys="diff.guitool merge.guitool diff.tool merge.tool"
+		else
+			keys="diff.tool merge.tool"
+		fi
 	else
-		merge_tool=$(git config merge.tool)
+		if gui_mode
+		then
+			keys="merge.guitool merge.tool"
+		else
+			keys="merge.tool"
+		fi
 	fi
+
+	merge_tool=$(
+		IFS=' '
+		for key in $keys
+		do
+			selected=$(git config $key)
+			if test -n "$selected"
+			then
+				echo "$selected"
+				return
+			fi
+		done)
+
 	if test -n "$merge_tool" && ! valid_tool "$merge_tool"
 	then
-		echo >&2 "git config option $TOOL_MODE.tool set to unknown tool: $merge_tool"
+		echo >&2 "git config option $TOOL_MODE.${gui_prefix}tool set to unknown tool: $merge_tool"
 		echo >&2 "Resetting to default..."
 		return 1
 	fi
@@ -363,14 +451,17 @@ get_merge_tool_path () {
 }
 
 get_merge_tool () {
+	is_guessed=false
 	# Check if a merge tool has been configured
 	merge_tool=$(get_configured_merge_tool)
 	# Try to guess an appropriate merge tool if no tool has been set.
 	if test -z "$merge_tool"
 	then
 		merge_tool=$(guess_merge_tool) || exit
+		is_guessed=true
 	fi
 	echo "$merge_tool"
+	test "$is_guessed" = false
 }
 
 mergetool_find_win32_cmd () {

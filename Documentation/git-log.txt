@@ -9,15 +9,18 @@ git-log - Show commit logs
 SYNOPSIS
 --------
 [verse]
-'git log' [<options>] [<revision range>] [[\--] <path>...]
+'git log' [<options>] [<revision range>] [[--] <path>...]
 
 DESCRIPTION
 -----------
 Shows the commit logs.
 
-The command takes options applicable to the `git rev-list`
+:git-log: 1
+include::rev-list-description.txt[]
+
+The command takes options applicable to the linkgit:git-rev-list[1]
 command to control what is shown and how, and options applicable to
-the `git diff-*` commands to control how the changes
+the linkgit:git-diff[1] command to control how the changes
 each commit introduces are shown.
 
 
@@ -38,11 +41,22 @@ OPTIONS
 	are shown as if 'short' were given, otherwise no ref names are
 	shown. The default option is 'short'.
 
+--decorate-refs=<pattern>::
+--decorate-refs-exclude=<pattern>::
+	If no `--decorate-refs` is given, pretend as if all refs were
+	included.  For each candidate, do not use it for decoration if it
+	matches any patterns given to `--decorate-refs-exclude` or if it
+	doesn't match any of the patterns given to `--decorate-refs`. The
+	`log.excludeDecoration` config option allows excluding refs from
+	the decorations, but an explicit `--decorate-refs` pattern will
+	override a match in `log.excludeDecoration`.
+
 --source::
 	Print out the ref name given on the command line by which each
 	commit was reached.
 
---use-mailmap::
+--[no-]mailmap::
+--[no-]use-mailmap::
 	Use mailmap file to map author and committer names and email
 	addresses to canonical real names and email addresses. See
 	linkgit:git-shortlog[1].
@@ -63,16 +77,7 @@ produced by `--stat`, etc.
 	Intended to speed up tools that read log messages from `git log`
 	output by allowing them to allocate space in advance.
 
--L <start>,<end>:<file>::
--L :<funcname>:<file>::
-	Trace the evolution of the line range given by "<start>,<end>"
-	(or the function name regex <funcname>) within the <file>.  You may
-	not give any pathspec limiters.  This is currently limited to
-	a walk starting from a single revision, i.e., you may only
-	give zero or one positive revision arguments.
-	You can specify this option more than once.
-+
-include::line-range-format.txt[]
+include::line-range-options.txt[]
 
 <revision range>::
 	Show only commits in the specified revision range.  When no
@@ -83,21 +88,64 @@ include::line-range-format.txt[]
 	ways to spell <revision range>, see the 'Specifying Ranges'
 	section of linkgit:gitrevisions[7].
 
-[\--] <path>...::
+[--] <path>...::
 	Show only commits that are enough to explain how the files
 	that match the specified paths came to be.  See 'History
 	Simplification' below for details and other simplification
 	modes.
 +
-Paths may need to be prefixed with ``\-- '' to separate them from
+Paths may need to be prefixed with `--` to separate them from
 options or the revision range, when confusion arises.
 
 include::rev-list-options.txt[]
 
 include::pretty-formats.txt[]
 
-COMMON DIFF OPTIONS
--------------------
+DIFF FORMATTING
+---------------
+
+By default, `git log` does not generate any diff output. The options
+below can be used to show the changes made by each commit.
+
+Note that unless one of `-c`, `--cc`, or `-m` is given, merge commits
+will never show a diff, even if a diff format like `--patch` is
+selected, nor will they match search options like `-S`. The exception is
+when `--first-parent` is in use, in which merges are treated like normal
+single-parent commits (this can be overridden by providing a
+combined-diff option or with `--no-diff-merges`).
+
+-c::
+	With this option, diff output for a merge commit
+	shows the differences from each of the parents to the merge result
+	simultaneously instead of showing pairwise diff between a parent
+	and the result one at a time. Furthermore, it lists only files
+	which were modified from all parents.
+
+--cc::
+	This flag implies the `-c` option and further compresses the
+	patch output by omitting uninteresting hunks whose contents in
+	the parents have only two variants and the merge result picks
+	one of them without modification.
+
+--combined-all-paths::
+	This flag causes combined diffs (used for merge commits) to
+	list the name of the file from all parents.  It thus only has
+	effect when -c or --cc are specified, and is likely only
+	useful if filename changes are detected (i.e. when either
+	rename or copy detection have been requested).
+
+-m::
+	This flag makes the merge commits show the full diff like
+	regular commits; for each merge parent, a separate log entry
+	and diff is generated. An exception is that only diff against
+	the first parent is shown when `--first-parent` option is given;
+	in that case, the output represents the changes the merge
+	brought _into_ the then-current branch.
+
+--diff-merges=off::
+--no-diff-merges::
+	Disable output of diffs for merge commits (default). Useful to
+	override `-m`, `-c`, or `--cc`.
 
 :git-log: 1
 include::diff-options.txt[]
@@ -118,7 +166,7 @@ EXAMPLES
 `git log --since="2 weeks ago" -- gitk`::
 
 	Show the changes during the last two weeks to the file 'gitk'.
-	The ``--'' is necessary to avoid confusion with the *branch* named
+	The `--` is necessary to avoid confusion with the *branch* named
 	'gitk'
 
 `git log --name-status release..test`::
@@ -185,6 +233,10 @@ log.date::
 	Default format for human-readable dates.  (Compare the
 	`--date` option.)  Defaults to "default", which means to write
 	dates like `Sat May 8 19:35:34 2010 -0500`.
++
+If the format is set to "auto:foo" and the pager is in use, format
+"foo" will be the used for the date format. Otherwise "default" will
+be used.
 
 log.follow::
 	If `true`, `git log` will act as if the `--follow` option was used when

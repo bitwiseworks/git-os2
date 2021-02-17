@@ -235,4 +235,77 @@ test_sequence "--bisect"
 
 #
 #
+
+test_expect_success 'set up fake --bisect refs' '
+	git update-ref refs/bisect/bad c3 &&
+	good=$(git rev-parse b1) &&
+	git update-ref refs/bisect/good-$good $good &&
+	good=$(git rev-parse c1) &&
+	git update-ref refs/bisect/good-$good $good
+'
+
+test_expect_success 'rev-list --bisect can default to good/bad refs' '
+	# the only thing between c3 and c1 is c2
+	git rev-parse c2 >expect &&
+	git rev-list --bisect >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'rev-parse --bisect can default to good/bad refs' '
+	git rev-parse c3 ^b1 ^c1 >expect &&
+	git rev-parse --bisect >actual &&
+
+	# output order depends on the refnames, which in turn depends on
+	# the exact sha1s. We just want to make sure we have the same set
+	# of lines in any order.
+	sort <expect >expect.sorted &&
+	sort <actual >actual.sorted &&
+	test_cmp expect.sorted actual.sorted
+'
+
+test_output_expect_success '--bisect --first-parent' 'git rev-list --bisect --first-parent E ^F' <<EOF
+e4
+EOF
+
+test_output_expect_success '--first-parent' 'git rev-list --first-parent E ^F' <<EOF
+E
+e1
+e2
+e3
+e4
+e5
+e6
+e7
+e8
+EOF
+
+test_output_expect_success '--bisect-vars --first-parent' 'git rev-list --bisect-vars --first-parent E ^F' <<EOF
+bisect_rev='e5'
+bisect_nr=4
+bisect_good=4
+bisect_bad=3
+bisect_all=9
+bisect_steps=2
+EOF
+
+test_expect_success '--bisect-all --first-parent' '
+	cat >expect.unsorted <<-EOF &&
+	$(git rev-parse E) (tag: E, dist=0)
+	$(git rev-parse e1) (tag: e1, dist=1)
+	$(git rev-parse e2) (tag: e2, dist=2)
+	$(git rev-parse e3) (tag: e3, dist=3)
+	$(git rev-parse e4) (tag: e4, dist=4)
+	$(git rev-parse e5) (tag: e5, dist=4)
+	$(git rev-parse e6) (tag: e6, dist=3)
+	$(git rev-parse e7) (tag: e7, dist=2)
+	$(git rev-parse e8) (tag: e8, dist=1)
+	EOF
+
+	# expect results to be ordered by distance (descending),
+	# commit hash (ascending)
+	sort -k4,4r -k1,1 expect.unsorted >expect &&
+	git rev-list --bisect-all --first-parent E ^F >actual &&
+	test_cmp expect actual
+'
+
 test_done

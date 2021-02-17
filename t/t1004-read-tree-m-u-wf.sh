@@ -20,7 +20,7 @@ test_expect_success 'two-way setup' '
 	git branch side &&
 	git tag -f branch-point &&
 
-	echo file2 is not tracked on the master anymore &&
+	echo file2 is not tracked on the master branch anymore &&
 	rm -f file2 subdir/file2 &&
 	git update-index --remove file2 subdir/file2 &&
 	git commit -a -m "master removes file2 and subdir/file2"
@@ -179,6 +179,8 @@ test_expect_success 'funny symlink in work tree' '
 
 test_expect_success SANITY 'funny symlink in work tree, un-unlink-able' '
 
+	test_when_finished "chmod u+w a 2>/dev/null; rm -fr a b" &&
+
 	rm -fr a b &&
 	git reset --hard &&
 
@@ -187,10 +189,6 @@ test_expect_success SANITY 'funny symlink in work tree, un-unlink-able' '
 	test_must_fail git read-tree -m -u sym-a sym-a sym-b
 
 '
-
-# clean-up from the above test
-chmod a+w a 2>/dev/null
-rm -fr a b
 
 test_expect_success 'D/F setup' '
 
@@ -212,13 +210,13 @@ test_expect_success 'D/F' '
 	read_tree_u_must_succeed -m -u branch-point side-b side-a &&
 	git ls-files -u >actual &&
 	(
-		a=$(git rev-parse branch-point:subdir/file2)
-		b=$(git rev-parse side-a:subdir/file2/another)
-		echo "100644 $a 1	subdir/file2"
-		echo "100644 $a 2	subdir/file2"
+		a=$(git rev-parse branch-point:subdir/file2) &&
+		b=$(git rev-parse side-a:subdir/file2/another) &&
+		echo "100644 $a 1	subdir/file2" &&
+		echo "100644 $a 2	subdir/file2" &&
 		echo "100644 $b 3	subdir/file2/another"
 	) >expect &&
-	test_cmp actual expect
+	test_cmp expect actual
 
 '
 

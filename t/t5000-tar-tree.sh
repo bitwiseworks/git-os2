@@ -94,19 +94,22 @@ check_tar() {
 	'
 }
 
-# run "$@" inside a non-git directory
-nongit () {
-	test -d non-repo ||
-	mkdir non-repo ||
-	return 1
+check_added() {
+	dir=$1
+	path_in_fs=$2
+	path_in_archive=$3
 
-	(
-		GIT_CEILING_DIRECTORIES=$(pwd) &&
-		export GIT_CEILING_DIRECTORIES &&
-		cd non-repo &&
-		"$@"
-	)
+	test_expect_success " validate extra file $path_in_archive" '
+		diff -r $path_in_fs $dir/$path_in_archive
+	'
 }
+
+test_expect_success 'setup' '
+	test_oid_cache <<-EOF
+	obj sha1:19f9c8273ec45a8938e6999cb59b3ff66739902a
+	obj sha256:3c666f798798601571f5cec0adb57ce4aba8546875e7693177e0535f34d2c49b
+	EOF
+'
 
 test_expect_success \
     'populate workdir' \
@@ -115,7 +118,7 @@ test_expect_success \
      ten=0123456789 && hundred=$ten$ten$ten$ten$ten$ten$ten$ten$ten$ten &&
      echo long filename >a/four$hundred &&
      mkdir a/bin &&
-     test-genrandom "frotz" 500000 >a/bin/sh &&
+     test-tool genrandom "frotz" 500000 >a/bin/sh &&
      printf "A\$Format:%s\$O" "$SUBSTFORMAT" >a/substfile1 &&
      printf "A not substituted O" >a/substfile2 &&
      if test_have_prereq SYMLINKS; then
@@ -171,6 +174,25 @@ test_expect_success 'git-archive --prefix=olde-' '
 
 check_tar with_olde-prefix olde-
 
+test_expect_success 'git archive --add-file' '
+	echo untracked >untracked &&
+	git archive --add-file=untracked HEAD >with_untracked.tar
+'
+
+check_tar with_untracked
+check_added with_untracked untracked untracked
+
+test_expect_success 'git archive --add-file twice' '
+	echo untracked >untracked &&
+	git archive --prefix=one/ --add-file=untracked \
+		--prefix=two/ --add-file=untracked \
+		--prefix= HEAD >with_untracked2.tar
+'
+
+check_tar with_untracked2
+check_added with_untracked2 untracked one/untracked
+check_added with_untracked2 untracked two/untracked
+
 test_expect_success 'git archive on large files' '
     test_config core.bigfilethreshold 1 &&
     git archive HEAD >b3.tar &&
@@ -206,7 +228,7 @@ test_expect_success \
     'validate file modification time' \
     'mkdir extract &&
      "$TAR" xf b.tar -C extract a/a &&
-     test-chmtime -v +0 extract/a/a |cut -f 1 >b.mtime &&
+     test-tool chmtime --get extract/a/a >b.mtime &&
      echo "1117231200" >expected.mtime &&
      test_cmp expected.mtime b.mtime'
 
@@ -218,6 +240,12 @@ test_expect_success \
 test_expect_success 'git archive with --output, override inferred format' '
 	git archive --format=tar --output=d4.zip HEAD &&
 	test_cmp_bin b.tar d4.zip
+'
+
+test_expect_success GZIP 'git archive with --output and --remote creates .tgz' '
+	git archive --output=d5.tgz --remote=. HEAD &&
+	gzip -d -c <d5.tgz >d5.tar &&
+	test_cmp_bin b.tar d5.tar
 '
 
 test_expect_success 'git archive --list outside of a git repo' '
@@ -377,11 +405,10 @@ test_lazy_prereq TAR_HUGE '
 '
 
 test_expect_success LONG_IS_64BIT 'set up repository with huge blob' '
-	obj_d=19 &&
-	obj_f=f9c8273ec45a8938e6999cb59b3ff66739902a &&
-	obj=${obj_d}${obj_f} &&
-	mkdir -p .git/objects/$obj_d &&
-	cp "$TEST_DIRECTORY"/t5000/$obj .git/objects/$obj_d/$obj_f &&
+	obj=$(test_oid obj) &&
+	path=$(test_oid_to_path $obj) &&
+	mkdir -p .git/objects/$(dirname $path) &&
+	cp "$TEST_DIRECTORY"/t5000/huge-object .git/objects/$path &&
 	rm -f .git/index &&
 	git update-index --add --cacheinfo 100644,$obj,huge &&
 	git commit -m huge
@@ -404,7 +431,7 @@ test_expect_success TAR_HUGE,LONG_IS_64BIT 'system tar can read our huge size' '
 	test_cmp expect actual
 '
 
-test_expect_success LONG_IS_64BIT 'set up repository with far-future commit' '
+test_expect_success TIME_IS_64BIT 'set up repository with far-future commit' '
 	rm -f .git/index &&
 	echo content >file &&
 	git add file &&
@@ -412,11 +439,11 @@ test_expect_success LONG_IS_64BIT 'set up repository with far-future commit' '
 		git commit -m "tempori parendum"
 '
 
-test_expect_success LONG_IS_64BIT 'generate tar with future mtime' '
+test_expect_success TIME_IS_64BIT 'generate tar with future mtime' '
 	git archive HEAD >future.tar
 '
 
-test_expect_success TAR_HUGE,LONG_IS_64BIT 'system tar can read our future mtime' '
+test_expect_success TAR_HUGE,TIME_IS_64BIT,TIME_T_IS_64BIT 'system tar can read our future mtime' '
 	echo 4147 >expect &&
 	tar_info future.tar | cut -d" " -f2 >actual &&
 	test_cmp expect actual

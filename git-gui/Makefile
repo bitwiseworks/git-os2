@@ -9,7 +9,9 @@ all::
 
 GIT-VERSION-FILE: FORCE
 	@$(SHELL_PATH) ./GIT-VERSION-GEN
+ifneq ($(MAKECMDGOALS),clean)
 -include GIT-VERSION-FILE
+endif
 
 uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
 uname_O := $(shell sh -c 'uname -o 2>/dev/null || echo not')
@@ -161,7 +163,9 @@ ifeq ($(uname_S),Darwin)
 	endif
 endif
 ifneq (,$(findstring MINGW,$(uname_S)))
+ifeq ($(shell expr "$(uname_R)" : '1\.'),2)
 	NO_MSGFMT=1
+endif
 	GITGUI_WINDOWS_WRAPPER := YesPlease
 	GITGUI_RELATIVE := 1
 endif
@@ -252,7 +256,7 @@ $(ALL_MSGFILES): %.msg : %.po
 lib/tclIndex: $(ALL_LIBFILES) GIT-GUI-VARS
 	$(QUIET_INDEX)if echo \
 	  $(foreach p,$(PRELOAD_FILES),source $p\;) \
-	  auto_mkindex lib '*.tcl' \
+	  auto_mkindex lib $(patsubst lib/%,%,$(sort $(ALL_LIBFILES))) \
 	| $(TCL_PATH) $(QUIET_2DEVNULL); then : ok; \
 	else \
 	 echo >&2 "    * $(TCL_PATH) failed; using unoptimized loading"; \

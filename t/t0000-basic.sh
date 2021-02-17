@@ -20,6 +20,30 @@ modification *should* take notice and update the test vectors here.
 
 . ./test-lib.sh
 
+try_local_xy () {
+	local x="local" y="alsolocal" &&
+	echo "$x $y"
+}
+
+# Check whether the shell supports the "local" keyword. "local" is not
+# POSIX-standard, but it is very widely supported by POSIX-compliant
+# shells, and we rely on it within Git's test framework.
+#
+# If your shell fails this test, the results of other tests may be
+# unreliable. You may wish to report the problem to the Git mailing
+# list <git@vger.kernel.org>, as it could cause us to reconsider
+# relying on "local".
+test_expect_success 'verify that the running shell supports "local"' '
+	x="notlocal" &&
+	y="alsonotlocal" &&
+	echo "local alsolocal" >expected1 &&
+	try_local_xy >actual1 &&
+	test_cmp expected1 actual1 &&
+	echo "notlocal alsonotlocal" >expected2 &&
+	echo "$x $y" >actual2 &&
+	test_cmp expected2 actual2
+'
+
 ################################################################
 # git init has been done in an empty repository.
 # make sure it is empty.
@@ -53,28 +77,30 @@ _run_sub_test_lib_test_common () {
 		# the sub-test.
 		sane_unset HARNESS_ACTIVE &&
 		cd "$name" &&
-		cat >"$name.sh" <<-EOF &&
-		#!$SHELL_PATH
-
+		write_script "$name.sh" "$TEST_SHELL_PATH" <<-EOF &&
 		test_description='$descr (run in sub test-lib)
 
 		This is run in a sub test-lib so that we do not get incorrect
 		passing metrics
 		'
 
+		# Tell the framework that we are self-testing to make sure
+		# it yields a stable result.
+		GIT_TEST_FRAMEWORK_SELFTEST=t &&
+
 		# Point to the t/test-lib.sh, which isn't in ../ as usual
 		. "\$TEST_DIRECTORY"/test-lib.sh
 		EOF
 		cat >>"$name.sh" &&
-		chmod +x "$name.sh" &&
 		export TEST_DIRECTORY &&
 		TEST_OUTPUT_DIRECTORY=$(pwd) &&
 		export TEST_OUTPUT_DIRECTORY &&
+		sane_unset GIT_TEST_FAIL_PREREQS &&
 		if test -z "$neg"
 		then
 			./"$name.sh" "$@" >out 2>err
 		else
-			!  ./"$name.sh" "$@" >out 2>err
+			! ./"$name.sh" "$@" >out 2>err
 		fi
 	)
 }
@@ -91,7 +117,7 @@ check_sub_test_lib_test () {
 	name="$1" # stdin is the expected output from the test
 	(
 		cd "$name" &&
-		! test -s err &&
+		test_must_be_empty err &&
 		sed -e 's/^> //' -e 's/Z$//' >expect &&
 		test_cmp expect out
 	)
@@ -99,7 +125,7 @@ check_sub_test_lib_test () {
 
 check_sub_test_lib_test_err () {
 	name="$1" # stdin is the expected output from the test
-	# expected error output is in descriptior 3
+	# expected error output is in descriptor 3
 	(
 		cd "$name" &&
 		sed -e 's/^> //' -e 's/Z$//' >expect.out &&
@@ -127,7 +153,7 @@ test_expect_success 'pretend we have a fully passing test suite' "
 "
 
 test_expect_success 'pretend we have a partially passing test suite' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		partial-pass '2/3 tests passing' <<-\\EOF &&
 	test_expect_success 'passing test #1' 'true'
 	test_expect_success 'failing test #2' 'false'
@@ -191,7 +217,7 @@ test_expect_success 'pretend we have fixed one of two known breakages (run in su
 "
 
 test_expect_success 'pretend we have a pass, fail, and known breakage' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		mixed-results1 'mixed results #1' <<-\\EOF &&
 	test_expect_success 'passing test' 'true'
 	test_expect_success 'failing test' 'false'
@@ -210,7 +236,7 @@ test_expect_success 'pretend we have a pass, fail, and known breakage' "
 "
 
 test_expect_success 'pretend we have a mix of all possible results' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		mixed-results2 'mixed results #2' <<-\\EOF &&
 	test_expect_success 'passing test' 'true'
 	test_expect_success 'passing test' 'true'
@@ -245,25 +271,25 @@ test_expect_success 'pretend we have a mix of all possible results' "
 	EOF
 "
 
-test_expect_success 'test --verbose' '
-	test_must_fail run_sub_test_lib_test \
-		test-verbose "test verbose" --verbose <<-\EOF &&
+test_expect_success C_LOCALE_OUTPUT 'test --verbose' '
+	run_sub_test_lib_test_err \
+		t1234-verbose "test verbose" --verbose <<-\EOF &&
 	test_expect_success "passing test" true
 	test_expect_success "test with output" "echo foo"
 	test_expect_success "failing test" false
 	test_done
 	EOF
-	mv test-verbose/out test-verbose/out+ &&
-	grep -v "^Initialized empty" test-verbose/out+ >test-verbose/out &&
-	check_sub_test_lib_test test-verbose <<-\EOF
-	> expecting success: true
+	mv t1234-verbose/out t1234-verbose/out+ &&
+	grep -v "^Initialized empty" t1234-verbose/out+ >t1234-verbose/out &&
+	check_sub_test_lib_test t1234-verbose <<-\EOF
+	> expecting success of 1234.1 '\''passing test'\'': true
 	> ok 1 - passing test
 	> Z
-	> expecting success: echo foo
+	> expecting success of 1234.2 '\''test with output'\'': echo foo
 	> foo
 	> ok 2 - test with output
 	> Z
-	> expecting success: false
+	> expecting success of 1234.3 '\''failing test'\'': false
 	> not ok 3 - failing test
 	> #	false
 	> Z
@@ -273,18 +299,18 @@ test_expect_success 'test --verbose' '
 '
 
 test_expect_success 'test --verbose-only' '
-	test_must_fail run_sub_test_lib_test \
-		test-verbose-only-2 "test verbose-only=2" \
+	run_sub_test_lib_test_err \
+		t2345-verbose-only-2 "test verbose-only=2" \
 		--verbose-only=2 <<-\EOF &&
 	test_expect_success "passing test" true
 	test_expect_success "test with output" "echo foo"
 	test_expect_success "failing test" false
 	test_done
 	EOF
-	check_sub_test_lib_test test-verbose-only-2 <<-\EOF
+	check_sub_test_lib_test t2345-verbose-only-2 <<-\EOF
 	> ok 1 - passing test
 	> Z
-	> expecting success: echo foo
+	> expecting success of 2345.2 '\''test with output'\'': echo foo
 	> foo
 	> ok 2 - test with output
 	> Z
@@ -364,9 +390,47 @@ test_expect_success 'GIT_SKIP_TESTS sh pattern' "
 	)
 "
 
+test_expect_success 'GIT_SKIP_TESTS entire suite' "
+	(
+		GIT_SKIP_TESTS='git' && export GIT_SKIP_TESTS &&
+		run_sub_test_lib_test git-skip-tests-entire-suite \
+			'GIT_SKIP_TESTS entire suite' <<-\\EOF &&
+		for i in 1 2 3
+		do
+			test_expect_success \"passing test #\$i\" 'true'
+		done
+		test_done
+		EOF
+		check_sub_test_lib_test git-skip-tests-entire-suite <<-\\EOF
+		> 1..0 # SKIP skip all tests in git
+		EOF
+	)
+"
+
+test_expect_success 'GIT_SKIP_TESTS does not skip unmatched suite' "
+	(
+		GIT_SKIP_TESTS='notgit' && export GIT_SKIP_TESTS &&
+		run_sub_test_lib_test git-skip-tests-unmatched-suite \
+			'GIT_SKIP_TESTS does not skip unmatched suite' <<-\\EOF &&
+		for i in 1 2 3
+		do
+			test_expect_success \"passing test #\$i\" 'true'
+		done
+		test_done
+		EOF
+		check_sub_test_lib_test git-skip-tests-unmatched-suite <<-\\EOF
+		> ok 1 - passing test #1
+		> ok 2 - passing test #2
+		> ok 3 - passing test #3
+		> # passed all 3 test(s)
+		> 1..3
+		EOF
+	)
+"
+
 test_expect_success '--run basic' "
 	run_sub_test_lib_test run-basic \
-		'--run basic' --run='1 3 5' <<-\\EOF &&
+		'--run basic' --run='1,3,5' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -408,7 +472,7 @@ test_expect_success '--run with a range' "
 
 test_expect_success '--run with two ranges' "
 	run_sub_test_lib_test run-two-ranges \
-		'--run with two ranges' --run='1-2 5-6' <<-\\EOF &&
+		'--run with two ranges' --run='1-2,5-6' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -492,7 +556,7 @@ test_expect_success '--run with basic negation' "
 
 test_expect_success '--run with two negations' "
 	run_sub_test_lib_test run-two-neg \
-		'--run with two negations' --run='"'!3 !6'"' <<-\\EOF &&
+		'--run with two negations' --run='"'!3,!6'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -513,7 +577,7 @@ test_expect_success '--run with two negations' "
 
 test_expect_success '--run a range and negation' "
 	run_sub_test_lib_test run-range-and-neg \
-		'--run a range and negation' --run='"'-4 !2'"' <<-\\EOF &&
+		'--run a range and negation' --run='"'-4,!2'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -556,7 +620,7 @@ test_expect_success '--run range negation' "
 test_expect_success '--run include, exclude and include' "
 	run_sub_test_lib_test run-inc-neg-inc \
 		'--run include, exclude and include' \
-		--run='"'1-5 !1-3 2'"' <<-\\EOF &&
+		--run='"'1-5,!1-3,2'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -600,7 +664,7 @@ test_expect_success '--run include, exclude and include, comma separated' "
 test_expect_success '--run exclude and include' "
 	run_sub_test_lib_test run-neg-inc \
 		'--run exclude and include' \
-		--run='"'!3- 5'"' <<-\\EOF &&
+		--run='"'!3-,5'"' <<-\\EOF &&
 	for i in 1 2 3 4 5 6
 	do
 		test_expect_success \"passing test #\$i\" 'true'
@@ -641,7 +705,31 @@ test_expect_success '--run empty selectors' "
 	EOF
 "
 
-test_expect_success '--run invalid range start' "
+test_expect_success '--run substring selector' "
+	run_sub_test_lib_test run-substring-selector \
+		'--run empty selectors' \
+		--run='relevant' <<-\\EOF &&
+	test_expect_success \"relevant test\" 'true'
+	for i in 1 2 3 4 5 6
+	do
+		test_expect_success \"other test #\$i\" 'true'
+	done
+	test_done
+	EOF
+	check_sub_test_lib_test run-substring-selector <<-\\EOF
+	> ok 1 - relevant test
+	> ok 2 # skip other test #1 (--run)
+	> ok 3 # skip other test #2 (--run)
+	> ok 4 # skip other test #3 (--run)
+	> ok 5 # skip other test #4 (--run)
+	> ok 6 # skip other test #5 (--run)
+	> ok 7 # skip other test #6 (--run)
+	> # passed all 7 test(s)
+	> 1..7
+	EOF
+"
+
+test_expect_success '--run keyword selection' "
 	run_sub_test_lib_test_err run-inv-range-start \
 		'--run invalid range start' \
 		--run='a-5' <<-\\EOF &&
@@ -671,21 +759,6 @@ test_expect_success '--run invalid range end' "
 	EOF_ERR
 "
 
-test_expect_success '--run invalid selector' "
-	run_sub_test_lib_test_err run-inv-selector \
-		'--run invalid selector' \
-		--run='1?' <<-\\EOF &&
-	test_expect_success \"passing test #1\" 'true'
-	test_done
-	EOF
-	check_sub_test_lib_test_err run-inv-selector \
-		<<-\\EOF_OUT 3<<-\\EOF_ERR
-	> FATAL: Unexpected exit with code 1
-	EOF_OUT
-	> error: --run: invalid non-numeric in test selector: '1?'
-	EOF_ERR
-"
-
 
 test_set_prereq HAVEIT
 haveit=no
@@ -697,7 +770,7 @@ donthaveit=yes
 test_expect_success DONTHAVEIT 'unmet prerequisite causes test to be skipped' '
 	donthaveit=no
 '
-if test $haveit$donthaveit != yesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a $haveit$donthaveit != yesyes
 then
 	say "bug in test framework: prerequisite tags do not work reliably"
 	exit 1
@@ -718,7 +791,7 @@ donthaveiteither=yes
 test_expect_success DONTHAVEIT,HAVEIT 'unmet prerequisites causes test to be skipped' '
 	donthaveiteither=no
 '
-if test $haveit$donthaveit$donthaveiteither != yesyesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a $haveit$donthaveit$donthaveiteither != yesyesyes
 then
 	say "bug in test framework: multiple prerequisite tags do not work reliably"
 	exit 1
@@ -734,7 +807,7 @@ test_expect_success !LAZY_TRUE 'missing lazy prereqs skip tests' '
 	donthavetrue=no
 '
 
-if test "$havetrue$donthavetrue" != yesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a "$havetrue$donthavetrue" != yesyes
 then
 	say 'bug in test framework: lazy prerequisites do not work'
 	exit 1
@@ -750,7 +823,7 @@ test_expect_success LAZY_FALSE 'missing negative lazy prereqs will skip' '
 	havefalse=no
 '
 
-if test "$nothavefalse$havefalse" != yesyes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a "$nothavefalse$havefalse" != yesyes
 then
 	say 'bug in test framework: negative lazy prerequisites do not work'
 	exit 1
@@ -761,14 +834,48 @@ test_expect_success 'tests clean up after themselves' '
 	test_when_finished clean=yes
 '
 
-if test $clean != yes
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" -a $clean != yes
 then
 	say "bug in test framework: basic cleanup command does not work reliably"
 	exit 1
 fi
 
+test_lazy_prereq NESTED_INNER '
+	>inner &&
+	rm -f outer
+'
+test_lazy_prereq NESTED_PREREQ '
+	>outer &&
+	test_have_prereq NESTED_INNER &&
+	echo "can create new file in cwd" >file &&
+	test -f outer &&
+	test ! -f inner
+'
+test_expect_success NESTED_PREREQ 'evaluating nested lazy prereqs dont interfere with each other' '
+	nestedworks=yes
+'
+
+if test -z "$GIT_TEST_FAIL_PREREQS_INTERNAL" && test "$nestedworks" != yes
+then
+	say 'bug in test framework: nested lazy prerequisites do not work'
+	exit 1
+fi
+
+test_expect_success 'lazy prereqs do not turn off tracing' "
+	run_sub_test_lib_test lazy-prereq-and-tracing \
+		'lazy prereqs and -x' -v -x <<-\\EOF &&
+	test_lazy_prereq LAZY true
+
+	test_expect_success lazy 'test_have_prereq LAZY && echo trace'
+
+	test_done
+	EOF
+
+	grep 'echo trace' lazy-prereq-and-tracing/err
+"
+
 test_expect_success 'tests clean up even on failures' "
-	test_must_fail run_sub_test_lib_test \
+	run_sub_test_lib_test_err \
 		failing-cleanup 'Failing tests with cleanup commands' <<-\\EOF &&
 	test_expect_success 'tests clean up even after a failure' '
 		touch clean-after-failure &&
@@ -796,8 +903,145 @@ test_expect_success 'tests clean up even on failures' "
 	EOF
 "
 
+test_expect_success 'test_atexit is run' "
+	run_sub_test_lib_test_err \
+		atexit-cleanup 'Run atexit commands' -i <<-\\EOF &&
+	test_expect_success 'tests clean up even after a failure' '
+		> ../../clean-atexit &&
+		test_atexit rm ../../clean-atexit &&
+		> ../../also-clean-atexit &&
+		test_atexit rm ../../also-clean-atexit &&
+		> ../../dont-clean-atexit &&
+		(exit 1)
+	'
+	test_done
+	EOF
+	test_path_is_file dont-clean-atexit &&
+	test_path_is_missing clean-atexit &&
+	test_path_is_missing also-clean-atexit
+"
+
+test_expect_success 'test_oid provides sane info by default' '
+	test_oid zero >actual &&
+	grep "^00*\$" actual &&
+	rawsz="$(test_oid rawsz)" &&
+	hexsz="$(test_oid hexsz)" &&
+	test "$hexsz" -eq $(wc -c <actual) &&
+	test $(( $rawsz * 2)) -eq "$hexsz"
+'
+
+test_expect_success 'test_oid can look up data for SHA-1' '
+	test_when_finished "test_detect_hash" &&
+	test_set_hash sha1 &&
+	test_oid zero >actual &&
+	grep "^00*\$" actual &&
+	rawsz="$(test_oid rawsz)" &&
+	hexsz="$(test_oid hexsz)" &&
+	test $(wc -c <actual) -eq 40 &&
+	test "$rawsz" -eq 20 &&
+	test "$hexsz" -eq 40
+'
+
+test_expect_success 'test_oid can look up data for SHA-256' '
+	test_when_finished "test_detect_hash" &&
+	test_set_hash sha256 &&
+	test_oid zero >actual &&
+	grep "^00*\$" actual &&
+	rawsz="$(test_oid rawsz)" &&
+	hexsz="$(test_oid hexsz)" &&
+	test $(wc -c <actual) -eq 64 &&
+	test "$rawsz" -eq 32 &&
+	test "$hexsz" -eq 64
+'
+
+test_expect_success 'test_oid can look up data for a specified algorithm' '
+	rawsz="$(test_oid --hash=sha1 rawsz)" &&
+	hexsz="$(test_oid --hash=sha1 hexsz)" &&
+	test "$rawsz" -eq 20 &&
+	test "$hexsz" -eq 40 &&
+	rawsz="$(test_oid --hash=sha256 rawsz)" &&
+	hexsz="$(test_oid --hash=sha256 hexsz)" &&
+	test "$rawsz" -eq 32 &&
+	test "$hexsz" -eq 64
+'
+
+test_expect_success 'test_bool_env' '
+	(
+		sane_unset envvar &&
+
+		test_bool_env envvar true &&
+		! test_bool_env envvar false &&
+
+		envvar= &&
+		export envvar &&
+		! test_bool_env envvar true &&
+		! test_bool_env envvar false &&
+
+		envvar=true &&
+		test_bool_env envvar true &&
+		test_bool_env envvar false &&
+
+		envvar=false &&
+		! test_bool_env envvar true &&
+		! test_bool_env envvar false &&
+
+		envvar=invalid &&
+		# When encountering an invalid bool value, test_bool_env
+		# prints its error message to the original stderr of the
+		# test script, hence the redirection of fd 7, and aborts
+		# with "exit 1", hence the subshell.
+		! ( test_bool_env envvar true ) 7>err &&
+		grep "error: test_bool_env requires bool values" err &&
+
+		envvar=true &&
+		! ( test_bool_env envvar invalid ) 7>err &&
+		grep "error: test_bool_env requires bool values" err
+	)
+'
+
 ################################################################
 # Basics of the basics
+
+test_oid_cache <<\EOF
+path0f sha1:f87290f8eb2cbbea7857214459a0739927eab154
+path0f sha256:638106af7c38be056f3212cbd7ac65bc1bac74f420ca5a436ff006a9d025d17d
+
+path0s sha1:15a98433ae33114b085f3eb3bb03b832b3180a01
+path0s sha256:3a24cc53cf68edddac490bbf94a418a52932130541361f685df685e41dd6c363
+
+path2f sha1:3feff949ed00a62d9f7af97c15cd8a30595e7ac7
+path2f sha256:2a7f36571c6fdbaf0e3f62751a0b25a3f4c54d2d1137b3f4af9cb794bb498e5f
+
+path2s sha1:d8ce161addc5173867a3c3c730924388daedbc38
+path2s sha256:18fd611b787c2e938ddcc248fabe4d66a150f9364763e9ec133dd01d5bb7c65a
+
+path2d sha1:58a09c23e2ca152193f2786e06986b7b6712bdbe
+path2d sha256:00e4b32b96e7e3d65d79112dcbea53238a22715f896933a62b811377e2650c17
+
+path3f sha1:0aa34cae68d0878578ad119c86ca2b5ed5b28376
+path3f sha256:09f58616b951bd571b8cb9dc76d372fbb09ab99db2393f5ab3189d26c45099ad
+
+path3s sha1:8599103969b43aff7e430efea79ca4636466794f
+path3s sha256:fce1aed087c053306f3f74c32c1a838c662bbc4551a7ac2420f5d6eb061374d0
+
+path3d sha1:21ae8269cacbe57ae09138dcc3a2887f904d02b3
+path3d sha256:9b60497be959cb830bf3f0dc82bcc9ad9e925a24e480837ade46b2295e47efe1
+
+subp3f sha1:00fb5908cb97c2564a9783c0c64087333b3b464f
+subp3f sha256:a1a9e16998c988453f18313d10375ee1d0ddefe757e710dcae0d66aa1e0c58b3
+
+subp3s sha1:6649a1ebe9e9f1c553b66f5a6e74136a07ccc57c
+subp3s sha256:81759d9f5e93c6546ecfcadb560c1ff057314b09f93fe8ec06e2d8610d34ef10
+
+subp3d sha1:3c5e5399f3a333eddecce7a9b9465b63f65f51e2
+subp3d sha256:76b4ef482d4fa1c754390344cf3851c7f883b27cf9bc999c6547928c46aeafb7
+
+root sha1:087704a96baf1c2d1c869a8b084481e121c88b5b
+root sha256:9481b52abab1b2ffeedbf9de63ce422b929f179c1b98ff7bee5f8f1bc0710751
+
+simpletree sha1:7bb943559a305bdd6bdee2cef6e5df2413c3d30a
+simpletree sha256:1710c07a6c86f9a3c7376364df04c47ee39e5a5e221fcdd84b743bc9bb7e2bc5
+EOF
 
 # updating a new file without --add should fail.
 test_expect_success 'git update-index without --add should fail adding' '
@@ -815,7 +1059,7 @@ test_expect_success 'writing tree out with git write-tree' '
 
 # we know the shape and contents of the tree and know the object ID for it.
 test_expect_success 'validate object ID of a known tree' '
-	test "$tree" = 7bb943559a305bdd6bdee2cef6e5df2413c3d30a
+	test "$tree" = "$(test_oid simpletree)"
     '
 
 # Removing paths.
@@ -858,15 +1102,15 @@ test_expect_success 'showing stage with git ls-files --stage' '
 '
 
 test_expect_success 'validate git ls-files output for a known tree' '
-	cat >expected <<-\EOF &&
-	100644 f87290f8eb2cbbea7857214459a0739927eab154 0	path0
-	120000 15a98433ae33114b085f3eb3bb03b832b3180a01 0	path0sym
-	100644 3feff949ed00a62d9f7af97c15cd8a30595e7ac7 0	path2/file2
-	120000 d8ce161addc5173867a3c3c730924388daedbc38 0	path2/file2sym
-	100644 0aa34cae68d0878578ad119c86ca2b5ed5b28376 0	path3/file3
-	120000 8599103969b43aff7e430efea79ca4636466794f 0	path3/file3sym
-	100644 00fb5908cb97c2564a9783c0c64087333b3b464f 0	path3/subp3/file3
-	120000 6649a1ebe9e9f1c553b66f5a6e74136a07ccc57c 0	path3/subp3/file3sym
+	cat >expected <<-EOF &&
+	100644 $(test_oid path0f) 0	path0
+	120000 $(test_oid path0s) 0	path0sym
+	100644 $(test_oid path2f) 0	path2/file2
+	120000 $(test_oid path2s) 0	path2/file2sym
+	100644 $(test_oid path3f) 0	path3/file3
+	120000 $(test_oid path3s) 0	path3/file3sym
+	100644 $(test_oid subp3f) 0	path3/subp3/file3
+	120000 $(test_oid subp3s) 0	path3/subp3/file3sym
 	EOF
 	test_cmp expected current
 '
@@ -876,7 +1120,7 @@ test_expect_success 'writing tree out with git write-tree' '
 '
 
 test_expect_success 'validate object ID for a known tree' '
-	test "$tree" = 087704a96baf1c2d1c869a8b084481e121c88b5b
+	test "$tree" = "$(test_oid root)"
 '
 
 test_expect_success 'showing tree with git ls-tree' '
@@ -884,11 +1128,11 @@ test_expect_success 'showing tree with git ls-tree' '
 '
 
 test_expect_success 'git ls-tree output for a known tree' '
-	cat >expected <<-\EOF &&
-	100644 blob f87290f8eb2cbbea7857214459a0739927eab154	path0
-	120000 blob 15a98433ae33114b085f3eb3bb03b832b3180a01	path0sym
-	040000 tree 58a09c23e2ca152193f2786e06986b7b6712bdbe	path2
-	040000 tree 21ae8269cacbe57ae09138dcc3a2887f904d02b3	path3
+	cat >expected <<-EOF &&
+	100644 blob $(test_oid path0f)	path0
+	120000 blob $(test_oid path0s)	path0sym
+	040000 tree $(test_oid path2d)	path2
+	040000 tree $(test_oid path3d)	path3
 	EOF
 	test_cmp expected current
 '
@@ -900,15 +1144,15 @@ test_expect_success 'showing tree with git ls-tree -r' '
 '
 
 test_expect_success 'git ls-tree -r output for a known tree' '
-	cat >expected <<-\EOF &&
-	100644 blob f87290f8eb2cbbea7857214459a0739927eab154	path0
-	120000 blob 15a98433ae33114b085f3eb3bb03b832b3180a01	path0sym
-	100644 blob 3feff949ed00a62d9f7af97c15cd8a30595e7ac7	path2/file2
-	120000 blob d8ce161addc5173867a3c3c730924388daedbc38	path2/file2sym
-	100644 blob 0aa34cae68d0878578ad119c86ca2b5ed5b28376	path3/file3
-	120000 blob 8599103969b43aff7e430efea79ca4636466794f	path3/file3sym
-	100644 blob 00fb5908cb97c2564a9783c0c64087333b3b464f	path3/subp3/file3
-	120000 blob 6649a1ebe9e9f1c553b66f5a6e74136a07ccc57c	path3/subp3/file3sym
+	cat >expected <<-EOF &&
+	100644 blob $(test_oid path0f)	path0
+	120000 blob $(test_oid path0s)	path0sym
+	100644 blob $(test_oid path2f)	path2/file2
+	120000 blob $(test_oid path2s)	path2/file2sym
+	100644 blob $(test_oid path3f)	path3/file3
+	120000 blob $(test_oid path3s)	path3/file3sym
+	100644 blob $(test_oid subp3f)	path3/subp3/file3
+	120000 blob $(test_oid subp3s)	path3/subp3/file3sym
 	EOF
 	test_cmp expected current
 '
@@ -919,18 +1163,18 @@ test_expect_success 'showing tree with git ls-tree -r -t' '
 '
 
 test_expect_success 'git ls-tree -r output for a known tree' '
-	cat >expected <<-\EOF &&
-	100644 blob f87290f8eb2cbbea7857214459a0739927eab154	path0
-	120000 blob 15a98433ae33114b085f3eb3bb03b832b3180a01	path0sym
-	040000 tree 58a09c23e2ca152193f2786e06986b7b6712bdbe	path2
-	100644 blob 3feff949ed00a62d9f7af97c15cd8a30595e7ac7	path2/file2
-	120000 blob d8ce161addc5173867a3c3c730924388daedbc38	path2/file2sym
-	040000 tree 21ae8269cacbe57ae09138dcc3a2887f904d02b3	path3
-	100644 blob 0aa34cae68d0878578ad119c86ca2b5ed5b28376	path3/file3
-	120000 blob 8599103969b43aff7e430efea79ca4636466794f	path3/file3sym
-	040000 tree 3c5e5399f3a333eddecce7a9b9465b63f65f51e2	path3/subp3
-	100644 blob 00fb5908cb97c2564a9783c0c64087333b3b464f	path3/subp3/file3
-	120000 blob 6649a1ebe9e9f1c553b66f5a6e74136a07ccc57c	path3/subp3/file3sym
+	cat >expected <<-EOF &&
+	100644 blob $(test_oid path0f)	path0
+	120000 blob $(test_oid path0s)	path0sym
+	040000 tree $(test_oid path2d)	path2
+	100644 blob $(test_oid path2f)	path2/file2
+	120000 blob $(test_oid path2s)	path2/file2sym
+	040000 tree $(test_oid path3d)	path3
+	100644 blob $(test_oid path3f)	path3/file3
+	120000 blob $(test_oid path3s)	path3/file3sym
+	040000 tree $(test_oid subp3d)	path3/subp3
+	100644 blob $(test_oid subp3f)	path3/subp3/file3
+	120000 blob $(test_oid subp3s)	path3/subp3/file3sym
 	EOF
 	test_cmp expected current
 '
@@ -940,7 +1184,7 @@ test_expect_success 'writing partial tree out with git write-tree --prefix' '
 '
 
 test_expect_success 'validate object ID for a known tree' '
-	test "$ptree" = 21ae8269cacbe57ae09138dcc3a2887f904d02b3
+	test "$ptree" = $(test_oid path3d)
 '
 
 test_expect_success 'writing partial tree out with git write-tree --prefix' '
@@ -948,17 +1192,18 @@ test_expect_success 'writing partial tree out with git write-tree --prefix' '
 '
 
 test_expect_success 'validate object ID for a known tree' '
-	test "$ptree" = 3c5e5399f3a333eddecce7a9b9465b63f65f51e2
+	test "$ptree" = $(test_oid subp3d)
 '
 
 test_expect_success 'put invalid objects into the index' '
 	rm -f .git/index &&
-	cat >badobjects <<-\EOF &&
-	100644 blob 1000000000000000000000000000000000000000	dir/file1
-	100644 blob 2000000000000000000000000000000000000000	dir/file2
-	100644 blob 3000000000000000000000000000000000000000	dir/file3
-	100644 blob 4000000000000000000000000000000000000000	dir/file4
-	100644 blob 5000000000000000000000000000000000000000	dir/file5
+	suffix=$(echo $ZERO_OID | sed -e "s/^.//") &&
+	cat >badobjects <<-EOF &&
+	100644 blob $(test_oid 001)	dir/file1
+	100644 blob $(test_oid 002)	dir/file2
+	100644 blob $(test_oid 003)	dir/file3
+	100644 blob $(test_oid 004)	dir/file4
+	100644 blob $(test_oid 005)	dir/file5
 	EOF
 	git update-index --index-info <badobjects
 '
@@ -976,24 +1221,24 @@ test_expect_success 'writing this tree with --missing-ok' '
 test_expect_success 'git read-tree followed by write-tree should be idempotent' '
 	rm -f .git/index &&
 	git read-tree $tree &&
-	test -f .git/index &&
+	test_path_is_file .git/index &&
 	newtree=$(git write-tree) &&
 	test "$newtree" = "$tree"
 '
 
 test_expect_success 'validate git diff-files output for a know cache/work tree state' '
-	cat >expected <<\EOF &&
-:100644 100644 f87290f8eb2cbbea7857214459a0739927eab154 0000000000000000000000000000000000000000 M	path0
-:120000 120000 15a98433ae33114b085f3eb3bb03b832b3180a01 0000000000000000000000000000000000000000 M	path0sym
-:100644 100644 3feff949ed00a62d9f7af97c15cd8a30595e7ac7 0000000000000000000000000000000000000000 M	path2/file2
-:120000 120000 d8ce161addc5173867a3c3c730924388daedbc38 0000000000000000000000000000000000000000 M	path2/file2sym
-:100644 100644 0aa34cae68d0878578ad119c86ca2b5ed5b28376 0000000000000000000000000000000000000000 M	path3/file3
-:120000 120000 8599103969b43aff7e430efea79ca4636466794f 0000000000000000000000000000000000000000 M	path3/file3sym
-:100644 100644 00fb5908cb97c2564a9783c0c64087333b3b464f 0000000000000000000000000000000000000000 M	path3/subp3/file3
-:120000 120000 6649a1ebe9e9f1c553b66f5a6e74136a07ccc57c 0000000000000000000000000000000000000000 M	path3/subp3/file3sym
+	cat >expected <<EOF &&
+:100644 100644 $(test_oid path0f) $ZERO_OID M	path0
+:120000 120000 $(test_oid path0s) $ZERO_OID M	path0sym
+:100644 100644 $(test_oid path2f) $ZERO_OID M	path2/file2
+:120000 120000 $(test_oid path2s) $ZERO_OID M	path2/file2sym
+:100644 100644 $(test_oid path3f) $ZERO_OID M	path3/file3
+:120000 120000 $(test_oid path3s) $ZERO_OID M	path3/file3sym
+:100644 100644 $(test_oid subp3f) $ZERO_OID M	path3/subp3/file3
+:120000 120000 $(test_oid subp3s) $ZERO_OID M	path3/subp3/file3sym
 EOF
 	git diff-files >current &&
-	test_cmp current expected
+	test_cmp expected current
 '
 
 test_expect_success 'git update-index --refresh should succeed' '
@@ -1006,7 +1251,7 @@ test_expect_success 'no diff after checkout and git update-index --refresh' '
 '
 
 ################################################################
-P=087704a96baf1c2d1c869a8b084481e121c88b5b
+P=$(test_oid root)
 
 test_expect_success 'git commit-tree records the correct tree in a commit' '
 	commit0=$(echo NO | git commit-tree $P) &&
@@ -1056,11 +1301,29 @@ test_expect_success 'very long name in the index handled sanely' '
 	(
 		git ls-files -s path4 |
 		sed -e "s/	.*/	/" |
-		tr -d "\012"
+		tr -d "\012" &&
 		echo "$a"
 	) | git update-index --index-info &&
 	len=$(git ls-files "a*" | wc -c) &&
 	test $len = 4098
+'
+
+test_expect_success 'test_must_fail on a failing git command' '
+	test_must_fail git notacommand
+'
+
+test_expect_success 'test_must_fail on a failing git command with env' '
+	test_must_fail env var1=a var2=b git notacommand
+'
+
+test_expect_success 'test_must_fail rejects a non-git command' '
+	! test_must_fail grep ^$ notafile 2>err &&
+	grep -F "test_must_fail: only '"'"'git'"'"' is allowed" err
+'
+
+test_expect_success 'test_must_fail rejects a non-git command with env' '
+	! test_must_fail env var1=a var2=b grep ^$ notafile 2>err &&
+	grep -F "test_must_fail: only '"'"'git'"'"' is allowed" err
 '
 
 test_done
