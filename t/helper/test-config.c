@@ -1,4 +1,6 @@
+#include "test-tool.h"
 #include "cache.h"
+#include "config.h"
 #include "string-list.h"
 
 /*
@@ -31,25 +33,10 @@
  * Examples:
  *
  * To print the value with highest priority for key "foo.bAr Baz.rock":
- * 	test-config get_value "foo.bAr Baz.rock"
+ * 	test-tool config get_value "foo.bAr Baz.rock"
  *
  */
 
-static const char *scope_name(enum config_scope scope)
-{
-	switch (scope) {
-	case CONFIG_SCOPE_SYSTEM:
-		return "system";
-	case CONFIG_SCOPE_GLOBAL:
-		return "global";
-	case CONFIG_SCOPE_REPO:
-		return "repo";
-	case CONFIG_SCOPE_CMDLINE:
-		return "cmdline";
-	default:
-		return "unknown";
-	}
-}
 static int iterate_cb(const char *var, const char *value, void *data)
 {
 	static int nr;
@@ -61,17 +48,33 @@ static int iterate_cb(const char *var, const char *value, void *data)
 	printf("value=%s\n", value ? value : "(null)");
 	printf("origin=%s\n", current_config_origin_type());
 	printf("name=%s\n", current_config_name());
-	printf("scope=%s\n", scope_name(current_config_scope()));
+	printf("lno=%d\n", current_config_line());
+	printf("scope=%s\n", config_scope_name(current_config_scope()));
 
 	return 0;
 }
 
-int cmd_main(int argc, const char **argv)
+static int early_config_cb(const char *var, const char *value, void *vdata)
+{
+	const char *key = vdata;
+
+	if (!strcmp(key, var))
+		printf("%s\n", value);
+
+	return 0;
+}
+
+int cmd__config(int argc, const char **argv)
 {
 	int i, val;
 	const char *v;
 	const struct string_list *strptr;
 	struct config_set cs;
+
+	if (argc == 3 && !strcmp(argv[1], "read_early_config")) {
+		read_early_config(early_config_cb, (void *)argv[2]);
+		return 0;
+	}
 
 	setup_git_directory();
 
@@ -123,7 +126,7 @@ int cmd_main(int argc, const char **argv)
 			goto exit1;
 		}
 	} else if (argc == 3 && !strcmp(argv[1], "get_string")) {
-		if (!git_config_get_string_const(argv[2], &v)) {
+		if (!git_config_get_string_tmp(argv[2], &v)) {
 			printf("%s\n", v);
 			goto exit0;
 		} else {

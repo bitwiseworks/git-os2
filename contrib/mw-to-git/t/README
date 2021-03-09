@@ -14,11 +14,11 @@ install the following packages (Debian/Ubuntu names, may need to be
 adapted for another distribution):
 
 * lighttpd
-* php5
-* php5-cgi
-* php5-cli
-* php5-curl
-* php5-sqlite
+* php
+* php-cgi
+* php-cli
+* php-curl
+* php-sqlite
 
 Principles and Technical Choices
 --------------------------------
@@ -121,4 +121,4 @@ How to write a new test
 
 Please, follow the standards given by git. See git/t/README.
 New file should be named as t936[0-9]-*.sh.
-Be sure to reset your wiki regulary with the function `wiki_reset`.
+Be sure to reset your wiki regularly with the function `wiki_reset`.

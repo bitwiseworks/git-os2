@@ -1,12 +1,16 @@
 #ifndef UNPACK_TREES_H
 #define UNPACK_TREES_H
 
+#include "cache.h"
+#include "strvec.h"
 #include "string-list.h"
+#include "tree-walk.h"
 
-#define MAX_UNPACK_TREES 8
+#define MAX_UNPACK_TREES MAX_TRAVERSE_TREES
 
+struct cache_entry;
 struct unpack_trees_options;
-struct exclude_list;
+struct pattern_list;
 
 typedef int (*merge_fn_t)(const struct cache_entry * const *src,
 		struct unpack_trees_options *options);
@@ -18,10 +22,15 @@ enum unpack_trees_error_types {
 	ERROR_WOULD_LOSE_UNTRACKED_OVERWRITTEN,
 	ERROR_WOULD_LOSE_UNTRACKED_REMOVED,
 	ERROR_BIND_OVERLAP,
-	ERROR_SPARSE_NOT_UPTODATE_FILE,
-	ERROR_WOULD_LOSE_ORPHANED_OVERWRITTEN,
-	ERROR_WOULD_LOSE_ORPHANED_REMOVED,
-	NB_UNPACK_TREES_ERROR_TYPES
+	ERROR_WOULD_LOSE_SUBMODULE,
+
+	NB_UNPACK_TREES_ERROR_TYPES,
+
+	WARNING_SPARSE_NOT_UPTODATE_FILE,
+	WARNING_SPARSE_UNMERGED_FILE,
+	WARNING_SPARSE_ORPHANED_NOT_OVERWRITTEN,
+
+	NB_UNPACK_TREES_WARNING_TYPES,
 };
 
 /*
@@ -31,10 +40,16 @@ enum unpack_trees_error_types {
 void setup_unpack_trees_porcelain(struct unpack_trees_options *opts,
 				  const char *cmd);
 
+/*
+ * Frees resources allocated by setup_unpack_trees_porcelain().
+ */
+void clear_unpack_trees_porcelain(struct unpack_trees_options *opts);
+
 struct unpack_trees_options {
 	unsigned int reset,
 		     merge,
 		     update,
+		     clone,
 		     index_only,
 		     nontrivial_merge,
 		     trivial_merges_only,
@@ -45,7 +60,7 @@ struct unpack_trees_options {
 		     diff_index_cached,
 		     debug_unpack,
 		     skip_sparse_checkout,
-		     gently,
+		     quiet,
 		     exiting_early,
 		     show_all_errors,
 		     dry_run;
@@ -54,12 +69,13 @@ struct unpack_trees_options {
 	struct dir_struct *dir;
 	struct pathspec *pathspec;
 	merge_fn_t fn;
-	const char *msgs[NB_UNPACK_TREES_ERROR_TYPES];
+	const char *msgs[NB_UNPACK_TREES_WARNING_TYPES];
+	struct strvec msgs_to_free;
 	/*
 	 * Store error messages in an array, each case
 	 * corresponding to a error message type
 	 */
-	struct string_list unpack_rejects[NB_UNPACK_TREES_ERROR_TYPES];
+	struct string_list unpack_rejects[NB_UNPACK_TREES_WARNING_TYPES];
 
 	int head_idx;
 	int merge_size;
@@ -71,11 +87,24 @@ struct unpack_trees_options {
 	struct index_state *src_index;
 	struct index_state result;
 
-	struct exclude_list *el; /* for internal use */
+	struct pattern_list *pl; /* for internal use */
+	struct checkout_metadata meta;
 };
 
-extern int unpack_trees(unsigned n, struct tree_desc *t,
-		struct unpack_trees_options *options);
+int unpack_trees(unsigned n, struct tree_desc *t,
+		 struct unpack_trees_options *options);
+
+enum update_sparsity_result {
+	UPDATE_SPARSITY_SUCCESS = 0,
+	UPDATE_SPARSITY_WARNINGS = 1,
+	UPDATE_SPARSITY_INDEX_UPDATE_FAILURES = -1,
+	UPDATE_SPARSITY_WORKTREE_UPDATE_FAILURES = -2
+};
+
+enum update_sparsity_result update_sparsity(struct unpack_trees_options *options);
+
+int verify_uptodate(const struct cache_entry *ce,
+		    struct unpack_trees_options *o);
 
 int threeway_merge(const struct cache_entry * const *stages,
 		   struct unpack_trees_options *o);

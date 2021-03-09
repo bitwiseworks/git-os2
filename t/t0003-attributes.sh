@@ -5,23 +5,41 @@ test_description=gitattributes
 . ./test-lib.sh
 
 attr_check () {
-	path="$1" expect="$2"
+	path="$1" expect="$2" git_opts="$3" &&
 
-	git $3 check-attr test -- "$path" >actual 2>err &&
-	echo "$path: test: $2" >expect &&
+	git $git_opts check-attr test -- "$path" >actual 2>err &&
+	echo "$path: test: $expect" >expect &&
 	test_cmp expect actual &&
-	test_line_count = 0 err
+	test_must_be_empty err
 }
+
+attr_check_quote () {
+	path="$1" quoted_path="$2" expect="$3" &&
+
+	git check-attr test -- "$path" >actual &&
+	echo "\"$quoted_path\": test: $expect" >expect &&
+	test_cmp expect actual
+
+}
+
+test_expect_success 'open-quoted pathname' '
+	echo "\"a test=a" >.gitattributes &&
+	attr_check a unspecified
+'
+
 
 test_expect_success 'setup' '
 	mkdir -p a/b/d a/c b &&
 	(
-		echo "[attr]notest !test"
-		echo "f	test=f"
-		echo "a/i test=a/i"
-		echo "onoff test -test"
-		echo "offon -test test"
-		echo "no notest"
+		echo "[attr]notest !test" &&
+		echo "\" d \"	test=d" &&
+		echo " e	test=e" &&
+		echo " e\"	test=e" &&
+		echo "f	test=f" &&
+		echo "a/i test=a/i" &&
+		echo "onoff test -test" &&
+		echo "offon -test test" &&
+		echo "no notest" &&
 		echo "A/e/F test=A/e/F"
 	) >.gitattributes &&
 	(
@@ -30,7 +48,7 @@ test_expect_success 'setup' '
 	) >a/.gitattributes &&
 	(
 		echo "h test=a/b/h" &&
-		echo "d/* test=a/b/d/*"
+		echo "d/* test=a/b/d/*" &&
 		echo "d/yes notest"
 	) >a/b/.gitattributes &&
 	(
@@ -69,6 +87,11 @@ test_expect_success 'command line checks' '
 '
 
 test_expect_success 'attribute test' '
+
+	attr_check " d " d &&
+	attr_check e e &&
+	attr_check_quote e\" e\\\" e &&
+
 	attr_check f f &&
 	attr_check a/f f &&
 	attr_check a/c/f f &&
@@ -86,20 +109,20 @@ test_expect_success 'attribute test' '
 
 test_expect_success 'attribute matching is case sensitive when core.ignorecase=0' '
 
-	test_must_fail attr_check F f "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/F f "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/c/F f "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/G a/g "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/B/g a/b/g "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/b/G a/b/g "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/b/H a/b/h "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/b/D/g "a/b/d/*" "-c core.ignorecase=0" &&
-	test_must_fail attr_check oNoFf unset "-c core.ignorecase=0" &&
-	test_must_fail attr_check oFfOn set "-c core.ignorecase=0" &&
+	attr_check F unspecified "-c core.ignorecase=0" &&
+	attr_check a/F unspecified "-c core.ignorecase=0" &&
+	attr_check a/c/F unspecified "-c core.ignorecase=0" &&
+	attr_check a/G unspecified "-c core.ignorecase=0" &&
+	attr_check a/B/g a/g "-c core.ignorecase=0" &&
+	attr_check a/b/G unspecified "-c core.ignorecase=0" &&
+	attr_check a/b/H unspecified "-c core.ignorecase=0" &&
+	attr_check a/b/D/g a/g "-c core.ignorecase=0" &&
+	attr_check oNoFf unspecified "-c core.ignorecase=0" &&
+	attr_check oFfOn unspecified "-c core.ignorecase=0" &&
 	attr_check NO unspecified "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/b/D/NO "a/b/d/*" "-c core.ignorecase=0" &&
+	attr_check a/b/D/NO unspecified "-c core.ignorecase=0" &&
 	attr_check a/b/d/YES a/b/d/* "-c core.ignorecase=0" &&
-	test_must_fail attr_check a/E/f "A/e/F" "-c core.ignorecase=0"
+	attr_check a/E/f f "-c core.ignorecase=0"
 
 '
 
@@ -123,8 +146,8 @@ test_expect_success 'attribute matching is case insensitive when core.ignorecase
 '
 
 test_expect_success CASE_INSENSITIVE_FS 'additional case insensitivity tests' '
-	test_must_fail attr_check a/B/D/g "a/b/d/*" "-c core.ignorecase=0" &&
-	test_must_fail attr_check A/B/D/NO "a/b/d/*" "-c core.ignorecase=0" &&
+	attr_check a/B/D/g a/g "-c core.ignorecase=0" &&
+	attr_check A/B/D/NO unspecified "-c core.ignorecase=0" &&
 	attr_check A/b/h a/b/h "-c core.ignorecase=1" &&
 	attr_check a/B/D/g "a/b/d/*" "-c core.ignorecase=1" &&
 	attr_check A/B/D/NO "a/b/d/*" "-c core.ignorecase=1"
@@ -182,9 +205,8 @@ test_expect_success 'attribute test: --all option' '
 '
 
 test_expect_success 'attribute test: --cached option' '
-	: >empty &&
 	git check-attr --cached --stdin --all <stdin-all | sort >actual &&
-	test_cmp empty actual &&
+	test_must_be_empty actual &&
 	git add .gitattributes a/.gitattributes a/b/.gitattributes &&
 	git check-attr --cached --stdin --all <stdin-all | sort >actual &&
 	test_cmp specified-all actual
@@ -219,7 +241,7 @@ EOF
 	git check-attr foo -- "a/b/f" >>actual 2>>err &&
 	git check-attr foo -- "a/b/c/f" >>actual 2>>err &&
 	test_cmp expect actual &&
-	test_line_count = 0 err
+	test_must_be_empty err
 '
 
 test_expect_success '"**" with no slashes test' '
@@ -240,7 +262,7 @@ EOF
 	git check-attr foo -- "a/b/f" >>actual 2>>err &&
 	git check-attr foo -- "a/b/c/f" >>actual 2>>err &&
 	test_cmp expect actual &&
-	test_line_count = 0 err
+	test_must_be_empty err
 '
 
 test_expect_success 'using --git-dir and --work-tree' '
@@ -261,7 +283,7 @@ test_expect_success 'bare repository: check that .gitattribute is ignored' '
 	(
 		cd bare.git &&
 		(
-			echo "f	test=f"
+			echo "f	test=f" &&
 			echo "a/i test=a/i"
 		) >.gitattributes &&
 		attr_check f unspecified &&
@@ -286,7 +308,7 @@ test_expect_success 'bare repository: test info/attributes' '
 	(
 		cd bare.git &&
 		(
-			echo "f	test=f"
+			echo "f	test=f" &&
 			echo "a/i test=a/i"
 		) >info/attributes &&
 		attr_check f f &&
@@ -295,6 +317,26 @@ test_expect_success 'bare repository: test info/attributes' '
 		attr_check a/i a/i &&
 		attr_check subdir/a/i unspecified
 	)
+'
+
+test_expect_success 'binary macro expanded by -a' '
+	echo "file binary" >.gitattributes &&
+	cat >expect <<-\EOF &&
+	file: binary: set
+	file: diff: unset
+	file: merge: unset
+	file: text: unset
+	EOF
+	git check-attr -a file >actual &&
+	test_cmp expect actual
+'
+
+
+test_expect_success 'query binary macro directly' '
+	echo "file binary" >.gitattributes &&
+	echo file: binary: set >expect &&
+	git check-attr binary file >actual &&
+	test_cmp expect actual
 '
 
 test_done

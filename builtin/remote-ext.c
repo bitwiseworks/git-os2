@@ -3,6 +3,9 @@
 #include "run-command.h"
 #include "pkt-line.h"
 
+static const char usage_msg[] =
+	"git remote-ext <remote> <url>";
+
 /*
  * URL syntax:
  *	'command [arg1 [arg2 [...]]]'	Invoke command with given arguments.
@@ -54,7 +57,7 @@ static char *strip_escapes(const char *str, const char *service,
 				special = str[rpos];
 				if (rpos == 1)
 					break;
-				/* Fall-through to error. */
+				/* fallthrough */
 			default:
 				die("Bad remote-ext placeholder '%%%c'.",
 					str[rpos]);
@@ -114,12 +117,12 @@ static char *strip_escapes(const char *str, const char *service,
 	}
 }
 
-static void parse_argv(struct argv_array *out, const char *arg, const char *service)
+static void parse_argv(struct strvec *out, const char *arg, const char *service)
 {
 	while (*arg) {
 		char *expanded = strip_escapes(arg, service, &arg);
 		if (expanded)
-			argv_array_push(out, expanded);
+			strvec_push(out, expanded);
 		free(expanded);
 	}
 }
@@ -193,7 +196,7 @@ static int command_loop(const char *child)
 int cmd_remote_ext(int argc, const char **argv, const char *prefix)
 {
 	if (argc != 3)
-		die("Expected two arguments");
+		usage(usage_msg);
 
 	return command_loop(argv[2]);
 }

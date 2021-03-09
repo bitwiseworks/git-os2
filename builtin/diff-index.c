@@ -1,4 +1,6 @@
+#define USE_THE_INDEX_COMPATIBILITY_MACROS
 #include "cache.h"
+#include "config.h"
 #include "diff.h"
 #include "commit.h"
 #include "revision.h"
@@ -13,13 +15,15 @@ COMMON_DIFF_OPTIONS_HELP;
 int cmd_diff_index(int argc, const char **argv, const char *prefix)
 {
 	struct rev_info rev;
-	int cached = 0;
+	unsigned int option = 0;
 	int i;
 	int result;
 
-	init_revisions(&rev, prefix);
-	gitmodules_config();
+	if (argc == 2 && !strcmp(argv[1], "-h"))
+		usage(diff_cache_usage);
+
 	git_config(git_diff_basic_config, NULL); /* no "diff" UI options */
+	repo_init_revisions(the_repository, &rev, prefix);
 	rev.abbrev = 0;
 	precompose_argv(argc, argv);
 
@@ -28,7 +32,9 @@ int cmd_diff_index(int argc, const char **argv, const char *prefix)
 		const char *arg = argv[i];
 
 		if (!strcmp(arg, "--cached"))
-			cached = 1;
+			option |= DIFF_INDEX_CACHED;
+		else if (!strcmp(arg, "--merge-base"))
+			option |= DIFF_INDEX_MERGE_BASE;
 		else
 			usage(diff_cache_usage);
 	}
@@ -42,7 +48,7 @@ int cmd_diff_index(int argc, const char **argv, const char *prefix)
 	if (rev.pending.nr != 1 ||
 	    rev.max_count != -1 || rev.min_age != -1 || rev.max_age != -1)
 		usage(diff_cache_usage);
-	if (!cached) {
+	if (!(option & DIFF_INDEX_CACHED)) {
 		setup_work_tree();
 		if (read_cache_preload(&rev.diffopt.pathspec) < 0) {
 			perror("read_cache_preload");
@@ -52,6 +58,7 @@ int cmd_diff_index(int argc, const char **argv, const char *prefix)
 		perror("read_cache");
 		return -1;
 	}
-	result = run_diff_index(&rev, cached);
+	result = run_diff_index(&rev, option);
+	UNLEAK(rev);
 	return diff_result_code(&rev.diffopt, result);
 }

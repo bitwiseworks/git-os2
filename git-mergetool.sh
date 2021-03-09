@@ -9,7 +9,7 @@
 # at the discretion of Junio C Hamano.
 #
 
-USAGE='[--tool=tool] [--tool-help] [-y|--no-prompt|--prompt] [-O<orderfile>] [file to merge] ...'
+USAGE='[--tool=tool] [--tool-help] [-y|--no-prompt|--prompt] [-g|--gui|--no-gui] [-O<orderfile>] [file to merge] ...'
 SUBDIRECTORY_OK=Yes
 NONGIT_OK=Yes
 OPTIONS_SPEC=
@@ -228,9 +228,8 @@ stage_submodule () {
 }
 
 checkout_staged_file () {
-	tmpfile=$(expr \
-		"$(git checkout-index --temp --stage="$1" "$2" 2>/dev/null)" \
-		: '\([^	]*\)	')
+	tmpfile="$(git checkout-index --temp --stage="$1" "$2" 2>/dev/null)" &&
+	tmpfile=${tmpfile%%'	'*}
 
 	if test $? -eq 0 && test -n "$tmpfile"
 	then
@@ -255,13 +254,16 @@ merge_file () {
 		return 1
 	fi
 
-	if BASE=$(expr "$MERGED" : '\(.*\)\.[^/]*$')
-	then
-		ext=$(expr "$MERGED" : '.*\(\.[^/]*\)$')
-	else
+	# extract file extension from the last path component
+	case "${MERGED##*/}" in
+	*.*)
+		ext=.${MERGED##*.}
+		BASE=${MERGED%"$ext"}
+		;;
+	*)
 		BASE=$MERGED
 		ext=
-	fi
+	esac
 
 	mergetool_tmpdir_init
 
@@ -277,15 +279,30 @@ merge_file () {
 	REMOTE="$MERGETOOL_TMPDIR/${BASE}_REMOTE_$$$ext"
 	BASE="$MERGETOOL_TMPDIR/${BASE}_BASE_$$$ext"
 
-	base_mode=$(git ls-files -u -- "$MERGED" | awk '{if ($3==1) print $1;}')
-	local_mode=$(git ls-files -u -- "$MERGED" | awk '{if ($3==2) print $1;}')
-	remote_mode=$(git ls-files -u -- "$MERGED" | awk '{if ($3==3) print $1;}')
+	base_mode= local_mode= remote_mode=
+
+	# here, $IFS is just a LF
+	for line in $f
+	do
+		mode=${line%% *}		# 1st word
+		sha1=${line#"$mode "}
+		sha1=${sha1%% *}		# 2nd word
+		case "${line#$mode $sha1 }" in	# remainder
+		'1	'*)
+			base_mode=$mode
+			;;
+		'2	'*)
+			local_mode=$mode local_sha1=$sha1
+			;;
+		'3	'*)
+			remote_mode=$mode remote_sha1=$sha1
+			;;
+		esac
+	done
 
 	if is_submodule "$local_mode" || is_submodule "$remote_mode"
 	then
 		echo "Submodule merge conflict for '$MERGED':"
-		local_sha1=$(git ls-files -u -- "$MERGED" | awk '{if ($3==2) print $2;}')
-		remote_sha1=$(git ls-files -u -- "$MERGED" | awk '{if ($3==3) print $2;}')
 		describe_file "$local_mode" "local" "$local_sha1"
 		describe_file "$remote_mode" "remote" "$remote_sha1"
 		resolve_submodule_merge
@@ -389,6 +406,7 @@ print_noop_and_exit () {
 
 main () {
 	prompt=$(git config --bool mergetool.prompt)
+	GIT_MERGETOOL_GUI=false
 	guessed_merge_tool=false
 	orderfile=
 
@@ -405,7 +423,7 @@ main () {
 		-t|--tool*)
 			case "$#,$1" in
 			*,*=*)
-				merge_tool=$(expr "z$1" : 'z-[^=]*=\(.*\)')
+				merge_tool=${1#*=}
 				;;
 			1,*)
 				usage ;;
@@ -414,6 +432,12 @@ main () {
 				shift ;;
 			esac
 			;;
+		--no-gui)
+			GIT_MERGETOOL_GUI=false
+			;;
+		-g|--gui)
+			GIT_MERGETOOL_GUI=true
+			;;
 		-y|--no-prompt)
 			prompt=false
 			;;
@@ -421,7 +445,7 @@ main () {
 			prompt=true
 			;;
 		-O*)
-			orderfile="$1"
+			orderfile="${1#-O}"
 			;;
 		--)
 			shift
@@ -442,17 +466,24 @@ main () {
 
 	if test -z "$merge_tool"
 	then
-		# Check if a merge tool has been configured
-		merge_tool=$(get_configured_merge_tool)
-		# Try to guess an appropriate merge tool if no tool has been set.
-		if test -z "$merge_tool"
+		if ! merge_tool=$(get_merge_tool)
 		then
-			merge_tool=$(guess_merge_tool) || exit
 			guessed_merge_tool=true
 		fi
 	fi
 	merge_keep_backup="$(git config --bool mergetool.keepBackup || echo true)"
 	merge_keep_temporaries="$(git config --bool mergetool.keepTemporaries || echo false)"
+
+	prefix=$(git rev-parse --show-prefix) || exit 1
+	cd_to_toplevel
+
+	if test -n "$orderfile"
+	then
+		orderfile=$(
+			git rev-parse --prefix "$prefix" -- "$orderfile" |
+			sed -e 1d
+		)
+	fi
 
 	if test $# -eq 0 && test -e "$GIT_DIR/MERGE_RR"
 	then
@@ -461,13 +492,15 @@ main () {
 		then
 			print_noop_and_exit
 		fi
+	elif test $# -ge 0
+	then
+		# rev-parse provides the -- needed for 'set'
+		eval "set $(git rev-parse --sq --prefix "$prefix" -- "$@")"
 	fi
 
 	files=$(git -c core.quotePath=false \
 		diff --name-only --diff-filter=U \
-		${orderfile:+"$orderfile"} -- "$@")
-
-	cd_to_toplevel
+		${orderfile:+"-O$orderfile"} -- "$@")
 
 	if test -z "$files"
 	then
@@ -478,14 +511,16 @@ main () {
 	printf "%s\n" "$files"
 
 	rc=0
-	for i in $files
+	set -- $files
+	while test $# -ne 0
 	do
 		printf "\n"
-		if ! merge_file "$i"
+		if ! merge_file "$1"
 		then
 			rc=1
-			prompt_after_failed_merge || exit 1
+			test $# -ne 1 && prompt_after_failed_merge || exit 1
 		fi
+		shift
 	done
 
 	exit $rc

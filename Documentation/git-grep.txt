@@ -13,12 +13,12 @@ SYNOPSIS
 	   [-v | --invert-match] [-h|-H] [--full-name]
 	   [-E | --extended-regexp] [-G | --basic-regexp]
 	   [-P | --perl-regexp]
-	   [-F | --fixed-strings] [-n | --line-number]
+	   [-F | --fixed-strings] [-n | --line-number] [--column]
 	   [-l | --files-with-matches] [-L | --files-without-match]
 	   [(-O | --open-files-in-pager) [<pager>]]
 	   [-z | --null]
-	   [-c | --count] [--all-match] [-q | --quiet]
-	   [--max-depth <depth>]
+	   [ -o | --only-matching ] [-c | --count] [--all-match] [-q | --quiet]
+	   [--max-depth <depth>] [--[no-]recursive]
 	   [--color[=<when>] | --no-color]
 	   [--break] [--heading] [-p | --show-function]
 	   [-A <post-context>] [-B <pre-context>] [-C <context>]
@@ -26,6 +26,7 @@ SYNOPSIS
 	   [--threads <num>]
 	   [-f <file>] [-e] <pattern>
 	   [--and|--or|--not|(|)|-e <pattern>...]
+	   [--recurse-submodules] [--parent-basename <basename>]
 	   [ [--[no-]exclude-standard] [--cached | --no-index | --untracked] | <tree>...]
 	   [--] [<pathspec>...]
 
@@ -43,6 +44,9 @@ CONFIGURATION
 grep.lineNumber::
 	If set to true, enable `-n` option by default.
 
+grep.column::
+	If set to true, enable the `--column` option by default.
+
 grep.patternType::
 	Set the default matching behavior. Using a value of 'basic', 'extended',
 	'fixed', or 'perl' will enable the `--basic-regexp`, `--extended-regexp`,
@@ -55,8 +59,8 @@ grep.extendedRegexp::
 	other than 'default'.
 
 grep.threads::
-	Number of grep worker threads to use.  If unset (or set to 0),
-	8 threads are used by default (for now).
+	Number of grep worker threads to use. If unset (or set to 0), Git will
+	use as many threads as the number of logical cores available.
 
 grep.fullName::
 	If set to true, enable `--full-name` option by default.
@@ -84,9 +88,16 @@ OPTIONS
 	mechanism. Only useful with `--untracked`.
 
 --exclude-standard::
-	Do not pay attention to ignored files specified via the	`.gitignore`
+	Do not pay attention to ignored files specified via the `.gitignore`
 	mechanism.  Only useful when searching files in the current directory
 	with `--no-index`.
+
+--recurse-submodules::
+	Recursively search in each submodule that is active and
+	checked out in the repository.  When used in combination with the
+	<tree> option the prefix of all submodule output will be the name of
+	the parent project's <tree> object. This option has no effect
+	if `--no-index` is given.
 
 -a::
 --text::
@@ -109,10 +120,17 @@ OPTIONS
 
 --max-depth <depth>::
 	For each <pathspec> given on command line, descend at most <depth>
-	levels of directories. A negative value means no limit.
+	levels of directories. A value of -1 means no limit.
 	This option is ignored if <pathspec> contains active wildcards.
 	In other words if "a*" matches a directory named "a*",
 	"*" is matched literally so --max-depth is still effective.
+
+-r::
+--recursive::
+	Same as `--max-depth=-1`; this is the default.
+
+--no-recursive::
+	Same as `--max-depth=0`.
 
 -w::
 --word-regexp::
@@ -147,8 +165,11 @@ OPTIONS
 
 -P::
 --perl-regexp::
-	Use Perl-compatible regexp for patterns. Requires libpcre to be
-	compiled in.
+	Use Perl-compatible regular expressions for patterns.
++
+Support for these types of regular expressions is an optional
+compile-time dependency. If Git wasn't compiled with support for them
+providing this option will cause it to die.
 
 -F::
 --fixed-strings::
@@ -158,6 +179,10 @@ OPTIONS
 -n::
 --line-number::
 	Prefix the line number to matching lines.
+
+--column::
+	Prefix the 1-indexed byte-offset of the first match from the start of the
+	matching line.
 
 -l::
 --files-with-matches::
@@ -181,8 +206,15 @@ OPTIONS
 
 -z::
 --null::
-	Output \0 instead of the character that normally follows a
-	file name.
+	Use \0 as the delimiter for pathnames in the output, and print
+	them verbatim. Without this option, pathnames with "unusual"
+	characters are quoted as explained for the configuration
+	variable core.quotePath (see linkgit:git-config[1]).
+
+-o::
+--only-matching::
+	Print only the matched (non-empty) parts of a matching line, with each such
+	part on a separate output line.
 
 -c::
 --count::
@@ -209,7 +241,7 @@ OPTIONS
 --show-function::
 	Show the preceding line that contains the function name of
 	the match, unless the matching line is a function name itself.
-	The name is determined in the same way as 'git diff' works out
+	The name is determined in the same way as `git diff` works out
 	patch hunk headers (see 'Defining a custom hunk-header' in
 	linkgit:gitattributes[5]).
 
@@ -234,7 +266,9 @@ OPTIONS
 	Show the surrounding text from the previous line containing a
 	function name up to the one before the next function name,
 	effectively showing the whole function in which the match was
-	found.
+	found. The function names are determined in the same way as
+	`git diff` works out patch hunk headers (see 'Defining a
+	custom hunk-header' in linkgit:gitattributes[5]).
 
 --threads <num>::
 	Number of grep worker threads to use.
@@ -242,6 +276,23 @@ OPTIONS
 
 -f <file>::
 	Read patterns from <file>, one per line.
++
+Passing the pattern via <file> allows for providing a search pattern
+containing a \0.
++
+Not all pattern types support patterns containing \0. Git will error
+out if a given pattern type can't support such a pattern. The
+`--perl-regexp` pattern type when compiled against the PCRE v2 backend
+has the widest support for these types of patterns.
++
+In versions of Git before 2.23.0 patterns containing \0 would be
+silently considered fixed. This was never documented, there were also
+odd and undocumented interactions between e.g. non-ASCII patterns
+containing \0 and `--ignore-case`.
++
+In future versions we may learn to support patterns containing \0 for
+more search backends, until then we'll die when the pattern type in
+question doesn't support them.
 
 -e::
 	The next parameter is the pattern. This option has to be
@@ -279,8 +330,11 @@ OPTIONS
 <pathspec>...::
 	If given, limit the search to paths matching at least one pattern.
 	Both leading paths match and glob(7) patterns are supported.
++
+For more details about the <pathspec> syntax, see the 'pathspec' entry
+in linkgit:gitglossary[7].
 
-Examples
+EXAMPLES
 --------
 
 `git grep 'time_t' -- '*.[ch]'`::
@@ -294,6 +348,20 @@ Examples
 `git grep --all-match -e NODE -e Unexpected`::
 	Looks for a line that has `NODE` or `Unexpected` in
 	files that have lines that match both.
+
+`git grep solution -- :^Documentation`::
+	Looks for `solution`, excluding files in `Documentation`.
+
+NOTES ON THREADS
+----------------
+
+The `--threads` option (and the grep.threads configuration) will be ignored when
+`--open-files-in-pager` is used, forcing a single-threaded execution.
+
+When grepping the object store (with `--cached` or giving tree objects), running
+with multiple threads might perform slower than single threaded if `--textconv`
+is given and there're too many text conversions. So if you experience low
+performance in this case, it might be desirable to use `--threads=1`.
 
 GIT
 ---

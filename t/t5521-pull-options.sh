@@ -11,10 +11,10 @@ test_expect_success 'setup' '
 	 git commit -m one)
 '
 
-test_expect_success 'git pull -q' '
+test_expect_success 'git pull -q --no-rebase' '
 	mkdir clonedq &&
 	(cd clonedq && git init &&
-	git pull -q "../parent" >out 2>err &&
+	git pull -q --no-rebase "../parent" >out 2>err &&
 	test_must_be_empty err &&
 	test_must_be_empty out)
 '
@@ -30,10 +30,10 @@ test_expect_success 'git pull -q --rebase' '
 	test_must_be_empty out)
 '
 
-test_expect_success 'git pull' '
+test_expect_success 'git pull --no-rebase' '
 	mkdir cloned &&
 	(cd cloned && git init &&
-	git pull "../parent" >out 2>err &&
+	git pull --no-rebase "../parent" >out 2>err &&
 	test -s err &&
 	test_must_be_empty out)
 '
@@ -46,10 +46,10 @@ test_expect_success 'git pull --rebase' '
 	test_must_be_empty out)
 '
 
-test_expect_success 'git pull -v' '
+test_expect_success 'git pull -v --no-rebase' '
 	mkdir clonedv &&
 	(cd clonedv && git init &&
-	git pull -v "../parent" >out 2>err &&
+	git pull -v --no-rebase "../parent" >out 2>err &&
 	test -s err &&
 	test_must_be_empty out)
 '
@@ -62,20 +62,35 @@ test_expect_success 'git pull -v --rebase' '
 	test_must_be_empty out)
 '
 
-test_expect_success 'git pull -v -q' '
+test_expect_success 'git pull -v -q --no-rebase' '
 	mkdir clonedvq &&
 	(cd clonedvq && git init &&
-	git pull -v -q "../parent" >out 2>err &&
+	git pull -v -q --no-rebase "../parent" >out 2>err &&
 	test_must_be_empty out &&
 	test_must_be_empty err)
 '
 
-test_expect_success 'git pull -q -v' '
+test_expect_success 'git pull -q -v --no-rebase' '
 	mkdir clonedqv &&
 	(cd clonedqv && git init &&
-	git pull -q -v "../parent" >out 2>err &&
+	git pull -q -v --no-rebase "../parent" >out 2>err &&
 	test_must_be_empty out &&
 	test -s err)
+'
+test_expect_success 'git pull --cleanup errors early on invalid argument' '
+	mkdir clonedcleanup &&
+	(cd clonedcleanup && git init &&
+	test_must_fail git pull --no-rebase --cleanup invalid "../parent" >out 2>err &&
+	test_must_be_empty out &&
+	test -s err)
+'
+
+test_expect_success 'git pull --no-write-fetch-head fails' '
+	mkdir clonedwfh &&
+	(cd clonedwfh && git init &&
+	test_expect_code 129 git pull --no-write-fetch-head "../parent" >out 2>err &&
+	test_must_be_empty out &&
+	test_i18ngrep "no-write-fetch-head" err)
 '
 
 test_expect_success 'git pull --force' '
@@ -163,6 +178,51 @@ test_expect_success 'git pull --allow-unrelated-histories' '
 		test_must_fail git pull ../src side &&
 		git pull --allow-unrelated-histories ../src side
 	)
+'
+
+test_expect_success 'git pull does not add a sign-off line' '
+	test_when_finished "rm -fr src dst actual" &&
+	git init src &&
+	test_commit -C src one &&
+	git clone src dst &&
+	test_commit -C src two &&
+	git -C dst pull --no-ff &&
+	git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+	test_must_be_empty actual
+'
+
+test_expect_success 'git pull --no-signoff does not add sign-off line' '
+	test_when_finished "rm -fr src dst actual" &&
+	git init src &&
+	test_commit -C src one &&
+	git clone src dst &&
+	test_commit -C src two &&
+	git -C dst pull --no-signoff --no-ff &&
+	git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+	test_must_be_empty actual
+'
+
+test_expect_success 'git pull --signoff add a sign-off line' '
+	test_when_finished "rm -fr src dst expected actual" &&
+	echo "Signed-off-by: $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL>" >expected &&
+	git init src &&
+	test_commit -C src one &&
+	git clone src dst &&
+	test_commit -C src two &&
+	git -C dst pull --signoff --no-ff &&
+	git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'git pull --no-signoff flag cancels --signoff flag' '
+	test_when_finished "rm -fr src dst actual" &&
+	git init src &&
+	test_commit -C src one &&
+	git clone src dst &&
+	test_commit -C src two &&
+	git -C dst pull --signoff --no-signoff --no-ff &&
+	git -C dst show -s --pretty="format:%(trailers)" HEAD >actual &&
+	test_must_be_empty actual
 '
 
 test_done

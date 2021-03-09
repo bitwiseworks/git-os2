@@ -8,10 +8,18 @@ test_description='Test remote-helper import and export commands'
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-gpg.sh
 
+PATH="$TEST_DIRECTORY/t5801:$PATH"
+
 compare_refs() {
+	fail= &&
+	if test "x$1" = 'x!'
+	then
+		fail='!' &&
+		shift
+	fi &&
 	git --git-dir="$1/.git" rev-parse --verify $2 >expect &&
 	git --git-dir="$3/.git" rev-parse --verify $4 >actual &&
-	test_cmp expect actual
+	eval $fail test_cmp expect actual
 }
 
 test_expect_success 'setup repository' '
@@ -96,7 +104,7 @@ test_expect_success 'push new branch with old:new refspec' '
 
 test_expect_success 'push new branch with HEAD:new refspec' '
 	(cd local &&
-	 git checkout new-name
+	 git checkout new-name &&
 	 git push origin HEAD:new-refspec-2
 	) &&
 	compare_refs local HEAD server refs/heads/new-refspec-2
@@ -124,17 +132,17 @@ test_expect_success 'forced push' '
 '
 
 test_expect_success 'cloning without refspec' '
-	GIT_REMOTE_TESTGIT_REFSPEC="" \
+	GIT_REMOTE_TESTGIT_NOREFSPEC=1 \
 	git clone "testgit::${PWD}/server" local2 2>error &&
-	grep "This remote helper should implement refspec capability" error &&
+	test_i18ngrep "this remote helper should implement refspec capability" error &&
 	compare_refs local2 HEAD server HEAD
 '
 
 test_expect_success 'pulling without refspecs' '
 	(cd local2 &&
 	git reset --hard &&
-	GIT_REMOTE_TESTGIT_REFSPEC="" git pull 2>../error) &&
-	grep "This remote helper should implement refspec capability" error &&
+	GIT_REMOTE_TESTGIT_NOREFSPEC=1 git pull 2>../error) &&
+	test_i18ngrep "this remote helper should implement refspec capability" error &&
 	compare_refs local2 HEAD server HEAD
 '
 
@@ -143,10 +151,10 @@ test_expect_success 'pushing without refspecs' '
 	(cd local2 &&
 	echo content >>file &&
 	git commit -a -m ten &&
-	GIT_REMOTE_TESTGIT_REFSPEC="" &&
-	export GIT_REMOTE_TESTGIT_REFSPEC &&
+	GIT_REMOTE_TESTGIT_NOREFSPEC=1 &&
+	export GIT_REMOTE_TESTGIT_NOREFSPEC &&
 	test_must_fail git push 2>../error) &&
-	grep "remote-helper doesn.t support push; refspec needed" error
+	test_i18ngrep "remote-helper doesn.t support push; refspec needed" error
 '
 
 test_expect_success 'pulling without marks' '
@@ -187,7 +195,7 @@ test_expect_success GPG 'push signed tag' '
 	git push origin signed-tag
 	) &&
 	compare_refs local signed-tag^{} server signed-tag^{} &&
-	test_must_fail compare_refs local signed-tag server signed-tag
+	compare_refs ! local signed-tag server signed-tag
 '
 
 test_expect_success GPG 'push signed tag with signed-tags capability' '
@@ -245,8 +253,7 @@ clean_mark () {
 test_expect_success 'proper failure checks for fetching' '
 	(cd local &&
 	test_must_fail env GIT_REMOTE_TESTGIT_FAILURE=1 git fetch 2>error &&
-	cat error &&
-	grep -q "Error while running fast-import" error
+	test_i18ngrep -q "error while running fast-import" error
 	)
 '
 
@@ -299,6 +306,16 @@ test_expect_success 'fetch url' '
 	git fetch "testgit::${PWD}/../server"
 	) &&
 	compare_refs server HEAD local FETCH_HEAD
+'
+
+test_expect_success 'fetch tag' '
+	(cd server &&
+	 git tag v1.0
+	) &&
+	(cd local &&
+	 git fetch
+	) &&
+	compare_refs local v1.0 server v1.0
 '
 
 test_done

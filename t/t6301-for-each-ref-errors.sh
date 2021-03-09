@@ -4,10 +4,10 @@ test_description='for-each-ref errors for broken refs'
 
 . ./test-lib.sh
 
-ZEROS=$_z40
-MISSING=abababababababababababababababababababab
+ZEROS=$ZERO_OID
 
 test_expect_success setup '
+	MISSING=$(test_oid deadbeef) &&
 	git commit --allow-empty -m "Initial" &&
 	git tag testtag &&
 	git for-each-ref >full-list &&

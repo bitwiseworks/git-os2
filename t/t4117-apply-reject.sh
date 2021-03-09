@@ -72,9 +72,9 @@ test_expect_success 'apply with --reject should fail but update the file' '
 	rm -f file1.rej file2.rej &&
 
 	test_must_fail git apply --reject patch.1 &&
-	test_cmp file1 expected &&
+	test_cmp expected file1 &&
 
-	cat file1.rej &&
+	test_path_is_file file1.rej &&
 	test_path_is_missing file2.rej
 '
 
@@ -85,9 +85,9 @@ test_expect_success 'apply with --reject should fail but update the file' '
 
 	test_must_fail git apply --reject patch.2 >rejects &&
 	test_path_is_missing file1 &&
-	test_cmp file2 expected &&
+	test_cmp expected file2 &&
 
-	cat file2.rej &&
+	test_path_is_file file2.rej &&
 	test_path_is_missing file1.rej
 
 '
@@ -99,9 +99,9 @@ test_expect_success 'the same test with --verbose' '
 
 	test_must_fail git apply --reject --verbose patch.2 >rejects &&
 	test_path_is_missing file1 &&
-	test_cmp file2 expected &&
+	test_cmp expected file2 &&
 
-	cat file2.rej &&
+	test_path_is_file file2.rej &&
 	test_path_is_missing file1.rej
 
 '
