@@ -48,7 +48,7 @@ const char *strvec_push(struct strvec *, const char *);
  * Format a string and push it onto the end of the array. This is a
  * convenience wrapper combining `strbuf_addf` and `strvec_push`.
  */
-__attribute__((format (printf,2,3)))
+__attribute__((__format__ (__printf__,2,3)))
 const char *strvec_pushf(struct strvec *, const char *fmt, ...);
 
 /**

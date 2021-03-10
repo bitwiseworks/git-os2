@@ -1192,11 +1192,11 @@ static inline int regexec_buf(const regex_t *preg, const char *buf, size_t size,
 extern int BUG_exit_code;
 
 #ifdef HAVE_VARIADIC_MACROS
-__attribute__((format (printf, 3, 4))) NORETURN
+__attribute__((__format__ (__printf__, 3, 4))) NORETURN
 void BUG_fl(const char *file, int line, const char *fmt, ...);
 #define BUG(...) BUG_fl(__FILE__, __LINE__, __VA_ARGS__)
 #else
-__attribute__((format (printf, 1, 2))) NORETURN
+__attribute__((__format__ (__printf__, 1, 2))) NORETURN
 void BUG(const char *fmt, ...);
 #endif
 

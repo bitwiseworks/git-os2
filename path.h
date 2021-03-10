@@ -14,19 +14,19 @@ struct strbuf;
  * Return a statically allocated path.
  */
 const char *mkpath(const char *fmt, ...)
-	__attribute__((format (printf, 1, 2)));
+	__attribute__((__format__ (__printf__, 1, 2)));
 
 /*
  * Return a path.
  */
 char *mkpathdup(const char *fmt, ...)
-	__attribute__((format (printf, 1, 2)));
+	__attribute__((__format__ (__printf__, 1, 2)));
 
 /*
  * Construct a path and place the result in the provided buffer `buf`.
  */
 char *mksnpath(char *buf, size_t n, const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 
 /*
  * The `git_common_path` family of functions will construct a path into a
@@ -40,14 +40,14 @@ char *mksnpath(char *buf, size_t n, const char *fmt, ...)
 void strbuf_git_common_path(struct strbuf *sb,
 			    const struct repository *repo,
 			    const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 
 /*
  * Return a statically allocated path into the main repository's
  * (the_repository) common git directory.
  */
 const char *git_common_path(const char *fmt, ...)
-	__attribute__((format (printf, 1, 2)));
+	__attribute__((__format__ (__printf__, 1, 2)));
 
 
 /*
@@ -68,7 +68,7 @@ const char *git_common_path(const char *fmt, ...)
  */
 char *repo_git_path(const struct repository *repo,
 		    const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 
 /*
  * Construct a path into the git directory of repository `repo` and append it
@@ -77,20 +77,20 @@ char *repo_git_path(const struct repository *repo,
 void strbuf_repo_git_path(struct strbuf *sb,
 			  const struct repository *repo,
 			  const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 
 /*
  * Return a statically allocated path into the main repository's
  * (the_repository) git directory.
  */
 const char *git_path(const char *fmt, ...)
-	__attribute__((format (printf, 1, 2)));
+	__attribute__((__format__ (__printf__, 1, 2)));
 
 /*
  * Return a path into the main repository's (the_repository) git directory.
  */
 char *git_pathdup(const char *fmt, ...)
-	__attribute__((format (printf, 1, 2)));
+	__attribute__((__format__ (__printf__, 1, 2)));
 
 /*
  * Construct a path into the main repository's (the_repository) git directory
@@ -98,14 +98,14 @@ char *git_pathdup(const char *fmt, ...)
  * be overridden.
  */
 char *git_path_buf(struct strbuf *buf, const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 
 /*
  * Construct a path into the main repository's (the_repository) git directory
  * and append it to the provided buffer `sb`.
  */
 void strbuf_git_path(struct strbuf *sb, const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 
 /*
  * Return a path into the worktree of repository `repo`.
@@ -114,7 +114,7 @@ void strbuf_git_path(struct strbuf *sb, const char *fmt, ...)
  */
 char *repo_worktree_path(const struct repository *repo,
 				const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 
 /*
  * Construct a path into the worktree of repository `repo` and append it
@@ -125,14 +125,14 @@ char *repo_worktree_path(const struct repository *repo,
 void strbuf_repo_worktree_path(struct strbuf *sb,
 				      const struct repository *repo,
 				      const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 
 /*
  * Return a path into a submodule's git directory located at `path`.  `path`
  * must only reference a submodule of the main repository (the_repository).
  */
 char *git_pathdup_submodule(const char *path, const char *fmt, ...)
-	__attribute__((format (printf, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 
 /*
  * Construct a path into a submodule's git directory located at `path` and
@@ -141,7 +141,7 @@ char *git_pathdup_submodule(const char *path, const char *fmt, ...)
  */
 int strbuf_git_path_submodule(struct strbuf *sb, const char *path,
 				     const char *fmt, ...)
-	__attribute__((format (printf, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 
 void report_linked_checkout_garbage(void);
 

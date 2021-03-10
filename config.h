@@ -626,7 +626,7 @@ struct key_value_info {
  * dies printing the line number and the file name of the highest priority
  * value for the configuration variable `key`.
  */
-NORETURN void git_die_config(const char *key, const char *err, ...) __attribute__((format(printf, 2, 3)));
+NORETURN void git_die_config(const char *key, const char *err, ...) __attribute__((__format__(__printf__, 2, 3)));
 
 /**
  * Helper function which formats the die error message according to the

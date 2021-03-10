@@ -991,7 +991,7 @@ static int process_deepen_not(const char *line, struct string_list *deepen_not, 
 	return 0;
 }
 
-NORETURN __attribute__((format(printf,2,3)))
+NORETURN __attribute__((__format__(__printf__,2,3)))
 static void send_err_and_die(struct upload_pack_data *data,
 			     const char *fmt, ...)
 {

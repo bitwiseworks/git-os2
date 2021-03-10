@@ -225,9 +225,9 @@ struct packet_writer {
 void packet_writer_init(struct packet_writer *writer, int dest_fd);
 
 /* These functions die upon failure. */
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 void packet_writer_write(struct packet_writer *writer, const char *fmt, ...);
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 void packet_writer_error(struct packet_writer *writer, const char *fmt, ...);
 void packet_writer_delim(struct packet_writer *writer);
 void packet_writer_flush(struct packet_writer *writer);

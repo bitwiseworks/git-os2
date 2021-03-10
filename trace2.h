@@ -368,7 +368,7 @@ void trace2_region_enter_printf_fl(const char *file, int line,
 				      (repo), __VA_ARGS__)
 #else
 /* clang-format off */
-__attribute__((format (region_enter_printf, 4, 5)))
+__attribute__((__format__ (region_enter_printf, 4, 5)))
 void trace2_region_enter_printf(const char *category, const char *label,
 				const struct repository *repo, const char *fmt,
 				...);
@@ -413,7 +413,7 @@ void trace2_region_leave_printf_fl(const char *file, int line,
 				      (repo), __VA_ARGS__)
 #else
 /* clang-format off */
-__attribute__((format (region_leave_printf, 4, 5)))
+__attribute__((__format__ (region_leave_printf, 4, 5)))
 void trace2_region_leave_printf(const char *category, const char *label,
 				const struct repository *repo, const char *fmt,
 				...);
@@ -475,7 +475,7 @@ void trace2_printf_fl(const char *file, int line, const char *fmt, ...);
 #define trace2_printf(...) trace2_printf_fl(__FILE__, __LINE__, __VA_ARGS__)
 #else
 /* clang-format off */
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 void trace2_printf(const char *fmt, ...);
 /* clang-format on */
 #endif

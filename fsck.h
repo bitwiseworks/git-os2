@@ -87,7 +87,7 @@ int fsck_finish(struct fsck_options *options);
 void fsck_enable_object_names(struct fsck_options *options);
 const char *fsck_get_object_name(struct fsck_options *options,
 				 const struct object_id *oid);
-__attribute__((format (printf,3,4)))
+__attribute__((__format__ (__printf__,3,4)))
 void fsck_put_object_name(struct fsck_options *options,
 			  const struct object_id *oid,
 			  const char *fmt, ...);
