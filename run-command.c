@@ -9,10 +9,8 @@
 #include "quote.h"
 #include "config.h"
 
-#ifdef __KLIBC__
+#ifdef GIT_OS2_NATIVE
 #include "pkt-line.h"
-// yd use socketpair() instead of pipe() because select() does not work on pipes
-#define pipe(A) socketpair(AF_UNIX, SOCK_STREAM, 0, A)
 #endif
 
 void child_process_init(struct child_process *child)
@@ -168,6 +166,7 @@ int is_executable(const char *name)
 	return st.st_mode & S_IXUSR;
 }
 
+#if !(defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE))
 /*
  * Search $PATH for a command.  This emulates the path search that
  * execvp would perform, without actually executing the command so it
@@ -224,6 +223,7 @@ static int exists_in_PATH(const char *file)
 	free(r);
 	return found;
 }
+#endif
 
 int sane_execvp(const char *file, char * const argv[])
 {
@@ -250,6 +250,7 @@ int sane_execvp(const char *file, char * const argv[])
 	}
 #endif
 
+#if !(defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE))
 	/*
 	 * When a command can't be found because one of the directories
 	 * listed in $PATH is unsearchable, execvp reports EACCES, but
@@ -267,6 +268,7 @@ int sane_execvp(const char *file, char * const argv[])
 		errno = exists_in_PATH(file) ? EACCES : ENOENT;
 	else if (errno == ENOTDIR && !strchr(file, '/'))
 		errno = ENOENT;
+#endif
 	return -1;
 }
 
@@ -297,7 +299,7 @@ static const char **prepare_shell_cmd(struct strvec *out, const char **argv)
 	return out->v;
 }
 
-#ifndef GIT_WINDOWS_NATIVE
+#if !(defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE))
 static int child_notifier = -1;
 
 enum child_errcode {
@@ -540,7 +542,7 @@ static void atfork_parent(struct atfork_state *as)
 		"restoring signal mask");
 #endif
 }
-#endif /* GIT_WINDOWS_NATIVE */
+#endif /* GIT_WINDOWS_NATIVE || GIT_OS2_NATIVE */
 
 static inline void set_cloexec(int fd)
 {
@@ -744,7 +746,7 @@ fail_pipe:
 
 	fflush(NULL);
 
-#ifndef GIT_WINDOWS_NATIVE
+#if !(defined(GIT_WINDOWS_NATIVE) || defined(GIT_OS2_NATIVE))
 {
 	int notify_pipe[2];
 	int null_fd = -1;
@@ -934,8 +936,14 @@ end_of_spawn:
 	else if (cmd->use_shell)
 		cmd->argv = prepare_shell_cmd(&nargv, cmd->argv);
 
+#ifdef GIT_WINDOWS_NATIVE
 	cmd->pid = mingw_spawnvpe(cmd->argv[0], cmd->argv, (char**) cmd->env,
 			cmd->dir, fhin, fhout, fherr);
+#else
+	int stdfds[] = { fhin, fhout, fherr };
+	cmd->pid = spawn2(P_NOWAIT | P_2_APPENDENV, cmd->argv[0], cmd->argv,
+			cmd->dir, cmd->env, stdfds);
+#endif
 	failed_errno = errno;
 	if (cmd->pid < 0 && (!cmd->silent_exec_failure || errno != ENOENT))
 		error_errno("cannot spawn %s", cmd->argv[0]);
@@ -1273,11 +1281,14 @@ int start_async(struct async *async)
 	async->proc_in = proc_in;
 	async->proc_out = proc_out;
 	{
+#ifdef GIT_OS2_NATIVE
 		pthread_attr_t attr;
-		int err;
-		pthread_attr_init( &attr);
-		pthread_attr_setstacksize( &attr, 10*LARGE_PACKET_MAX);
-		err = pthread_create(&async->tid, &attr, run_thread, async);
+		pthread_attr_init(&attr);
+		pthread_attr_setstacksize(&attr, 10 * LARGE_PACKET_MAX);
+		int err = pthread_create(&async->tid, &attr, run_thread, async);
+#else
+		int err = pthread_create(&async->tid, NULL, run_thread, async);
+#endif
 		if (err) {
 			error(_("cannot create async thread: %s"), strerror(err));
 			goto error;

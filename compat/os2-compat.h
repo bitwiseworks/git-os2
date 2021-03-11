@@ -1,6 +1,7 @@
 #define GIT_OS2_NATIVE
 
 #include <ctype.h>
+#include <libcx/spawn2.h>
 #ifndef NO_ICONV
 # include <iconv.h>
 # if defined(__INNOTEK_LIBC__) && defined(__ICONV_H__)
@@ -11,6 +12,9 @@
 #  endif
 # endif
 #endif
+
+/* Use socketpair() instead of pipe() because select() does not work on pipes */
+#define pipe(A) socketpair(AF_UNIX, SOCK_STREAM, 0, A)
 
 #define SHUT_RD         0               /* shut down the reading side */
 #define SHUT_WR         1               /* shut down the writing side */
