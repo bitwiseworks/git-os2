@@ -2888,7 +2888,7 @@ int git_config_set_multivar_in_file_gently(const char *config_filename,
 		close(in_fd);
 		in_fd = -1;
 
-		if (chmod(get_lock_file_path(&lock), st.st_mode & 07777) < 0) {
+		if (fchmod(fd, st.st_mode & 07777) < 0) {
 			error_errno(_("chmod on %s failed"), get_lock_file_path(&lock));
 			ret = CONFIG_NO_WRITE;
 			goto out_free;
@@ -3126,7 +3126,7 @@ static int git_config_copy_or_rename_section_in_file(const char *config_filename
 		goto out;
 	}
 
-	if (chmod(get_lock_file_path(&lock), st.st_mode & 07777) < 0) {
+	if (fchmod(out_fd, st.st_mode & 07777) < 0) {
 		ret = error_errno(_("chmod on %s failed"),
 				  get_lock_file_path(&lock));
 		goto out;
