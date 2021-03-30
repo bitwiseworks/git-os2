@@ -232,6 +232,7 @@
 *.iobj
 *.ipdb
 *.dll
+*.map
 .vs/
 Debug/
 Release/
