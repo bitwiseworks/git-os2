@@ -74,8 +74,8 @@ fi
 # The user is always right.
 if test "${PATH_SEPARATOR+set}" != set; then
   PATH_SEPARATOR=:
-  (PATH='/bin;/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 && {
-    (PATH='/bin:/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 ||
+  (PATH='/bin;/bin;/@unixroot/usr/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 && {
+    (PATH='/bin:/bin:/@unixroot/usr/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 ||
       PATH_SEPARATOR=';'
   }
 fi
@@ -661,7 +661,6 @@ infodir
 docdir
 oldincludedir
 includedir
-runstatedir
 localstatedir
 sharedstatedir
 sysconfdir
@@ -753,7 +752,6 @@ datadir='${datarootdir}'
 sysconfdir='${prefix}/etc'
 sharedstatedir='${prefix}/com'
 localstatedir='${prefix}/var'
-runstatedir='${localstatedir}/run'
 includedir='${prefix}/include'
 oldincludedir='/usr/include'
 docdir='${datarootdir}/doc/${PACKAGE_TARNAME}'
@@ -1006,15 +1004,6 @@ do
   | -silent | --silent | --silen | --sile | --sil)
     silent=yes ;;
 
-  -runstatedir | --runstatedir | --runstatedi | --runstated \
-  | --runstate | --runstat | --runsta | --runst | --runs \
-  | --run | --ru | --r)
-    ac_prev=runstatedir ;;
-  -runstatedir=* | --runstatedir=* | --runstatedi=* | --runstated=* \
-  | --runstate=* | --runstat=* | --runsta=* | --runst=* | --runs=* \
-  | --run=* | --ru=* | --r=*)
-    runstatedir=$ac_optarg ;;
-
   -sbindir | --sbindir | --sbindi | --sbind | --sbin | --sbi | --sb)
     ac_prev=sbindir ;;
   -sbindir=* | --sbindir=* | --sbindi=* | --sbind=* | --sbin=* \
@@ -1152,7 +1141,7 @@ fi
 for ac_var in	exec_prefix prefix bindir sbindir libexecdir datarootdir \
 		datadir sysconfdir sharedstatedir localstatedir includedir \
 		oldincludedir docdir infodir htmldir dvidir pdfdir psdir \
-		libdir localedir mandir runstatedir
+		libdir localedir mandir
 do
   eval ac_val=\$$ac_var
   # Remove trailing slashes.
@@ -1163,7 +1152,7 @@ do
   esac
   # Be sure to have absolute directory names.
   case $ac_val in
-    [\\/$]* | ?:[\\/]* )  continue;;
+    [\\/$]* | ?:[\\/]* | ?: )  continue;;
     NONE | '' ) case $ac_var in *prefix ) continue;; esac;;
   esac
   as_fn_error $? "expected an absolute directory name for --$ac_var: $ac_val"
@@ -1305,7 +1294,6 @@ Fine tuning of the installation directories:
   --sysconfdir=DIR        read-only single-machine data [PREFIX/etc]
   --sharedstatedir=DIR    modifiable architecture-independent data [PREFIX/com]
   --localstatedir=DIR     modifiable single-machine data [PREFIX/var]
-  --runstatedir=DIR       modifiable per-process data [LOCALSTATEDIR/run]
   --libdir=DIR            object code libraries [EPREFIX/lib]
   --includedir=DIR        C header files [PREFIX/include]
   --oldincludedir=DIR     C header files for non-gcc [/usr/include]
@@ -2215,6 +2203,58 @@ See \`config.log' for more details" "$LINENO" 5; }
   fi
 done
 
+# Backslashes into forward slashes:
+# The following OS/2 specific code is performed AFTER config.site
+# has been loaded to allow users to change their environment there.
+# This strange code is necessary to deal with handling of backslashes by ksh.
+
+if test "$ac_emxsupport" != "no" -a "$ac_emxsupport" != "NO"; then
+  ac_save_IFS="$IFS"
+  IFS="\\"
+  ac_TEMP_PATH=
+  for ac_dir in $PATH; do
+    IFS=$ac_save_IFS
+    if test -z "$ac_TEMP_PATH"; then
+      ac_TEMP_PATH="$ac_dir"
+    else
+      ac_TEMP_PATH="$ac_TEMP_PATH/$ac_dir"
+    fi
+  done
+  export PATH="$ac_TEMP_PATH"
+  unset ac_TEMP_PATH
+
+  # Also, make sure that unix-like entries in PATH contain /@unixroot instead of
+  # hardcoded absolute paths to avoid these hardcoded paths in generated files.
+  if test -n "$UNIXROOT"; then
+    ac_save_IFS="$IFS"
+    ac_TEMP_UNIXROOT=`echo "$UNIXROOT" | tr [:upper:] [:lower:]`
+    IFS="$PATH_SEPARATOR"
+    ac_TEMP_PATH=
+    for ac_dir in `echo "$PATH" | tr [:upper:] [:lower:]`; do
+      IFS=$ac_save_IFS
+      case "$ac_dir" in
+        $ac_TEMP_UNIXROOT/usr/*) ac_dir="/@unixroot${ac_dir#$ac_TEMP_UNIXROOT}" ;;
+      esac
+      if test -z "$ac_TEMP_PATH"; then
+        ac_TEMP_PATH="$ac_dir"
+      else
+        ac_TEMP_PATH="$ac_TEMP_PATH$PATH_SEPARATOR$ac_dir"
+      fi
+    done
+    unset ac_TEMP_UNIXROOT
+    export PATH="$ac_TEMP_PATH"
+    unset ac_TEMP_PATH
+  fi
+fi
+
+# set ac_executable_extensions!
+if test "$ac_executable_extensions" = ""; then
+  if (sh -c : && sh.exe -c :) >/dev/null 2>/dev/null; then
+    ac_executable_extensions=".exe"
+    export ac_executable_extensions
+  fi
+fi
+
 if test -r "$cache_file"; then
   # Some versions of bash will fail to source /dev/null (special files
   # actually), so we avoid doing that.  DJGPP emulates it as a regular file.
@@ -2296,7 +2336,7 @@ fi
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
-ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_link='eval $CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
@@ -2524,7 +2564,7 @@ fi
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
-ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_link='eval $CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 if test -n "$ac_tool_prefix"; then
   # Extract the first word of "${ac_tool_prefix}gcc", so it can be a program name with args.
@@ -3144,7 +3184,7 @@ else
   ac_save_c_werror_flag=$ac_c_werror_flag
    ac_c_werror_flag=yes
    ac_cv_prog_cc_g=no
-   CFLAGS="-g"
+            CFLAGS="$CFLAGS -g"
    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -3307,14 +3347,14 @@ fi
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
-ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_link='eval $CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
-ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_link='eval $CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking how to run the C preprocessor" >&5
 $as_echo_n "checking how to run the C preprocessor... " >&6; }
@@ -3445,7 +3485,7 @@ fi
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
-ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_link='eval $CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 
@@ -4243,7 +4283,7 @@ $as_echo "$as_me: CHECKS for programs" >&6;}
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
-ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_link='eval $CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 if test -n "$ac_tool_prefix"; then
   for ac_prog in cc gcc
@@ -4421,7 +4461,7 @@ else
   ac_save_c_werror_flag=$ac_c_werror_flag
    ac_c_werror_flag=yes
    ac_cv_prog_cc_g=no
-   CFLAGS="-g"
+            CFLAGS="$CFLAGS -g"
    cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 /* end confdefs.h.  */
 
@@ -4584,7 +4624,7 @@ fi
 ac_ext=c
 ac_cpp='$CPP $CPPFLAGS'
 ac_compile='$CC -c $CFLAGS $CPPFLAGS conftest.$ac_ext >&5'
-ac_link='$CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
+ac_link='eval $CC -o conftest$ac_exeext $CFLAGS $CPPFLAGS $LDFLAGS conftest.$ac_ext $LIBS >&5'
 ac_compiler_gnu=$ac_cv_c_compiler_gnu
 
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for inline" >&5
@@ -8050,8 +8090,8 @@ fi
 # The user is always right.
 if test "${PATH_SEPARATOR+set}" != set; then
   PATH_SEPARATOR=:
-  (PATH='/bin;/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 && {
-    (PATH='/bin:/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 ||
+  (PATH='/bin;/bin;/@unixroot/usr/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 && {
+    (PATH='/bin:/bin:/@unixroot/usr/bin'; FPATH=$PATH; sh -c :) >/dev/null 2>&1 ||
       PATH_SEPARATOR=';'
   }
 fi
