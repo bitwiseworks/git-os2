@@ -2951,10 +2951,13 @@ else
 endif
 endif
 	$(MAKE) -C templates DESTDIR='$(DESTDIR_SQ)' install
+ifeq ($(uname_S),OS/2)
 	# symlink script files to exe, so execvp can find them
 	for p in $(patsubst %.sh,%,$(SCRIPT_SH)); do \
-		ln -s $$p $(DESTDIR_SQ)$(gitexec_instdir_SQ)/$$p.exe; \
+		$(RM) "$(DESTDIR_SQ)$(gitexec_instdir_SQ)/$$p.exe" && \
+		ln -s "$$p" "$(DESTDIR_SQ)$(gitexec_instdir_SQ)/$$p.exe"; \
 	done
+endif
 	$(INSTALL) -d -m 755 '$(DESTDIR_SQ)$(mergetools_instdir_SQ)'
 	$(INSTALL) -m 644 mergetools/* '$(DESTDIR_SQ)$(mergetools_instdir_SQ)'
 ifndef NO_GETTEXT
