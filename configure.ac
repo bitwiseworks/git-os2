@@ -492,7 +492,7 @@ else
 fi
 GIT_CONF_SUBST([CC_LD_DYNPATH])
 #AC_PROG_INSTALL		# needs install-sh or install.sh in sources
-AC_CHECK_TOOLS(AR, [gar ar], :)
+AC_CHECK_TOOLS(AR, [emxomfar gar ar], :)
 AC_CHECK_PROGS(TAR, [gtar tar])
 AC_CHECK_PROGS(DIFF, [gnudiff gdiff diff])
 # TCLTK_PATH will be set to some value if we want Tcl/Tk

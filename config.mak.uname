@@ -709,7 +709,7 @@ ifeq ($(uname_S),OS/2)
 	COMPAT_CFLAGS += -Icompat
 	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
 	COMPAT_OBJS += compat/os2.o
-	BASIC_CFLAGS += -g -Wno-format-zero-length
+	BASIC_CFLAGS += -Zomf -g -Wno-format-zero-length
 	BASIC_LDFLAGS += -g -Zmap -Zbin-files -Zhigh-mem -Zomf -Zargs-wild -Zargs-resp -Zstack 0x2000
 	EXTLIBS += -lcx
 	X = .exe
@@ -731,6 +731,8 @@ ifeq ($(uname_S),OS/2)
 	HAVE_BSD_SYSCTL=YesPlease
 	PTHREAD_CFLAGS=-lpthread
 	PTHREAD_LIBS=-lpthread
+	CURL_CONFIG=curl-config
+	CURL_LDFLAGS=-L/@unixroot/usr/lib -lcurl
 endif
 
 vcxproj:
