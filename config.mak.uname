@@ -709,7 +709,7 @@ ifeq ($(uname_S),OS/2)
 	COMPAT_CFLAGS += -Icompat
 	COMPAT_CFLAGS += -DSTRIP_EXTENSION=\".exe\"
 	COMPAT_OBJS += compat/os2.o
-	BASIC_CFLAGS += -g -Zomf -Wno-format-zero-length
+	BASIC_CFLAGS += -g -Wno-format-zero-length
 	BASIC_LDFLAGS += -g -Zmap -Zbin-files -Zhigh-mem -Zomf -Zargs-wild -Zargs-resp -Zstack 0x2000
 	EXTLIBS += -lcx
 	X = .exe
