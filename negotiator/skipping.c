@@ -1,9 +1,13 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
 #include "skipping.h"
 #include "../commit.h"
 #include "../fetch-negotiator.h"
+#include "../hex.h"
 #include "../prio-queue.h"
 #include "../refs.h"
+#include "../repository.h"
 #include "../tag.h"
 
 /* Remember to update object flag allocation in object.h */
@@ -50,7 +54,7 @@ struct data {
 	int non_common_revs;
 };
 
-static int compare(const void *a_, const void *b_, void *unused)
+static int compare(const void *a_, const void *b_, void *data UNUSED)
 {
 	const struct entry *a = a_;
 	const struct entry *b = b_;
@@ -62,7 +66,7 @@ static struct entry *rev_list_push(struct data *data, struct commit *commit, int
 	struct entry *entry;
 	commit->object.flags |= mark | SEEN;
 
-	entry = xcalloc(1, sizeof(*entry));
+	CALLOC_ARRAY(entry, 1);
 	entry->commit = commit;
 	prio_queue_put(&data->rev_list, entry);
 
@@ -71,8 +75,9 @@ static struct entry *rev_list_push(struct data *data, struct commit *commit, int
 	return entry;
 }
 
-static int clear_marks(const char *refname, const struct object_id *oid,
-		       int flag, void *cb_data)
+static int clear_marks(const char *refname, const char *referent UNUSED, const struct object_id *oid,
+		       int flag UNUSED,
+		       void *cb_data UNUSED)
 {
 	struct object *o = deref_tag(the_repository, parse_object(the_repository, oid), refname, 0);
 
@@ -83,24 +88,37 @@ static int clear_marks(const char *refname, const struct object_id *oid,
 }
 
 /*
- * Mark this SEEN commit and all its SEEN ancestors as COMMON.
+ * Mark this SEEN commit and all its parsed SEEN ancestors as COMMON.
  */
-static void mark_common(struct data *data, struct commit *c)
+static void mark_common(struct data *data, struct commit *seen_commit)
 {
-	struct commit_list *p;
+	struct prio_queue queue = { NULL };
+	struct commit *c;
 
-	if (c->object.flags & COMMON)
+	if (seen_commit->object.flags & COMMON)
 		return;
-	c->object.flags |= COMMON;
-	if (!(c->object.flags & POPPED))
-		data->non_common_revs--;
 
-	if (!c->object.parsed)
-		return;
-	for (p = c->parents; p; p = p->next) {
-		if (p->item->object.flags & SEEN)
-			mark_common(data, p->item);
+	prio_queue_put(&queue, seen_commit);
+	seen_commit->object.flags |= COMMON;
+	while ((c = prio_queue_get(&queue))) {
+		struct commit_list *p;
+
+		if (!(c->object.flags & POPPED))
+			data->non_common_revs--;
+
+		if (!c->object.parsed)
+			continue;
+		for (p = c->parents; p; p = p->next) {
+			if (!(p->item->object.flags & SEEN) ||
+			    (p->item->object.flags & COMMON))
+				continue;
+
+			p->item->object.flags |= COMMON;
+			prio_queue_put(&queue, p->item);
+		}
 	}
+
+	clear_prio_queue(&queue);
 }
 
 /*
@@ -116,7 +134,6 @@ static int push_parent(struct data *data, struct entry *entry,
 	struct entry *parent_entry;
 
 	if (to_push->object.flags & SEEN) {
-		int i;
 		if (to_push->object.flags & POPPED)
 			/*
 			 * The entry for this commit has already been popped,
@@ -127,7 +144,7 @@ static int push_parent(struct data *data, struct entry *entry,
 		/*
 		 * Find the existing entry and use it.
 		 */
-		for (i = 0; i < data->rev_list.nr; i++) {
+		for (size_t i = 0; i < data->rev_list.nr; i++) {
 			parent_entry = data->rev_list.array[i].data;
 			if (parent_entry->commit == to_push)
 				goto parent_found;
@@ -177,7 +194,7 @@ static const struct object_id *get_rev(struct data *data)
 		if (!(commit->object.flags & COMMON) && !entry->ttl)
 			to_send = commit;
 
-		parse_commit(commit);
+		repo_parse_commit(the_repository, commit);
 		for (p = commit->parents; p; p = p->next)
 			parent_pushed |= push_parent(data, entry, p->item);
 
@@ -221,7 +238,7 @@ static int ack(struct fetch_negotiator *n, struct commit *c)
 {
 	int known_to_be_common = !!(c->object.flags & COMMON);
 	if (!(c->object.flags & SEEN))
-		die("received ack for commit %s not sent as 'have'\n",
+		die("received ack for commit %s not sent as 'have'",
 		    oid_to_hex(&c->object.oid));
 	mark_common(n->data, c);
 	return known_to_be_common;
@@ -229,8 +246,11 @@ static int ack(struct fetch_negotiator *n, struct commit *c)
 
 static void release(struct fetch_negotiator *n)
 {
-	clear_prio_queue(&((struct data *)n->data)->rev_list);
-	FREE_AND_NULL(n->data);
+	struct data *data = n->data;
+	for (size_t i = 0; i < data->rev_list.nr; i++)
+		free(data->rev_list.array[i].data);
+	clear_prio_queue(&data->rev_list);
+	FREE_AND_NULL(data);
 }
 
 void skipping_negotiator_init(struct fetch_negotiator *negotiator)
@@ -241,10 +261,11 @@ void skipping_negotiator_init(struct fetch_negotiator *negotiator)
 	negotiator->next = next;
 	negotiator->ack = ack;
 	negotiator->release = release;
-	negotiator->data = data = xcalloc(1, sizeof(*data));
+	negotiator->data = CALLOC_ARRAY(data, 1);
 	data->rev_list.compare = compare;
 
 	if (marked)
-		for_each_ref(clear_marks, NULL);
+		refs_for_each_ref(get_main_ref_store(the_repository),
+				  clear_marks, NULL);
 	marked = 1;
 }

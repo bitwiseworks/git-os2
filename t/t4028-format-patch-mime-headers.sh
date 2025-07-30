@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='format-patch mime headers and extra headers do not conflict'
+
 . ./test-lib.sh
 
 test_expect_success 'create commit with utf-8 body' '

@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='diff --exit-code with whitespace'
+
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -26,8 +27,7 @@ test_expect_success 'diff-tree --exit-code' '
 
 test_expect_success 'diff-tree -b --exit-code' '
 	git diff -b --exit-code HEAD^ HEAD &&
-	git diff-tree -b -p --exit-code HEAD^ HEAD &&
-	git diff-tree -b --exit-code HEAD^ HEAD
+	git diff-tree -b -p --exit-code HEAD^ HEAD
 '
 
 test_expect_success 'diff-index --cached --exit-code' '

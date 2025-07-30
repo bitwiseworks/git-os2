@@ -2,6 +2,9 @@
 
 test_description='magic pathspec tests using git-log'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -18,7 +21,7 @@ test_expect_success '"git log :/" should not be ambiguous' '
 test_expect_success '"git log :/a" should be ambiguous (applied both rev and worktree)' '
 	: >a &&
 	test_must_fail git log :/a 2>error &&
-	test_i18ngrep ambiguous error
+	test_grep ambiguous error
 '
 
 test_expect_success '"git log :/a -- " should not be ambiguous' '
@@ -26,15 +29,10 @@ test_expect_success '"git log :/a -- " should not be ambiguous' '
 '
 
 test_expect_success '"git log :/detached -- " should find a commit only in HEAD' '
-	test_when_finished "git checkout master" &&
+	test_when_finished "git checkout main" &&
 	git checkout --detach &&
-	# Must manually call `test_tick` instead of using `test_commit`,
-	# because the latter additionally creates a tag, which would make
-	# the commit reachable not only via HEAD.
-	test_tick &&
-	git commit --allow-empty -m detached &&
-	test_tick &&
-	git commit --allow-empty -m something-else &&
+	test_commit --no-tag detached &&
+	test_commit --no-tag something-else &&
 	git log :/detached --
 '
 
@@ -67,7 +65,7 @@ test_expect_success '"git log :/in" should not be ambiguous' '
 
 test_expect_success '"git log :" should be ambiguous' '
 	test_must_fail git log : 2>error &&
-	test_i18ngrep ambiguous error
+	test_grep ambiguous error
 '
 
 test_expect_success 'git log -- :' '
@@ -106,7 +104,7 @@ test_expect_success '"git log :(exclude)sub --" must resolve as an object' '
 
 test_expect_success '"git log :(unknown-magic) complains of bogus magic' '
 	test_must_fail git log ":(unknown-magic)" 2>error &&
-	test_i18ngrep pathspec.magic error
+	test_grep pathspec.magic error
 '
 
 test_expect_success 'command line pathspec parsing for "git log"' '
@@ -119,13 +117,14 @@ test_expect_success 'command line pathspec parsing for "git log"' '
 	git checkout HEAD^ &&
 	echo 2 >a &&
 	git commit -a -m "update a to 2" &&
-	test_must_fail git merge master &&
+	test_must_fail git merge main &&
 	git add a &&
 	git log --merge -- a
 '
 
 test_expect_success 'tree_entry_interesting does not match past submodule boundaries' '
 	test_when_finished "rm -rf repo submodule" &&
+	test_config_global protocol.file.allow always &&
 	git init submodule &&
 	test_commit -C submodule initial &&
 	git init repo &&

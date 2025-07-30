@@ -2,6 +2,9 @@
 
 test_description='git partial clone'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 # create a normal "src" repo where we can later create new commits.
@@ -13,10 +16,10 @@ test_expect_success 'setup normal src repo' '
 	git init src &&
 	for n in 1 2 3 4
 	do
-		echo "This is file: $n" > src/file.$n.txt
-		git -C src add file.$n.txt
-		git -C src commit -m "file $n"
-		git -C src ls-files -s file.$n.txt >>temp
+		echo "This is file: $n" > src/file.$n.txt &&
+		git -C src add file.$n.txt &&
+		git -C src commit -m "file $n" &&
+		git -C src ls-files -s file.$n.txt >>temp || return 1
 	done &&
 	awk -f print_2.awk <temp | sort >expect_1.oids &&
 	test_line_count = 4 expect_1.oids
@@ -46,19 +49,26 @@ test_expect_success 'do partial clone 1' '
 	test "$(git -C pc1 config --local remote.origin.partialclonefilter)" = "blob:none"
 '
 
+test_expect_success 'rev-list --missing=allow-promisor on partial clone' '
+	git -C pc1 rev-list --objects --missing=allow-promisor HEAD >actual &&
+	git -C pc1 rev-list --objects --missing=print HEAD >expect.raw &&
+	grep -v "^?" expect.raw >expect &&
+	test_cmp expect actual
+'
+
 test_expect_success 'verify that .promisor file contains refs fetched' '
 	ls pc1/.git/objects/pack/pack-*.promisor >promisorlist &&
 	test_line_count = 1 promisorlist &&
 	git -C srv.bare rev-parse --verify HEAD >headhash &&
 	grep "$(cat headhash) HEAD" $(cat promisorlist) &&
-	grep "$(cat headhash) refs/heads/master" $(cat promisorlist)
+	grep "$(cat headhash) refs/heads/main" $(cat promisorlist)
 '
 
-# checkout master to force dynamic object fetch of blobs at HEAD.
+# checkout main to force dynamic object fetch of blobs at HEAD.
 test_expect_success 'verify checkout with dynamic object fetch' '
 	git -C pc1 rev-list --quiet --objects --missing=print HEAD >observed &&
 	test_line_count = 4 observed &&
-	git -C pc1 checkout master &&
+	git -C pc1 checkout main &&
 	git -C pc1 rev-list --quiet --objects --missing=print HEAD >observed &&
 	test_line_count = 0 observed
 '
@@ -69,12 +79,12 @@ test_expect_success 'push new commits to server' '
 	git -C src remote add srv "file://$(pwd)/srv.bare" &&
 	for x in a b c d e
 	do
-		echo "Mod file.1.txt $x" >>src/file.1.txt
-		git -C src add file.1.txt
-		git -C src commit -m "mod $x"
+		echo "Mod file.1.txt $x" >>src/file.1.txt &&
+		git -C src add file.1.txt &&
+		git -C src commit -m "mod $x" || return 1
 	done &&
-	git -C src blame master -- file.1.txt >expect.blame &&
-	git -C src push -u srv master
+	git -C src blame main -- file.1.txt >expect.blame &&
+	git -C src push -u srv main
 '
 
 # (partial) fetch in the partial clone repo from the promisor remote.
@@ -83,26 +93,26 @@ test_expect_success 'push new commits to server' '
 test_expect_success 'partial fetch inherits filter settings' '
 	git -C pc1 fetch origin &&
 	git -C pc1 rev-list --quiet --objects --missing=print \
-		master..origin/master >observed &&
+		main..origin/main >observed &&
 	test_line_count = 5 observed
 '
 
 # force dynamic object fetch using diff.
-# we should only get 1 new blob (for the file in origin/master).
+# we should only get 1 new blob (for the file in origin/main).
 test_expect_success 'verify diff causes dynamic object fetch' '
-	git -C pc1 diff master..origin/master -- file.1.txt &&
+	git -C pc1 diff main..origin/main -- file.1.txt &&
 	git -C pc1 rev-list --quiet --objects --missing=print \
-		 master..origin/master >observed &&
+		 main..origin/main >observed &&
 	test_line_count = 4 observed
 '
 
 # force full dynamic object fetch of the file's history using blame.
 # we should get the intermediate blobs for the file.
 test_expect_success 'verify blame causes dynamic object fetch' '
-	git -C pc1 blame origin/master -- file.1.txt >observed.blame &&
+	git -C pc1 blame origin/main -- file.1.txt >observed.blame &&
 	test_cmp expect.blame observed.blame &&
 	git -C pc1 rev-list --quiet --objects --missing=print \
-		master..origin/master >observed &&
+		main..origin/main >observed &&
 	test_line_count = 0 observed
 '
 
@@ -111,11 +121,11 @@ test_expect_success 'verify blame causes dynamic object fetch' '
 test_expect_success 'push new commits to server for file.2.txt' '
 	for x in a b c d e f
 	do
-		echo "Mod file.2.txt $x" >>src/file.2.txt
-		git -C src add file.2.txt
-		git -C src commit -m "mod $x"
+		echo "Mod file.2.txt $x" >>src/file.2.txt &&
+		git -C src add file.2.txt &&
+		git -C src commit -m "mod $x" || return 1
 	done &&
-	git -C src push -u srv master
+	git -C src push -u srv main
 '
 
 # Do FULL fetch by disabling inherited filter-spec using --no-filter.
@@ -123,7 +133,7 @@ test_expect_success 'push new commits to server for file.2.txt' '
 test_expect_success 'override inherited filter-spec using --no-filter' '
 	git -C pc1 fetch --no-filter origin &&
 	git -C pc1 rev-list --quiet --objects --missing=print \
-		master..origin/master >observed &&
+		main..origin/main >observed &&
 	test_line_count = 0 observed
 '
 
@@ -132,11 +142,11 @@ test_expect_success 'override inherited filter-spec using --no-filter' '
 test_expect_success 'push new commits to server for file.3.txt' '
 	for x in a b c d e f
 	do
-		echo "Mod file.3.txt $x" >>src/file.3.txt
-		git -C src add file.3.txt
-		git -C src commit -m "mod $x"
+		echo "Mod file.3.txt $x" >>src/file.3.txt &&
+		git -C src add file.3.txt &&
+		git -C src commit -m "mod $x" || return 1
 	done &&
-	git -C src push -u srv master
+	git -C src push -u srv main
 '
 
 # Do a partial fetch and then try to manually fetch the missing objects.
@@ -146,7 +156,7 @@ test_expect_success 'manual prefetch of missing objects' '
 	git -C pc1 fetch --filter=blob:none origin &&
 
 	git -C pc1 rev-list --quiet --objects --missing=print \
-		 master..origin/master >revs &&
+		 main..origin/main >revs &&
 	awk -f print_1.awk revs |
 	sed "s/?//" |
 	sort >observed.oids &&
@@ -155,7 +165,7 @@ test_expect_success 'manual prefetch of missing objects' '
 	git -C pc1 fetch-pack --stdin "file://$(pwd)/srv.bare" <observed.oids &&
 
 	git -C pc1 rev-list --quiet --objects --missing=print \
-		master..origin/master >revs &&
+		main..origin/main >revs &&
 	awk -f print_1.awk revs |
 	sed "s/?//" |
 	sort >observed.oids &&
@@ -163,19 +173,106 @@ test_expect_success 'manual prefetch of missing objects' '
 	test_line_count = 0 observed.oids
 '
 
+# create new commits in "src" repo to establish a history on file.4.txt
+# and push to "srv.bare".
+test_expect_success 'push new commits to server for file.4.txt' '
+	for x in a b c d e f
+	do
+		echo "Mod file.4.txt $x" >src/file.4.txt &&
+		if list_contains "a,b" "$x"; then
+			printf "%10000s" X >>src/file.4.txt
+		fi &&
+		if list_contains "c,d" "$x"; then
+			printf "%20000s" X >>src/file.4.txt
+		fi &&
+		git -C src add file.4.txt &&
+		git -C src commit -m "mod $x" || return 1
+	done &&
+	git -C src push -u srv main
+'
+
+# Do partial fetch to fetch smaller files; then verify that without --refetch
+# applying a new filter does not refetch missing large objects. Then use
+# --refetch to apply the new filter on existing commits. Test it under both
+# protocol v2 & v0.
+test_expect_success 'apply a different filter using --refetch' '
+	git -C pc1 fetch --filter=blob:limit=999 origin &&
+	git -C pc1 rev-list --quiet --objects --missing=print \
+		main..origin/main >observed &&
+	test_line_count = 4 observed &&
+
+	git -C pc1 fetch --filter=blob:limit=19999 --refetch origin &&
+	git -C pc1 rev-list --quiet --objects --missing=print \
+		main..origin/main >observed &&
+	test_line_count = 2 observed &&
+
+	git -c protocol.version=0 -C pc1 fetch --filter=blob:limit=29999 \
+		--refetch origin &&
+	git -C pc1 rev-list --quiet --objects --missing=print \
+		main..origin/main >observed &&
+	test_line_count = 0 observed
+'
+
+test_expect_success 'fetch --refetch works with a shallow clone' '
+	git clone --no-checkout --depth=1 --filter=blob:none "file://$(pwd)/srv.bare" pc1s &&
+	git -C pc1s rev-list --objects --missing=print HEAD >observed &&
+	test_line_count = 6 observed &&
+
+	GIT_TRACE=1 git -C pc1s fetch --filter=blob:limit=999 --refetch origin &&
+	git -C pc1s rev-list --objects --missing=print HEAD >observed &&
+	test_line_count = 6 observed
+'
+
+test_expect_success 'fetch --refetch triggers repacking' '
+	GIT_TRACE2_CONFIG_PARAMS=gc.autoPackLimit,maintenance.incremental-repack.auto &&
+	export GIT_TRACE2_CONFIG_PARAMS &&
+
+	GIT_TRACE2_EVENT="$PWD/trace1.event" \
+	git -C pc1 fetch --refetch origin &&
+	test_subcommand git maintenance run --auto --no-quiet --detach <trace1.event &&
+	grep \"param\":\"gc.autopacklimit\",\"value\":\"1\" trace1.event &&
+	grep \"param\":\"maintenance.incremental-repack.auto\",\"value\":\"-1\" trace1.event &&
+
+	GIT_TRACE2_EVENT="$PWD/trace2.event" \
+	git -c protocol.version=0 \
+		-c gc.autoPackLimit=0 \
+		-c maintenance.incremental-repack.auto=1234 \
+		-C pc1 fetch --refetch origin &&
+	test_subcommand git maintenance run --auto --no-quiet --detach <trace2.event &&
+	grep \"param\":\"gc.autopacklimit\",\"value\":\"0\" trace2.event &&
+	grep \"param\":\"maintenance.incremental-repack.auto\",\"value\":\"-1\" trace2.event &&
+
+	GIT_TRACE2_EVENT="$PWD/trace3.event" \
+	git -c protocol.version=0 \
+		-c gc.autoPackLimit=1234 \
+		-c maintenance.incremental-repack.auto=0 \
+		-C pc1 fetch --refetch origin &&
+	test_subcommand git maintenance run --auto --no-quiet --detach <trace3.event &&
+	grep \"param\":\"gc.autopacklimit\",\"value\":\"1\" trace3.event &&
+	grep \"param\":\"maintenance.incremental-repack.auto\",\"value\":\"0\" trace3.event
+'
+
 test_expect_success 'partial clone with transfer.fsckobjects=1 works with submodules' '
 	test_create_repo submodule &&
 	test_commit -C submodule mycommit &&
 
 	test_create_repo src_with_sub &&
-	test_config -C src_with_sub uploadpack.allowfilter 1 &&
-	test_config -C src_with_sub uploadpack.allowanysha1inwant 1 &&
+	git -C src_with_sub config uploadpack.allowfilter 1 &&
+	git -C src_with_sub config uploadpack.allowanysha1inwant 1 &&
+
+	test_config_global protocol.file.allow always &&
 
 	git -C src_with_sub submodule add "file://$(pwd)/submodule" mysub &&
 	git -C src_with_sub commit -m "commit with submodule" &&
 
 	git -c transfer.fsckobjects=1 \
 		clone --filter="blob:none" "file://$(pwd)/src_with_sub" dst &&
+	test_when_finished rm -rf dst
+'
+
+test_expect_success 'lazily fetched .gitmodules works' '
+	git clone --filter="blob:none" --no-checkout "file://$(pwd)/src_with_sub" dst &&
+	git -C dst fetch &&
 	test_when_finished rm -rf dst
 '
 
@@ -196,7 +293,7 @@ test_expect_success 'use fsck before and after manually fetching a missing subtr
 	echo "in dir" >src/dir/file.txt &&
 	git -C src add dir/file.txt &&
 	git -C src commit -m "file in dir" &&
-	git -C src push -u srv master &&
+	git -C src push -u srv main &&
 	SUBTREE=$(git -C src rev-parse HEAD:dir) &&
 
 	rm -rf dst &&
@@ -204,7 +301,7 @@ test_expect_success 'use fsck before and after manually fetching a missing subtr
 	git -C dst fsck &&
 
 	# Make sure we only have commits, and all trees and blobs are missing.
-	git -C dst rev-list --missing=allow-any --objects master \
+	git -C dst rev-list --missing=allow-any --objects main \
 		>fetched_objects &&
 	awk -f print_1.awk fetched_objects |
 	xargs -n1 git -C dst cat-file -t >fetched_types &&
@@ -221,8 +318,8 @@ test_expect_success 'use fsck before and after manually fetching a missing subtr
 	git -C dst fsck &&
 
 	# Auto-fetch all remaining trees and blobs with --missing=error
-	git -C dst rev-list --missing=error --objects master >fetched_objects &&
-	test_line_count = 70 fetched_objects &&
+	git -C dst rev-list --missing=error --objects main >fetched_objects &&
+	test_line_count = 88 fetched_objects &&
 
 	awk -f print_1.awk fetched_objects |
 	xargs -n1 git -C dst cat-file -t >fetched_types &&
@@ -256,14 +353,14 @@ test_expect_success 'upload-pack complains of bogus filter config' '
 	test_must_fail git \
 		-c uploadpackfilter.tree.maxdepth \
 		upload-pack . >/dev/null 2>err &&
-	test_i18ngrep "unable to parse.*tree.maxdepth" err
+	test_grep "unable to parse.*tree.maxdepth" err
 '
 
 test_expect_success 'upload-pack fails banned object filters' '
 	test_config -C srv.bare uploadpackfilter.blob:none.allow false &&
 	test_must_fail ok=sigpipe git clone --no-checkout --filter=blob:none \
 		"file://$(pwd)/srv.bare" pc3 2>err &&
-	test_i18ngrep "filter '\''blob:none'\'' not supported" err
+	test_grep "filter '\''blob:none'\'' not supported" err
 '
 
 test_expect_success 'upload-pack fails banned combine object filters' '
@@ -273,14 +370,14 @@ test_expect_success 'upload-pack fails banned combine object filters' '
 	test_config -C srv.bare uploadpackfilter.blob:none.allow false &&
 	test_must_fail ok=sigpipe git clone --no-checkout --filter=tree:1 \
 		--filter=blob:none "file://$(pwd)/srv.bare" pc3 2>err &&
-	test_i18ngrep "filter '\''blob:none'\'' not supported" err
+	test_grep "filter '\''blob:none'\'' not supported" err
 '
 
 test_expect_success 'upload-pack fails banned object filters with fallback' '
 	test_config -C srv.bare uploadpackfilter.allow false &&
 	test_must_fail ok=sigpipe git clone --no-checkout --filter=blob:none \
 		"file://$(pwd)/srv.bare" pc3 2>err &&
-	test_i18ngrep "filter '\''blob:none'\'' not supported" err
+	test_grep "filter '\''blob:none'\'' not supported" err
 '
 
 test_expect_success 'upload-pack limits tree depth filters' '
@@ -289,7 +386,7 @@ test_expect_success 'upload-pack limits tree depth filters' '
 	test_config -C srv.bare uploadpackfilter.tree.maxDepth 0 &&
 	test_must_fail ok=sigpipe git clone --no-checkout --filter=tree:1 \
 		"file://$(pwd)/srv.bare" pc3 2>err &&
-	test_i18ngrep "tree filter allows max depth 0, but got 1" err &&
+	test_grep "tree filter allows max depth 0, but got 1" err &&
 
 	git clone --no-checkout --filter=tree:0 "file://$(pwd)/srv.bare" pc4 &&
 
@@ -297,7 +394,7 @@ test_expect_success 'upload-pack limits tree depth filters' '
 	git clone --no-checkout --filter=tree:5 "file://$(pwd)/srv.bare" pc5 &&
 	test_must_fail ok=sigpipe git clone --no-checkout --filter=tree:6 \
 		"file://$(pwd)/srv.bare" pc6 2>err &&
-	test_i18ngrep "tree filter allows max depth 5, but got 6" err
+	test_grep "tree filter allows max depth 5, but got 6" err
 '
 
 test_expect_success 'partial clone fetches blobs pointed to by refs even if normally filtered out' '
@@ -347,7 +444,7 @@ test_expect_success 'setup src repo for sparse filter' '
 test_expect_success 'partial clone with sparse filter succeeds' '
 	rm -rf dst.git &&
 	git clone --no-local --bare \
-		  --filter=sparse:oid=master:only-one \
+		  --filter=sparse:oid=main:only-one \
 		  sparse-src dst.git &&
 	(
 		cd dst.git &&
@@ -360,13 +457,13 @@ test_expect_success 'partial clone with sparse filter succeeds' '
 test_expect_success 'partial clone with unresolvable sparse filter fails cleanly' '
 	rm -rf dst.git &&
 	test_must_fail git clone --no-local --bare \
-				 --filter=sparse:oid=master:no-such-name \
+				 --filter=sparse:oid=main:no-such-name \
 				 sparse-src dst.git 2>err &&
-	test_i18ngrep "unable to access sparse blob in .master:no-such-name" err &&
+	test_grep "unable to access sparse blob in .main:no-such-name" err &&
 	test_must_fail git clone --no-local --bare \
-				 --filter=sparse:oid=master \
+				 --filter=sparse:oid=main \
 				 sparse-src dst.git 2>err &&
-	test_i18ngrep "unable to parse sparse filter data in" err
+	test_grep "unable to parse sparse filter data in" err
 '
 
 setup_triangle () {
@@ -382,7 +479,7 @@ setup_triangle () {
 	for i in $(test_seq 1 100)
 	do
 		echo "make the tree big" >server/file$i &&
-		git -C server add file$i
+		git -C server add file$i || return 1
 	done &&
 	git -C server commit -m "initial" &&
 	git clone --bare --filter=tree:0 "file://$(pwd)/server" client &&
@@ -396,8 +493,8 @@ setup_triangle () {
 	TREE_HASH=$(git -C server rev-parse HEAD~1^{tree}) &&
 	git -C promisor-remote fetch --keep "file://$(pwd)/server" "$TREE_HASH" &&
 	git -C promisor-remote count-objects -v >object-count &&
-	test_i18ngrep "count: 0" object-count &&
-	test_i18ngrep "in-pack: 2" object-count &&
+	test_grep "count: 0" object-count &&
+	test_grep "in-pack: 2" object-count &&
 
 	# Set it as the promisor remote of client. Thus, whenever
 	# the client lazy fetches, the lazy fetch will succeed only if it is
@@ -419,7 +516,7 @@ test_expect_success 'fetch lazy-fetches only to resolve deltas' '
 	# promisor remote other than for the big tree (because it needs to
 	# resolve the delta).
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client \
-		fetch "file://$(pwd)/server" master &&
+		fetch "file://$(pwd)/server" main &&
 
 	# Verify the assumption that the client needed to fetch the delta base
 	# to resolve the delta.
@@ -438,7 +535,7 @@ test_expect_success 'fetch lazy-fetches only to resolve deltas, protocol v2' '
 	# promisor remote other than for the big blob (because it needs to
 	# resolve the delta).
 	GIT_TRACE_PACKET="$(pwd)/trace" git -C client \
-		fetch "file://$(pwd)/server" master &&
+		fetch "file://$(pwd)/server" main &&
 
 	# Verify that protocol version 2 was used.
 	grep "fetch< version 2" trace &&
@@ -545,6 +642,87 @@ test_expect_success 'fetch from a partial clone, protocol v2' '
 	grep "version 2" trace
 '
 
+test_expect_success 'repack does not loosen promisor objects' '
+	rm -rf client trace &&
+	git clone --bare --filter=blob:none "file://$(pwd)/srv.bare" client &&
+	test_when_finished "rm -rf client trace" &&
+	GIT_TRACE2_PERF="$(pwd)/trace" git -C client repack -A -d &&
+	grep "loosen_unused_packed_objects/loosened:0" trace
+'
+
+test_expect_success 'lazy-fetch in submodule succeeds' '
+	# setup
+	test_config_global protocol.file.allow always &&
+
+	test_when_finished "rm -rf src-sub" &&
+	git init src-sub &&
+	git -C src-sub config uploadpack.allowfilter 1 &&
+	git -C src-sub config uploadpack.allowanysha1inwant 1 &&
+
+	# This blob must be missing in the subsequent commit.
+	echo foo >src-sub/file &&
+	git -C src-sub add file &&
+	git -C src-sub commit -m "submodule one" &&
+	SUB_ONE=$(git -C src-sub rev-parse HEAD) &&
+
+	echo bar >src-sub/file &&
+	git -C src-sub add file &&
+	git -C src-sub commit -m "submodule two" &&
+	SUB_TWO=$(git -C src-sub rev-parse HEAD) &&
+
+	test_when_finished "rm -rf src-super" &&
+	git init src-super &&
+	git -C src-super config uploadpack.allowfilter 1 &&
+	git -C src-super config uploadpack.allowanysha1inwant 1 &&
+	git -C src-super submodule add ../src-sub src-sub &&
+
+	git -C src-super/src-sub checkout $SUB_ONE &&
+	git -C src-super add src-sub &&
+	git -C src-super commit -m "superproject one" &&
+
+	git -C src-super/src-sub checkout $SUB_TWO &&
+	git -C src-super add src-sub &&
+	git -C src-super commit -m "superproject two" &&
+
+	# the fetch
+	test_when_finished "rm -rf client" &&
+	git clone --filter=blob:none --also-filter-submodules \
+		--recurse-submodules "file://$(pwd)/src-super" client &&
+
+	# Trigger lazy-fetch from the superproject
+	git -C client restore --recurse-submodules --source=HEAD^ :/
+'
+
+test_expect_success 'after fetching descendants of non-promisor commits, gc works' '
+	# Setup
+	git init full &&
+	git -C full config uploadpack.allowfilter 1 &&
+	git -C full config uploadpack.allowanysha1inwant 1 &&
+	touch full/foo &&
+	git -C full add foo &&
+	git -C full commit -m "commit 1" &&
+	git -C full checkout --detach &&
+
+	# Partial clone and push commit to remote
+	git clone "file://$(pwd)/full" --filter=blob:none partial &&
+	echo "hello" > partial/foo &&
+	git -C partial commit -a -m "commit 2" &&
+	git -C partial push &&
+
+	# gc in partial repo
+	git -C partial gc --prune=now &&
+
+	# Create another commit in normal repo
+	git -C full checkout main &&
+	echo " world" >> full/foo &&
+	git -C full commit -a -m "commit 3" &&
+
+	# Pull from remote in partial repo, and run gc again
+	git -C partial pull &&
+	git -C partial gc --prune=now
+'
+
+
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
@@ -559,18 +737,22 @@ intersperse () {
 	sed 's/\(..\)/'$1'\1/g'
 }
 
-# Create a one-time-perl command to replace the existing packfile with $1.
+# Create a one-time-script command to replace the existing packfile with $1.
 replace_packfile () {
-	# The protocol requires that the packfile be sent in sideband 1, hence
-	# the extra \x01 byte at the beginning.
-	cp $1 "$HTTPD_ROOT_PATH/one-time-pack" &&
-	echo 'if (/packfile/) {
-		print;
-		my $length = -s "one-time-pack";
-		printf "%04x\x01", $length + 5;
-		print `cat one-time-pack` . "0000";
-		last
-	}' >"$HTTPD_ROOT_PATH/one-time-perl"
+	cp "$1" one-time-pack &&
+	write_script "$HTTPD_ROOT_PATH/one-time-script" <<-EOF
+	if grep packfile "\$1" >/dev/null
+	then
+		sed '/packfile/q' "\$1" &&
+		# The protocol requires that the packfile be sent in sideband
+		# 1, hence the extra \001 byte at the beginning.
+		printf "%04x\001" \$((\$(wc -c <"$PWD/one-time-pack") + 5)) &&
+		cat "$PWD/one-time-pack" &&
+		printf "0000"
+	else
+		cat "\$1"
+	fi
+	EOF
 }
 
 test_expect_success 'upon cloning, check that all refs point to objects' '
@@ -598,12 +780,12 @@ test_expect_success 'upon cloning, check that all refs point to objects' '
 	# section header.
 	test_config -C "$SERVER" protocol.version 2 &&
 	test_must_fail git -c protocol.version=2 clone \
-		--filter=blob:none $HTTPD_URL/one_time_perl/server repo 2>err &&
+		--filter=blob:none $HTTPD_URL/one_time_script/server repo 2>err &&
 
-	test_i18ngrep "did not send all necessary objects" err &&
+	test_grep "did not send all necessary objects" err &&
 
-	# Ensure that the one-time-perl script was used.
-	! test -e "$HTTPD_ROOT_PATH/one-time-perl"
+	# Ensure that the one-time-script script was used.
+	! test -e "$HTTPD_ROOT_PATH/one-time-script"
 '
 
 test_expect_success 'when partial cloning, tolerate server not sending target of tag' '
@@ -640,14 +822,14 @@ test_expect_success 'when partial cloning, tolerate server not sending target of
 
 	# Exercise to make sure it works.
 	git -c protocol.version=2 clone \
-		--filter=blob:none $HTTPD_URL/one_time_perl/server repo 2> err &&
+		--filter=blob:none $HTTPD_URL/one_time_script/server repo 2> err &&
 	! grep "missing object referenced by" err &&
 
-	# Ensure that the one-time-perl script was used.
-	! test -e "$HTTPD_ROOT_PATH/one-time-perl"
+	# Ensure that the one-time-script script was used.
+	! test -e "$HTTPD_ROOT_PATH/one-time-script"
 '
 
-test_expect_success 'tolerate server sending REF_DELTA against missing promisor objects' '
+test_expect_success PERL_TEST_HELPERS 'tolerate server sending REF_DELTA against missing promisor objects' '
 	SERVER="$HTTPD_DOCUMENT_ROOT_PATH/server" &&
 	rm -rf "$SERVER" repo &&
 	test_create_repo "$SERVER" &&
@@ -658,7 +840,7 @@ test_expect_success 'tolerate server sending REF_DELTA against missing promisor 
 	for i in $(test_seq 10)
 	do
 		echo "this is a line" >>"$SERVER/foo.txt" &&
-		echo "this is another line" >>"$SERVER/have.txt"
+		echo "this is another line" >>"$SERVER/have.txt" || return 1
 	done &&
 	git -C "$SERVER" add foo.txt have.txt &&
 	git -C "$SERVER" commit -m bar &&
@@ -667,7 +849,7 @@ test_expect_success 'tolerate server sending REF_DELTA against missing promisor 
 
 	# Clone. The client has deltabase_have but not deltabase_missing.
 	git -c protocol.version=2 clone --no-checkout \
-		--filter=blob:none $HTTPD_URL/one_time_perl/server repo &&
+		--filter=blob:none $HTTPD_URL/one_time_script/server repo &&
 	git -C repo hash-object -w -- "$SERVER/have.txt" &&
 
 	# Sanity check to ensure that the client does not have
@@ -721,8 +903,8 @@ test_expect_success 'tolerate server sending REF_DELTA against missing promisor 
 	grep "want $(cat deltabase_missing)" trace &&
 	! grep "want $(cat deltabase_have)" trace &&
 
-	# Ensure that the one-time-perl script was used.
-	! test -e "$HTTPD_ROOT_PATH/one-time-perl"
+	# Ensure that the one-time-script script was used.
+	! test -e "$HTTPD_ROOT_PATH/one-time-script"
 '
 
 # DO NOT add non-httpd-specific tests here, because the last part of this

@@ -31,7 +31,7 @@
    GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with this program; if not, see <http://www.gnu.org/licenses/>.  */
+   along with this program; if not, see <https://www.gnu.org/licenses/>.  */
 
 /* closeout.c - close standard output and standard error
    Copyright (C) 1998-2007 Free Software Foundation, Inc.
@@ -47,7 +47,7 @@
    GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with this program; if not, see <http://www.gnu.org/licenses/>.  */
+   along with this program; if not, see <https://www.gnu.org/licenses/>.  */
 
 #include <errno.h>
 #include <stdio.h>
@@ -104,12 +104,12 @@ cmd_main (int argc, const char *argv[])
   if (ferror (stderr) || fflush (stderr))
     {
       fclose (stderr);
-      exit (EXIT_FAILURE);
+      return (EXIT_FAILURE);
     }
   if (fclose (stderr) && errno != EBADF)
-    exit (EXIT_FAILURE);
+    return (EXIT_FAILURE);
 
-  exit (EXIT_SUCCESS);
+  return (EXIT_SUCCESS);
 }
 
 /* Parse the string and invoke the callback each time a $VARIABLE or
@@ -397,7 +397,7 @@ subst_from_stdin (void)
 		  /* Substitute the variable's value from the environment.  */
 		  const char *env_value = getenv (buffer);
 
-		  if (env_value != NULL)
+		  if (env_value)
 		    fputs (env_value, stdout);
 		}
 	      else

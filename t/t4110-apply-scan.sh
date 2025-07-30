@@ -7,6 +7,7 @@
 test_description='git apply test for patches which require scanning forwards and backwards.
 
 '
+
 . ./test-lib.sh
 
 test_expect_success 'git apply scan' '

@@ -5,6 +5,9 @@
 
 test_description='Test remote-helper import and export commands'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-gpg.sh
 
@@ -33,6 +36,29 @@ test_expect_success 'setup repository' '
 test_expect_success 'cloning from local repo' '
 	git clone "testgit::${PWD}/server" local &&
 	test_cmp server/file local/file
+'
+
+test_expect_success 'clone with remote.*.vcs config' '
+	GIT_TRACE=$PWD/vcs-clone.trace \
+	git clone --no-local -c remote.origin.vcs=testgit "$PWD/server" vcs-clone &&
+	test_grep remote-testgit vcs-clone.trace
+'
+
+test_expect_success 'fetch with configured remote.*.vcs' '
+	git init vcs-fetch &&
+	git -C vcs-fetch config remote.origin.vcs testgit &&
+	git -C vcs-fetch config remote.origin.url "$PWD/server" &&
+	GIT_TRACE=$PWD/vcs-fetch.trace \
+	git -C vcs-fetch fetch origin &&
+	test_grep remote-testgit vcs-fetch.trace
+'
+
+test_expect_success 'vcs remote with no url' '
+	NOURL_UPSTREAM=$PWD/server &&
+	export NOURL_UPSTREAM &&
+	git init vcs-nourl &&
+	git -C vcs-nourl config remote.origin.vcs nourl &&
+	git -C vcs-nourl fetch origin
 '
 
 test_expect_success 'create new commit on remote' '
@@ -71,18 +97,18 @@ test_expect_success 'fetch multiple branches' '
 	(cd local &&
 	 git fetch
 	) &&
-	compare_refs server master local refs/remotes/origin/master &&
+	compare_refs server main local refs/remotes/origin/main &&
 	compare_refs server new local refs/remotes/origin/new
 '
 
 test_expect_success 'push when remote has extra refs' '
 	(cd local &&
-	 git reset --hard origin/master &&
+	 git reset --hard origin/main &&
 	 echo content >>file &&
 	 git commit -a -m six &&
 	 git push
 	) &&
-	compare_refs local master server master
+	compare_refs local main server main
 '
 
 test_expect_success 'push new branch by name' '
@@ -134,7 +160,7 @@ test_expect_success 'forced push' '
 test_expect_success 'cloning without refspec' '
 	GIT_REMOTE_TESTGIT_NOREFSPEC=1 \
 	git clone "testgit::${PWD}/server" local2 2>error &&
-	test_i18ngrep "this remote helper should implement refspec capability" error &&
+	test_grep "this remote helper should implement refspec capability" error &&
 	compare_refs local2 HEAD server HEAD
 '
 
@@ -142,7 +168,7 @@ test_expect_success 'pulling without refspecs' '
 	(cd local2 &&
 	git reset --hard &&
 	GIT_REMOTE_TESTGIT_NOREFSPEC=1 git pull 2>../error) &&
-	test_i18ngrep "this remote helper should implement refspec capability" error &&
+	test_grep "this remote helper should implement refspec capability" error &&
 	compare_refs local2 HEAD server HEAD
 '
 
@@ -154,7 +180,7 @@ test_expect_success 'pushing without refspecs' '
 	GIT_REMOTE_TESTGIT_NOREFSPEC=1 &&
 	export GIT_REMOTE_TESTGIT_NOREFSPEC &&
 	test_must_fail git push 2>../error) &&
-	test_i18ngrep "remote-helper doesn.t support push; refspec needed" error
+	test_grep "remote-helper doesn.t support push; refspec needed" error
 '
 
 test_expect_success 'pulling without marks' '
@@ -174,7 +200,7 @@ test_expect_failure 'pushing without marks' '
 
 test_expect_success 'push all with existing object' '
 	(cd local &&
-	git branch dup2 master &&
+	git branch dup2 main &&
 	git push origin --all
 	) &&
 	compare_refs local dup2 server dup2
@@ -182,7 +208,7 @@ test_expect_success 'push all with existing object' '
 
 test_expect_success 'push ref with existing object' '
 	(cd local &&
-	git branch dup master &&
+	git branch dup main &&
 	git push origin dup
 	) &&
 	compare_refs local dup server dup
@@ -190,7 +216,7 @@ test_expect_success 'push ref with existing object' '
 
 test_expect_success GPG 'push signed tag' '
 	(cd local &&
-	git checkout master &&
+	git checkout main &&
 	git tag -s -m signed-tag signed-tag &&
 	git push origin signed-tag
 	) &&
@@ -200,7 +226,7 @@ test_expect_success GPG 'push signed tag' '
 
 test_expect_success GPG 'push signed tag with signed-tags capability' '
 	(cd local &&
-	git checkout master &&
+	git checkout main &&
 	git tag -s -m signed-tag signed-tag-2 &&
 	GIT_REMOTE_TESTGIT_SIGNED_TAGS=1 git push origin signed-tag-2
 	) &&
@@ -209,7 +235,7 @@ test_expect_success GPG 'push signed tag with signed-tags capability' '
 
 test_expect_success 'push update refs' '
 	(cd local &&
-	git checkout -b update master &&
+	git checkout -b update main &&
 	echo update >>file &&
 	git commit -a -m update &&
 	git push origin update &&
@@ -253,14 +279,14 @@ clean_mark () {
 test_expect_success 'proper failure checks for fetching' '
 	(cd local &&
 	test_must_fail env GIT_REMOTE_TESTGIT_FAILURE=1 git fetch 2>error &&
-	test_i18ngrep -q "error while running fast-import" error
+	test_grep -q "error while running fast-import" error
 	)
 '
 
 test_expect_success 'proper failure checks for pushing' '
 	test_when_finished "rm -rf local/git.marks local/testgit.marks" &&
 	(cd local &&
-	git checkout -b crash master &&
+	git checkout -b crash main &&
 	echo crash >>file &&
 	git commit -a -m crash &&
 	test_must_fail env GIT_REMOTE_TESTGIT_FAILURE=1 git push --all &&
@@ -272,7 +298,7 @@ test_expect_success 'proper failure checks for pushing' '
 
 test_expect_success 'push messages' '
 	(cd local &&
-	git checkout -b new_branch master &&
+	git checkout -b new_branch main &&
 	echo new >>file &&
 	git commit -a -m new &&
 	git push origin new_branch &&
@@ -286,7 +312,7 @@ test_expect_success 'push messages' '
 
 test_expect_success 'fetch HEAD' '
 	(cd server &&
-	git checkout master &&
+	git checkout main &&
 	echo more >>file &&
 	git commit -a -m more
 	) &&
@@ -298,7 +324,7 @@ test_expect_success 'fetch HEAD' '
 
 test_expect_success 'fetch url' '
 	(cd server &&
-	git checkout master &&
+	git checkout main &&
 	echo more >>file &&
 	git commit -a -m more
 	) &&
@@ -316,6 +342,17 @@ test_expect_success 'fetch tag' '
 	 git fetch
 	) &&
 	compare_refs local v1.0 server v1.0
+'
+
+test_expect_success 'totally broken helper reports failure message' '
+	write_script git-remote-broken <<-\EOF &&
+	read cap_cmd
+	exit 1
+	EOF
+	test_must_fail \
+		env PATH="$PWD:$PATH" \
+		git clone broken://example.com/foo.git 2>stderr &&
+	grep aborted stderr
 '
 
 test_done

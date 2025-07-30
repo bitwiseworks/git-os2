@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='overly long paths'
+
 . ./test-lib.sh
 
 test_expect_success setup '

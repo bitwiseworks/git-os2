@@ -4,6 +4,12 @@ test_description='git rev-list should handle unexpected object types'
 
 . ./test-lib.sh
 
+if ! test_have_prereq PERL_TEST_HELPERS
+then
+	skip_all='skipping rev-list unexpected objects tests; Perl not available'
+	test_done
+fi
+
 test_expect_success 'setup well-formed objects' '
 	blob="$(printf "foo" | git hash-object -w --stdin)" &&
 	tree="$(printf "100644 blob $blob\tfoo" | git mktree)" &&
@@ -16,13 +22,18 @@ test_expect_success 'setup unexpected non-blob entry' '
 	broken_tree="$(git hash-object -w --literally -t tree broken-tree)"
 '
 
-test_expect_failure 'traverse unexpected non-blob entry (lone)' '
-	test_must_fail git rev-list --objects $broken_tree
+test_expect_success 'TODO (should fail!): traverse unexpected non-blob entry (lone)' '
+	sed "s/Z$//" >expect <<-EOF &&
+	$broken_tree Z
+	$tree foo
+	EOF
+	git rev-list --objects $broken_tree >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'traverse unexpected non-blob entry (seen)' '
 	test_must_fail git rev-list --objects $tree $broken_tree >output 2>&1 &&
-	test_i18ngrep "is not a blob" output
+	test_grep "is not a blob" output
 '
 
 test_expect_success 'setup unexpected non-tree entry' '
@@ -36,7 +47,7 @@ test_expect_success 'traverse unexpected non-tree entry (lone)' '
 
 test_expect_success 'traverse unexpected non-tree entry (seen)' '
 	test_must_fail git rev-list --objects $blob $broken_tree >output 2>&1 &&
-	test_i18ngrep "is not a tree" output
+	test_grep "is not a tree" output
 '
 
 test_expect_success 'setup unexpected non-commit parent' '
@@ -48,13 +59,13 @@ test_expect_success 'setup unexpected non-commit parent' '
 
 test_expect_success 'traverse unexpected non-commit parent (lone)' '
 	test_must_fail git rev-list --objects $broken_commit >output 2>&1 &&
-	test_i18ngrep "not a commit" output
+	test_grep "not a commit" output
 '
 
 test_expect_success 'traverse unexpected non-commit parent (seen)' '
 	test_must_fail git rev-list --objects $blob $broken_commit \
 		>output 2>&1 &&
-	test_i18ngrep "not a commit" output
+	test_grep "not a commit" output
 '
 
 test_expect_success 'setup unexpected non-tree root' '
@@ -70,7 +81,7 @@ test_expect_success 'traverse unexpected non-tree root (lone)' '
 test_expect_success 'traverse unexpected non-tree root (seen)' '
 	test_must_fail git rev-list --objects $blob $broken_commit \
 		>output 2>&1 &&
-	test_i18ngrep "not a tree" output
+	test_grep "not a tree" output
 '
 
 test_expect_success 'setup unexpected non-commit tag' '
@@ -87,7 +98,7 @@ test_expect_success 'traverse unexpected non-commit tag (lone)' '
 
 test_expect_success 'traverse unexpected non-commit tag (seen)' '
 	test_must_fail git rev-list --objects $blob $tag >output 2>&1 &&
-	test_i18ngrep "not a commit" output
+	test_grep "not a commit" output
 '
 
 test_expect_success 'setup unexpected non-tree tag' '
@@ -104,7 +115,7 @@ test_expect_success 'traverse unexpected non-tree tag (lone)' '
 
 test_expect_success 'traverse unexpected non-tree tag (seen)' '
 	test_must_fail git rev-list --objects $blob $tag >output 2>&1 &&
-	test_i18ngrep "not a tree" output
+	test_grep "not a tree" output
 '
 
 test_expect_success 'setup unexpected non-blob tag' '
@@ -115,13 +126,13 @@ test_expect_success 'setup unexpected non-blob tag' '
 	tag=$(git hash-object -w --literally -t tag broken-tag)
 '
 
-test_expect_failure 'traverse unexpected non-blob tag (lone)' '
+test_expect_success 'traverse unexpected non-blob tag (lone)' '
 	test_must_fail git rev-list --objects $tag
 '
 
 test_expect_success 'traverse unexpected non-blob tag (seen)' '
 	test_must_fail git rev-list --objects $commit $tag >output 2>&1 &&
-	test_i18ngrep "not a blob" output
+	test_grep "not a blob" output
 '
 
 test_done

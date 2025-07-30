@@ -2,10 +2,13 @@
 
 test_description='"git merge" top-level frontend'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 t3033_reset () {
-	git checkout -B master two &&
+	git checkout -B main two &&
 	git branch -f left three &&
 	git branch -f right four
 }
@@ -21,7 +24,7 @@ test_expect_success setup '
 	test_commit four &&
 	git checkout --orphan newroot &&
 	test_commit five &&
-	git checkout master
+	git checkout main
 '
 
 # Local branches
@@ -61,7 +64,7 @@ test_expect_success 'merge octopus, non-fast-forward (ff)' '
 test_expect_success 'merge octopus, fast-forward (does not ff)' '
 	t3033_reset &&
 	git merge left right &&
-	# two (master) is not an ancestor of three (left) and four (right)
+	# two (main) is not an ancestor of three (left) and four (right)
 	test_must_fail git rev-parse --verify HEAD^4 &&
 	git rev-parse HEAD^1 HEAD^2 HEAD^3 | sort >actual &&
 	git rev-parse two three four | sort >expect &&
@@ -118,7 +121,7 @@ test_expect_success 'merge FETCH_HEAD octopus fast-forward (does not ff)' '
 	t3033_reset &&
 	git fetch . left right &&
 	git merge FETCH_HEAD &&
-	# two (master) is not an ancestor of three (left) and four (right)
+	# two (main) is not an ancestor of three (left) and four (right)
 	test_must_fail git rev-parse --verify HEAD^4 &&
 	git rev-parse HEAD^1 HEAD^2 HEAD^3 | sort >actual &&
 	git rev-parse two three four | sort >expect &&
@@ -148,7 +151,7 @@ test_expect_success 'refuse two-project merge by default, quit before --autostas
 	echo change >>one.t &&
 	git diff >expect &&
 	test_must_fail git merge --autostash five 2>err &&
-	test_i18ngrep ! "stash" err &&
+	test_grep ! "stash" err &&
 	git diff >actual &&
 	test_cmp expect actual
 '
@@ -166,7 +169,7 @@ test_expect_success 'two-project merge with --allow-unrelated-histories with --a
 	echo change >>one.t &&
 	git diff one.t >expect &&
 	git merge --allow-unrelated-histories --autostash five 2>err &&
-	test_i18ngrep "Applied autostash." err &&
+	test_grep "Applied autostash." err &&
 	git diff one.t >actual &&
 	test_cmp expect actual
 '

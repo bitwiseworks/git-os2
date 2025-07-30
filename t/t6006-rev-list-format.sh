@@ -5,25 +5,48 @@
 
 test_description='git rev-list --pretty=format test'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-terminal.sh
 
 test_tick
-# Tested non-UTF-8 encoding
-test_encoding="ISO8859-1"
 
-# String "added" in German
-# (translated with Google Translate),
-# encoded in UTF-8, used as a commit log message below.
-added_utf8_part=$(printf "\303\274")
-added_utf8_part_iso88591=$(echo "$added_utf8_part" | iconv -f utf-8 -t $test_encoding)
-added=$(printf "added (hinzugef${added_utf8_part}gt) foo")
-added_iso88591=$(echo "$added" | iconv -f utf-8 -t $test_encoding)
-# same but "changed"
-changed_utf8_part=$(printf "\303\244")
-changed_utf8_part_iso88591=$(echo "$changed_utf8_part" | iconv -f utf-8 -t $test_encoding)
-changed=$(printf "changed (ge${changed_utf8_part}ndert) foo")
-changed_iso88591=$(echo "$changed" | iconv -f utf-8 -t $test_encoding)
+if test_have_prereq ICONV
+then
+	# Tested non-UTF-8 encoding
+	test_encoding="ISO8859-1"
+
+	# String "added" in German
+	# (translated with Google Translate),
+	# encoded in UTF-8, used as a commit log message below.
+	added_utf8_part=$(printf "\303\274")
+	added_utf8_part_iso88591=$(echo "$added_utf8_part" | iconv -f utf-8 -t $test_encoding)
+	added=$(printf "added (hinzugef${added_utf8_part}gt) foo")
+	added_iso88591=$(echo "$added" | iconv -f utf-8 -t $test_encoding)
+	# same but "changed"
+	changed_utf8_part=$(printf "\303\244")
+	changed_utf8_part_iso88591=$(echo "$changed_utf8_part" | iconv -f utf-8 -t $test_encoding)
+	changed=$(printf "changed (ge${changed_utf8_part}ndert) foo")
+	changed_iso88591=$(echo "$changed" | iconv -f utf-8 -t $test_encoding)
+else
+	# Tested non-UTF-8 encoding
+	test_encoding="UTF-8"
+
+	# String "added" in German
+	# (translated with Google Translate),
+	# encoded in UTF-8, used as a commit log message below.
+	added_utf8_part="u"
+	added_utf8_part_iso88591="u"
+	added=$(printf "added (hinzugef${added_utf8_part}gt) foo")
+	added_iso88591="$added"
+	# same but "changed"
+	changed_utf8_part="a"
+	changed_utf8_part_iso88591="a"
+	changed=$(printf "changed (ge${changed_utf8_part}ndert) foo")
+	changed_iso88591="$changed"
+fi
 
 # Count of char to truncate
 # Number is chosen so, that non-ACSII characters
@@ -38,22 +61,59 @@ test_expect_success 'setup' '
 	echo "$added_iso88591" | git commit -F - &&
 	head1=$(git rev-parse --verify HEAD) &&
 	head1_short=$(git rev-parse --verify --short $head1) &&
+	head1_short4=$(git rev-parse --verify --short=4 $head1) &&
 	tree1=$(git rev-parse --verify HEAD:) &&
 	tree1_short=$(git rev-parse --verify --short $tree1) &&
 	echo "$changed" > foo &&
 	echo "$changed_iso88591" | git commit -a -F - &&
 	head2=$(git rev-parse --verify HEAD) &&
 	head2_short=$(git rev-parse --verify --short $head2) &&
+	head2_short4=$(git rev-parse --verify --short=4 $head2) &&
 	tree2=$(git rev-parse --verify HEAD:) &&
 	tree2_short=$(git rev-parse --verify --short $tree2) &&
 	git config --unset i18n.commitEncoding
 '
 
-# usage: test_format name format_string [failure] <expected_output
+# usage: test_format [argument...] name format_string [success|failure] [prereq] <expected_output
 test_format () {
+	local args=
+	while true
+	do
+		case "$1" in
+		--*)
+			args="$args $1"
+			shift;;
+		*)
+			break;;
+		esac
+	done
 	cat >expect.$1
-	test_expect_${3:-success} "format $1" "
-		git rev-list --pretty=format:'$2' master >output.$1 &&
+	test_expect_${3:-success} $4 "format $1" "
+		git rev-list $args --pretty=format:'$2' main >output.$1 &&
+		test_cmp expect.$1 output.$1
+	"
+}
+
+# usage: test_pretty [argument...] name format_name [failure] <expected_output
+test_pretty () {
+	local args=
+	while true
+	do
+		case "$1" in
+		--*)
+			args="$args $1"
+			shift;;
+		*)
+			break;;
+		esac
+	done
+	cat >expect.$1
+	test_expect_${3:-success} "pretty $1 (without --no-commit-header)" "
+		git rev-list $args --pretty='$2' main >output.$1 &&
+		test_cmp expect.$1 output.$1
+	"
+	test_expect_${3:-success} "pretty $1 (with --no-commit-header)" "
+		git rev-list $args --no-commit-header --pretty='$2' main >output.$1 &&
 		test_cmp expect.$1 output.$1
 	"
 }
@@ -88,6 +148,20 @@ $head2_short
 commit $head1
 $head1
 $head1_short
+EOF
+
+test_format --no-commit-header hash-no-header %H%n%h <<EOF
+$head2
+$head2_short
+$head1
+$head1_short
+EOF
+
+test_format --abbrev-commit --abbrev=0 --no-commit-header hash-no-header-abbrev %H%n%h <<EOF
+$head2
+$head2_short4
+$head1
+$head1_short4
 EOF
 
 test_format tree %T%n%t <<EOF
@@ -143,7 +217,7 @@ Thu, 7 Apr 2005 15:13:13 -0700
 1112911993
 EOF
 
-test_format encoding %e <<EOF
+test_format encoding %e success ICONV <<EOF
 commit $head2
 $test_encoding
 commit $head1
@@ -178,19 +252,44 @@ $added
 
 EOF
 
+test_format --no-commit-header raw-body-no-header %B <<EOF
+$changed
+
+$added
+
+EOF
+
+test_pretty oneline oneline <<EOF
+$head2 $changed
+$head1 $added
+EOF
+
+test_pretty short short <<EOF
+commit $head2
+Author: $GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>
+
+    $changed
+
+commit $head1
+Author: $GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>
+
+    $added
+
+EOF
+
 test_expect_success 'basic colors' '
 	cat >expect <<-EOF &&
 	commit $head2
 	<RED>foo<GREEN>bar<BLUE>baz<RESET>xyzzy
 	EOF
 	format="%Credfoo%Cgreenbar%Cbluebaz%Cresetxyzzy" &&
-	git rev-list --color --format="$format" -1 master >actual.raw &&
+	git rev-list --color --format="$format" -1 main >actual.raw &&
 	test_decode_color <actual.raw >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success '%S is not a placeholder for rev-list yet' '
-	git rev-list --format="%S" -1 master | grep "%S"
+	git rev-list --format="%S" -1 main | grep "%S"
 '
 
 test_expect_success 'advanced colors' '
@@ -199,7 +298,7 @@ test_expect_success 'advanced colors' '
 	<BOLD;RED;BYELLOW>foo<RESET>
 	EOF
 	format="%C(red yellow bold)foo%C(reset)" &&
-	git rev-list --color --format="$format" -1 master >actual.raw &&
+	git rev-list --color --format="$format" -1 main >actual.raw &&
 	test_decode_color <actual.raw >actual &&
 	test_cmp expect actual
 '
@@ -294,7 +393,7 @@ test_expect_success 'setup complex body' '
 	head3_short=$(git rev-parse --short $head3)
 '
 
-test_format complex-encoding %e <<EOF
+test_format complex-encoding %e success ICONV <<EOF
 commit $head3
 $test_encoding
 commit $head2
@@ -406,7 +505,7 @@ test_expect_success '%x00 shows NUL' '
 
 test_expect_success '%ad respects --date=' '
 	echo 2005-04-07 >expect.ad-short &&
-	git log -1 --date=short --pretty=tformat:%ad >output.ad-short master &&
+	git log -1 --date=short --pretty=tformat:%ad >output.ad-short main &&
 	test_cmp expect.ad-short output.ad-short
 '
 
@@ -414,7 +513,7 @@ test_expect_success 'empty email' '
 	test_tick &&
 	C=$(GIT_AUTHOR_EMAIL= git commit-tree HEAD^{tree} </dev/null) &&
 	A=$(git show --pretty=format:%an,%ae,%ad%n -s $C) &&
-	verbose test "$A" = "$GIT_AUTHOR_NAME,,Thu Apr 7 15:14:13 2005 -0700"
+	test "$A" = "$GIT_AUTHOR_NAME,,Thu Apr 7 15:14:13 2005 -0700"
 '
 
 test_expect_success 'del LF before empty (1)' '
@@ -494,8 +593,8 @@ test_expect_success '"%h %gD: %gs" is same as git-reflog (with --abbrev)' '
 '
 
 test_expect_success '%gd shortens ref name' '
-	echo "master@{0}" >expect.gd-short &&
-	git log -g -1 --format=%gd refs/heads/master >actual.gd-short &&
+	echo "main@{0}" >expect.gd-short &&
+	git log -g -1 --format=%gd refs/heads/main >actual.gd-short &&
 	test_cmp expect.gd-short actual.gd-short
 '
 

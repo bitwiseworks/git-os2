@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test direct comparison of blobs via git-diff'
+
 . ./test-lib.sh
 
 run_diff () {

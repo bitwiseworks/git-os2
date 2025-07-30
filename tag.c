@@ -1,11 +1,17 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "environment.h"
 #include "tag.h"
+#include "object-name.h"
 #include "object-store.h"
 #include "commit.h"
 #include "tree.h"
 #include "blob.h"
 #include "alloc.h"
 #include "gpg-interface.h"
+#include "hex.h"
 #include "packfile.h"
 
 const char *tag_type = "tag";
@@ -13,26 +19,28 @@ const char *tag_type = "tag";
 static int run_gpg_verify(const char *buf, unsigned long size, unsigned flags)
 {
 	struct signature_check sigc;
-	size_t payload_size;
+	struct strbuf payload = STRBUF_INIT;
+	struct strbuf signature = STRBUF_INIT;
 	int ret;
 
 	memset(&sigc, 0, sizeof(sigc));
 
-	payload_size = parse_signature(buf, size);
-
-	if (size == payload_size) {
+	if (!parse_signature(buf, size, &payload, &signature)) {
 		if (flags & GPG_VERIFY_VERBOSE)
-			write_in_full(1, buf, payload_size);
+			write_in_full(1, buf, size);
 		return error("no signature found");
 	}
 
-	ret = check_signature(buf, payload_size, buf + payload_size,
-				size - payload_size, &sigc);
+	sigc.payload_type = SIGNATURE_PAYLOAD_TAG;
+	sigc.payload = strbuf_detach(&payload, &sigc.payload_len);
+	ret = check_signature(&sigc, signature.buf, signature.len);
 
 	if (!(flags & GPG_VERIFY_OMIT_STATUS))
 		print_signature_buffer(&sigc, flags);
 
 	signature_check_clear(&sigc);
+	strbuf_release(&payload);
+	strbuf_release(&signature);
 	return ret;
 }
 
@@ -49,15 +57,15 @@ int gpg_verify_tag(const struct object_id *oid, const char *name_to_report,
 		return error("%s: cannot verify a non-tag object of type %s.",
 				name_to_report ?
 				name_to_report :
-				find_unique_abbrev(oid, DEFAULT_ABBREV),
+				repo_find_unique_abbrev(the_repository, oid, DEFAULT_ABBREV),
 				type_name(type));
 
-	buf = read_object_file(oid, &type, &size);
+	buf = repo_read_object_file(the_repository, oid, &type, &size);
 	if (!buf)
 		return error("%s: unable to read file.",
 				name_to_report ?
 				name_to_report :
-				find_unique_abbrev(oid, DEFAULT_ABBREV));
+				repo_find_unique_abbrev(the_repository, oid, DEFAULT_ABBREV));
 
 	ret = run_gpg_verify(buf, size, flags);
 
@@ -77,7 +85,7 @@ struct object *deref_tag(struct repository *r, struct object *o, const char *war
 			o = NULL;
 		}
 	if (!o && warn) {
-		if (last_oid && is_promisor_object(last_oid))
+		if (last_oid && is_promisor_object(r, last_oid))
 			return NULL;
 		if (!warnlen)
 			warnlen = strlen(warn);
@@ -86,10 +94,10 @@ struct object *deref_tag(struct repository *r, struct object *o, const char *war
 	return o;
 }
 
-struct object *deref_tag_noverify(struct object *o)
+struct object *deref_tag_noverify(struct repository *r, struct object *o)
 {
 	while (o && o->type == OBJ_TAG) {
-		o = parse_object(the_repository, &o->oid);
+		o = parse_object(r, &o->oid);
 		if (o && o->type == OBJ_TAG && ((struct tag *)o)->tagged)
 			o = ((struct tag *)o)->tagged;
 		else
@@ -214,7 +222,8 @@ int parse_tag(struct tag *item)
 
 	if (item->object.parsed)
 		return 0;
-	data = read_object_file(&item->object.oid, &type, &size);
+	data = repo_read_object_file(the_repository, &item->object.oid, &type,
+				     &size);
 	if (!data)
 		return error("Could not read %s",
 			     oid_to_hex(&item->object.oid));

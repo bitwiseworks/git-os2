@@ -4,10 +4,11 @@
 #ifndef DIFF_H
 #define DIFF_H
 
-#include "tree-walk.h"
+#include "hash.h"
 #include "pathspec.h"
-#include "object.h"
-#include "oidset.h"
+#include "strbuf.h"
+
+struct oidset;
 
 /**
  * The diff API is for programs that compare two sets of files (e.g. two trees,
@@ -49,7 +50,17 @@
  * - Once you finish feeding the pairs of files, call `diffcore_std()`.
  * This will tell the diffcore library to go ahead and do its work.
  *
- * - Calling `diff_flush()` will produce the output.
+ * - Calling `diff_flush()` will produce the output, it will call
+ *   `diff_free()` to free any resources, e.g. those allocated in
+ *   `diff_opt_parse()`.
+ *
+ * - Set `.no_free = 1` before calling `diff_flush()` to defer the
+ *   freeing of allocated memory in diff_options. This is useful when
+ *   `diff_flush()` is being called in a loop, rather than as a
+ *   one-off. When setting `.no_free = 1` you must ensure that
+ *   `diff_free()` is called at the end, either by flipping the flag
+ *   before the last `diff_flush()` call, or by flipping it before
+ *   calling `diff_free()` yourself.
  */
 
 struct combine_diff_path;
@@ -61,7 +72,6 @@ struct oid_array;
 struct option;
 struct repository;
 struct rev_info;
-struct strbuf;
 struct userdiff_driver;
 
 typedef int (*pathchange_fn_t)(struct diff_options *options,
@@ -84,7 +94,7 @@ typedef void (*add_remove_fn_t)(struct diff_options *options,
 typedef void (*diff_format_fn_t)(struct diff_queue_struct *q,
 		struct diff_options *options, void *data);
 
-typedef struct strbuf *(*diff_prefix_fn_t)(struct diff_options *opt, void *data);
+typedef const char *(*diff_prefix_fn_t)(struct diff_options *opt, void *data);
 
 #define DIFF_FORMAT_RAW		0x0001
 #define DIFF_FORMAT_DIFFSTAT	0x0002
@@ -178,6 +188,7 @@ struct diff_flags {
 	unsigned diff_from_contents;
 	unsigned dirty_submodules;
 	unsigned ignore_untracked_in_submodules;
+	unsigned ignore_submodule_set;
 	unsigned ignore_dirty_submodules;
 	unsigned override_submodule_config;
 	unsigned dirstat_by_line;
@@ -194,9 +205,8 @@ static inline void diff_flags_or(struct diff_flags *a,
 {
 	char *tmp_a = (char *)a;
 	const char *tmp_b = (const char *)b;
-	int i;
 
-	for (i = 0; i < sizeof(struct diff_flags); i++)
+	for (size_t i = 0; i < sizeof(struct diff_flags); i++)
 		tmp_a[i] |= tmp_b[i];
 }
 
@@ -224,7 +234,28 @@ enum diff_submodule_format {
  * diffcore library with.
  */
 struct diff_options {
-	const char *orderfile;
+	char *orderfile;
+
+	/*
+	 * "--rotate-to=<file>" would start showing at <file> and when
+	 * the output reaches the end, wrap around by default.
+	 * Setting skip_instead_of_rotate to true stops the output at the
+	 * end, effectively discarding the earlier part of the output
+	 * before <file>'s diff (this is used to implement the
+	 * "--skip-to=<file>" option).
+	 *
+	 * When rotate_to_strict is set, it is an error if there is no
+	 * <file> in the diff.  Otherwise, the output starts at the
+	 * path that is the same as, or first path that sorts after,
+	 * <file>.  Because it is unreasonable to require the exact
+	 * match for "git log -p --rotate-to=<file>" (i.e. not all
+	 * commit would touch that single <file>), "git log" sets it
+	 * to false.  "git diff" sets it to true to detect an error
+	 * in the command line option.
+	 */
+	const char *rotate_to;
+	int skip_instead_of_rotate;
+	int rotate_to_strict;
 
 	/**
 	 * A constant string (can and typically does contain newlines to look for
@@ -233,6 +264,7 @@ struct diff_options {
 	 * postimage of the diff_queue.
 	 */
 	const char *pickaxe;
+	unsigned pickaxe_opts;
 
 	/* -I<regex> */
 	regex_t **ignore_regex;
@@ -241,7 +273,6 @@ struct diff_options {
 	const char *single_follow;
 	const char *a_prefix, *b_prefix;
 	const char *line_prefix;
-	size_t line_prefix_length;
 
 	/**
 	 * collection of boolean options that affects the operation, but some do
@@ -250,7 +281,7 @@ struct diff_options {
 	struct diff_flags flags;
 
 	/* diff-filter bits */
-	unsigned int filter;
+	unsigned int filter, filter_not;
 
 	int use_color;
 
@@ -271,8 +302,6 @@ struct diff_options {
 
 	/* The output format used when `diff_flush()` is run. */
 	int output_format;
-
-	unsigned pickaxe_opts;
 
 	/* Affects the way detection logic for complete rewrites, renames and
 	 * copies.
@@ -302,8 +331,9 @@ struct diff_options {
 	int prefix_length;
 	const char *stat_sep;
 	int xdl_opts;
+	int ignore_driver_algorithm;
 
-	/* see Documentation/diff-options.txt */
+	/* see Documentation/diff-options.adoc */
 	char **anchors;
 	size_t anchors_nr, anchors_alloc;
 
@@ -322,6 +352,14 @@ struct diff_options {
 
 	/* to support internal diff recursion by --follow hack*/
 	int found_follow;
+
+	/*
+	 * By default, diffcore_std() resolves the statuses for queued diff file
+	 * pairs by calling diff_resolve_rename_copy(). If status information
+	 * has already been manually set, this option prevents diffcore_std()
+	 * from resetting statuses.
+	 */
+	int skip_resolving_statuses;
 
 	/* Callback which allows tweaking the options in diff_setup_done(). */
 	void (*set_default)(struct diff_options *);
@@ -363,7 +401,9 @@ struct diff_options {
 	unsigned color_moved_ws_handling;
 
 	struct repository *repo;
-	struct option *parseopts;
+	struct strmap *additional_path_headers;
+
+	int no_free;
 };
 
 unsigned diff_filter_bit(char status);
@@ -430,7 +470,7 @@ const char *diff_line_prefix(struct diff_options *);
 extern const char mime_boundary_leader[];
 
 struct combine_diff_path *diff_tree_paths(
-	struct combine_diff_path *p, const struct object_id *oid,
+	const struct object_id *oid,
 	const struct object_id **parents_oid, int nparent,
 	struct strbuf *base, struct diff_options *opt);
 void diff_tree_oid(const struct object_id *old_oid,
@@ -448,12 +488,20 @@ struct combine_diff_path {
 		char status;
 		unsigned int mode;
 		struct object_id oid;
-		struct strbuf path;
+		/*
+		 * This per-parent path is filled only when doing a combined
+		 * diff with revs.combined_all_paths set, and only if the path
+		 * differs from the post-image (e.g., a rename or copy).
+		 * Otherwise it is left NULL.
+		 */
+		char *path;
 	} parent[FLEX_ARRAY];
 };
-#define combine_diff_path_size(n, l) \
-	st_add4(sizeof(struct combine_diff_path), (l), 1, \
-		st_mult(sizeof(struct combine_diff_parent), (n)))
+struct combine_diff_path *combine_diff_path_new(const char *path,
+						size_t path_len,
+						unsigned int mode,
+						const struct object_id *oid,
+						size_t num_parents);
 
 void show_combined_diff(struct combine_diff_path *elem, int num_parent,
 			struct rev_info *);
@@ -463,8 +511,35 @@ void diff_tree_combined(const struct object_id *oid, const struct oid_array *par
 void diff_tree_combined_merge(const struct commit *commit, struct rev_info *rev);
 
 void diff_set_mnemonic_prefix(struct diff_options *options, const char *a, const char *b);
+void diff_set_noprefix(struct diff_options *options);
+void diff_set_default_prefix(struct diff_options *options);
 
 int diff_can_quit_early(struct diff_options *);
+
+/*
+ * Stages changes in the provided diff queue for file additions and deletions.
+ * If a file pair gets queued, it is returned.
+ */
+struct diff_filepair *diff_queue_addremove(struct diff_queue_struct *queue,
+					   struct diff_options *,
+					   int addremove, unsigned mode,
+					   const struct object_id *oid,
+					   int oid_valid, const char *fullpath,
+					   unsigned dirty_submodule);
+
+/*
+ * Stages changes in the provided diff queue for file modifications.
+ * If a file pair gets queued, it is returned.
+ */
+struct diff_filepair *diff_queue_change(struct diff_queue_struct *queue,
+					struct diff_options *,
+					unsigned mode1, unsigned mode2,
+					const struct object_id *old_oid,
+					const struct object_id *new_oid,
+					int old_oid_valid, int new_oid_valid,
+					const char *fullpath,
+					unsigned dirty_submodule1,
+					unsigned dirty_submodule2);
 
 void diff_addremove(struct diff_options *,
 		    int addremove,
@@ -497,16 +572,24 @@ void free_diffstat_info(struct diffstat_t *diffstat);
 int parse_long_opt(const char *opt, const char **argv,
 		   const char **optarg);
 
-int git_diff_basic_config(const char *var, const char *value, void *cb);
+struct config_context;
+int git_diff_basic_config(const char *var, const char *value,
+			  const struct config_context *ctx, void *cb);
 int git_diff_heuristic_config(const char *var, const char *value, void *cb);
 void init_diff_ui_defaults(void);
-int git_diff_ui_config(const char *var, const char *value, void *cb);
-#ifndef NO_THE_REPOSITORY_COMPATIBILITY_MACROS
-#define diff_setup(diffopts) repo_diff_setup(the_repository, diffopts)
-#endif
+int git_diff_ui_config(const char *var, const char *value,
+		       const struct config_context *ctx, void *cb);
 void repo_diff_setup(struct repository *, struct diff_options *);
+struct option *add_diff_options(const struct option *, struct diff_options *);
 int diff_opt_parse(struct diff_options *, const char **, int, const char *);
 void diff_setup_done(struct diff_options *);
+
+/*
+ * Returns true if the pathspec can work with --follow mode. If die_on_error is
+ * set, die() with a specific error message rather than returning false.
+ */
+int diff_check_follow_pathspec(struct pathspec *ps, int die_on_error);
+
 int git_config_rename(const char *var, const char *value);
 
 #define DIFF_DETECT_RENAME	1
@@ -522,9 +605,14 @@ int git_config_rename(const char *var, const char *value);
 #define DIFF_PICKAXE_KINDS_MASK (DIFF_PICKAXE_KIND_S | \
 				 DIFF_PICKAXE_KIND_G | \
 				 DIFF_PICKAXE_KIND_OBJFIND)
+#define DIFF_PICKAXE_KINDS_G_REGEX_MASK (DIFF_PICKAXE_KIND_G | \
+					 DIFF_PICKAXE_REGEX)
+#define DIFF_PICKAXE_KINDS_ALL_OBJFIND_MASK (DIFF_PICKAXE_ALL | \
+					     DIFF_PICKAXE_KIND_OBJFIND)
 
 #define DIFF_PICKAXE_IGNORE_CASE	32
 
+void init_diffstat_widths(struct diff_options *);
 void diffcore_std(struct diff_options *);
 void diffcore_fix_diff_index(void);
 
@@ -556,8 +644,9 @@ void diffcore_fix_diff_index(void);
 "                show all files diff when -S is used and hit is found.\n" \
 "  -a  --text    treat all files as text.\n"
 
-int diff_queue_is_empty(void);
+int diff_queue_is_empty(struct diff_options *o);
 void diff_flush(struct diff_options*);
+void diff_free(struct diff_options*);
 void diff_warn_rename_limit(const char *varname, int needed, int degraded_cc);
 
 /* diff-raw status letters */
@@ -577,7 +666,7 @@ void diff_warn_rename_limit(const char *varname, int needed, int degraded_cc);
 #define DIFF_STATUS_FILTER_BROKEN	'B'
 
 /*
- * This is different from find_unique_abbrev() in that
+ * This is different from repo_find_unique_abbrev() in that
  * it stuffs the result with dots for alignment.
  */
 const char *diff_aligned_abbrev(const struct object_id *sha1, int);
@@ -588,19 +677,19 @@ void diff_get_merge_base(const struct rev_info *revs, struct object_id *mb);
 #define DIFF_SILENT_ON_REMOVED 01
 /* report racily-clean paths as modified */
 #define DIFF_RACY_IS_MODIFIED 02
-int run_diff_files(struct rev_info *revs, unsigned int option);
+void run_diff_files(struct rev_info *revs, unsigned int option);
 
 #define DIFF_INDEX_CACHED 01
 #define DIFF_INDEX_MERGE_BASE 02
-int run_diff_index(struct rev_info *revs, unsigned int option);
+void run_diff_index(struct rev_info *revs, unsigned int option);
 
 int do_diff_cache(const struct object_id *, struct diff_options *);
-int diff_flush_patch_id(struct diff_options *, struct object_id *, int, int);
-void flush_one_hunk(struct object_id *result, git_hash_ctx *ctx);
+int diff_flush_patch_id(struct diff_options *, struct object_id *, int);
+void flush_one_hunk(struct object_id *result, struct git_hash_ctx *ctx);
 
-int diff_result_code(struct diff_options *, int);
+int diff_result_code(struct rev_info *);
 
-int diff_no_index(struct rev_info *,
+int diff_no_index(struct rev_info *, const struct git_hash_algo *algop,
 		  int implicit_no_index, int, const char **);
 
 int index_differs_from(struct repository *r, const char *def,
@@ -656,5 +745,7 @@ long parse_algorithm_value(const char *value);
 void print_stat_summary(FILE *fp, int files,
 			int insertions, int deletions);
 void setup_diff_pager(struct diff_options *);
+
+extern int diff_auto_refresh_index;
 
 #endif /* DIFF_H */

@@ -175,7 +175,7 @@ test_expect_success 'keyword file create' '
 		cp k-text-k k-text-ko &&
 		p4 add -t text+ko k-text-ko &&
 
-		cat k-text-k | iconv -f ascii -t utf-16 >k-utf16-k &&
+		iconv -f ascii -t utf-16 <k-text-k >k-utf16-k &&
 		p4 add -t utf16+k k-utf16-k &&
 
 		cp k-utf16-k k-utf16-ko &&
@@ -263,7 +263,7 @@ test_expect_success SYMLINKS 'ensure p4 symlink parsed correctly' '
 	(
 		cd "$git" &&
 		test -L symlink &&
-		test $(readlink symlink) = symlink-target
+		test $(test_readlink symlink) = symlink-target
 	)
 '
 
@@ -300,10 +300,22 @@ test_expect_success SYMLINKS 'empty symlink target' '
 		#     text
 		#     @@
 		#
+		# Note that newer Perforce versions started to store files
+		# compressed in directories. The case statement handles both
+		# old and new layout.
 		cd "$db/depot" &&
-		sed "/@target1/{; s/target1/@/; n; d; }" \
-		    empty-symlink,v >empty-symlink,v.tmp &&
-		mv empty-symlink,v.tmp empty-symlink,v
+		case "$(echo empty-symlink*)" in
+		empty-symlink,v)
+			sed "/@target1/{; s/target1/@/; n; d; }" \
+			    empty-symlink,v >empty-symlink,v.tmp &&
+			mv empty-symlink,v.tmp empty-symlink,v;;
+		empty-symlink,d)
+			path="empty-symlink,d/$(ls empty-symlink,d/ | tail -n1)" &&
+			rm "$path" &&
+			gzip </dev/null >"$path";;
+		*)
+			BUG "unhandled p4d layout";;
+		esac
 	) &&
 	(
 		# Make sure symlink really is empty.  Asking
@@ -329,7 +341,41 @@ test_expect_success SYMLINKS 'empty symlink target' '
 	git p4 clone --dest="$git" //depot@all &&
 	(
 		cd "$git" &&
-		test $(readlink empty-symlink) = target2
+		test $(test_readlink empty-symlink) = target2
+	)
+'
+
+test_expect_success SYMLINKS 'utf-8 with and without BOM in text file' '
+	(
+		cd "$cli" &&
+
+		# some utf8 content
+		echo some tǣxt >utf8-nobom-test &&
+
+		# same utf8 content as before but with bom
+		echo some tǣxt | sed '\''s/^/\xef\xbb\xbf/'\'' >utf8-bom-test &&
+
+		# bom only
+		dd bs=1 count=3 if=utf8-bom-test of=utf8-bom-empty-test &&
+
+		p4 add utf8-nobom-test utf8-bom-test utf8-bom-empty-test &&
+		p4 submit -d "add utf8 test files"
+	) &&
+	test_when_finished cleanup_git &&
+
+	git p4 clone --dest="$git" //depot@all &&
+	(
+		cd "$git" &&
+		git checkout refs/remotes/p4/master &&
+
+		echo some tǣxt >utf8-nobom-check &&
+		test_cmp utf8-nobom-check utf8-nobom-test &&
+
+		echo some tǣxt | sed '\''s/^/\xef\xbb\xbf/'\'' >utf8-bom-check &&
+		test_cmp utf8-bom-check utf8-bom-test &&
+
+		dd bs=1 count=3 if=utf8-bom-check of=utf8-bom-empty-check &&
+		test_cmp utf8-bom-empty-check utf8-bom-empty-test
 	)
 '
 

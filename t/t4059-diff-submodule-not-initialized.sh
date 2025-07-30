@@ -11,12 +11,18 @@ initialized previously but the checkout has since been removed.
 
 . ./test-lib.sh
 
-# Tested non-UTF-8 encoding
-test_encoding="ISO8859-1"
 
-# String "added" in German (translated with Google Translate), encoded in UTF-8,
-# used in sample commit log messages in add_file() function below.
-added=$(printf "hinzugef\303\274gt")
+# Test non-UTF-8 encoding in case iconv is available.
+if test_have_prereq ICONV
+then
+	test_encoding="ISO8859-1"
+	# String "added" in German (translated with Google Translate), encoded in UTF-8,
+	# used in sample commit log messages in add_file() function below.
+	added=$(printf "hinzugef\303\274gt")
+else
+	test_encoding="UTF-8"
+	added="added"
+fi
 
 add_file () {
 	(
@@ -49,7 +55,7 @@ test_expect_success 'setup - submodules' '
 '
 
 test_expect_success 'setup - git submodule add' '
-	git submodule add ./sm2 sm1 &&
+	git -c protocol.file.allow=always submodule add ./sm2 sm1 &&
 	commit_file sm1 .gitmodules &&
 	git diff-tree -p --no-commit-id --submodule=log HEAD -- sm1 >actual &&
 	cat >expected <<-EOF &&

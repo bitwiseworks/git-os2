@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test trace2 facility (normal target)'
+
 . ./test-lib.sh
 
 # Turn off any inherited trace2 settings for this test.
@@ -52,10 +53,41 @@ GIT_TRACE2_BRIEF=1 && export GIT_TRACE2_BRIEF
 #
 # Implicit return from cmd_<verb> function propagates <code>.
 
+scrub_normal () {
+	# Scrub the variable fields from the normal trace2 output to make
+	# testing easier:
+	#
+	#   1. Various messages include an elapsed time in the middle of the
+	#      message. Replace the time with a placeholder to simplify our
+	#      HEREDOC in the test script.
+	#
+	#   2. We expect:
+	#
+	#        start <argv0> [<argv1> [<argv2> [...]]]
+	#
+	#      where argv0 might be a relative or absolute path, with or
+	#      without quotes, and platform dependent. Replace argv0 with a
+	#      token for HEREDOC matching in the test script.
+	#
+	#   3. Likewise, the 'cmd_path' message breaks out argv[0].
+	#
+	#      This line is only emitted when RUNTIME_PREFIX is defined,
+	#      so just omit it for testing purposes.
+	#
+	#   4. 'cmd_ancestry' is not implemented everywhere, so for portability's
+	#      sake, skip it when parsing normal.
+	sed \
+		-e 's/elapsed:[0-9]*\.[0-9][0-9]*\([eE][-+]\{0,1\}[0-9][0-9]*\)\{0,1\}/elapsed:_TIME_/g' \
+		-e "s/^start '[^']*' \(.*\)/start _EXE_ \1/" \
+		-e 's/^start [^ ][^ ]* \(.*\)/start _EXE_ \1/' \
+		-e '/^cmd_path/d' \
+		-e '/^cmd_ancestry/d'
+}
+
 test_expect_success 'normal stream, return code 0' '
 	test_when_finished "rm trace.normal actual expect" &&
 	GIT_TRACE2="$(pwd)/trace.normal" test-tool trace2 001return 0 &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	scrub_normal <trace.normal >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 001return 0
@@ -69,7 +101,7 @@ test_expect_success 'normal stream, return code 0' '
 test_expect_success 'normal stream, return code 1' '
 	test_when_finished "rm trace.normal actual expect" &&
 	test_must_fail env GIT_TRACE2="$(pwd)/trace.normal" test-tool trace2 001return 1 &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	scrub_normal <trace.normal >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 001return 1
@@ -84,7 +116,7 @@ test_expect_success 'automatic filename' '
 	test_when_finished "rm -r traces actual expect" &&
 	mkdir traces &&
 	GIT_TRACE2="$(pwd)/traces" test-tool trace2 001return 0 &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <"$(ls traces/*)" >actual &&
+	scrub_normal <"$(ls traces/*)" >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 001return 0
@@ -102,7 +134,7 @@ test_expect_success 'automatic filename' '
 test_expect_success 'normal stream, exit code 0' '
 	test_when_finished "rm trace.normal actual expect" &&
 	GIT_TRACE2="$(pwd)/trace.normal" test-tool trace2 002exit 0 &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	scrub_normal <trace.normal >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 002exit 0
@@ -116,7 +148,7 @@ test_expect_success 'normal stream, exit code 0' '
 test_expect_success 'normal stream, exit code 1' '
 	test_when_finished "rm trace.normal actual expect" &&
 	test_must_fail env GIT_TRACE2="$(pwd)/trace.normal" test-tool trace2 002exit 1 &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	scrub_normal <trace.normal >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 002exit 1
@@ -134,7 +166,7 @@ test_expect_success 'normal stream, exit code 1' '
 test_expect_success 'normal stream, error event' '
 	test_when_finished "rm trace.normal actual expect" &&
 	GIT_TRACE2="$(pwd)/trace.normal" test-tool trace2 003error "hello world" "this is a test" &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	scrub_normal <trace.normal >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 003error '\''hello world'\'' '\''this is a test'\''
@@ -144,6 +176,110 @@ test_expect_success 'normal stream, error event' '
 		exit elapsed:_TIME_ code:0
 		atexit elapsed:_TIME_ code:0
 	EOF
+	test_cmp expect actual
+'
+
+# Verb 007bug
+#
+# Check that BUG writes to trace2
+
+test_expect_success 'BUG messages are written to trace2' '
+	test_when_finished "rm trace.normal actual expect" &&
+	test_must_fail env GIT_TRACE2="$(pwd)/trace.normal" test-tool trace2 007bug &&
+	scrub_normal <trace.normal >actual &&
+	cat >expect <<-EOF &&
+		version $V
+		start _EXE_ trace2 007bug
+		cmd_name trace2 (trace2)
+		error the bug message
+		exit elapsed:_TIME_ code:99
+		atexit elapsed:_TIME_ code:99
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'bug messages with BUG_if_bug() are written to trace2' '
+	test_when_finished "rm trace.normal actual expect" &&
+	test_expect_code 99 env GIT_TRACE2="$(pwd)/trace.normal" \
+		test-tool trace2 008bug 2>err &&
+	cat >expect <<-\EOF &&
+	a bug message
+	another bug message
+	an explicit BUG_if_bug() following bug() call(s) is nice, but not required
+	EOF
+	sed "s/^.*: //" <err >actual &&
+	test_cmp expect actual &&
+
+	scrub_normal <trace.normal >actual &&
+	cat >expect <<-EOF &&
+		version $V
+		start _EXE_ trace2 008bug
+		cmd_name trace2 (trace2)
+		error a bug message
+		error another bug message
+		error an explicit BUG_if_bug() following bug() call(s) is nice, but not required
+		exit elapsed:_TIME_ code:99
+		atexit elapsed:_TIME_ code:99
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'bug messages without explicit BUG_if_bug() are written to trace2' '
+	test_when_finished "rm trace.normal actual expect" &&
+	test_expect_code 99 env GIT_TRACE2="$(pwd)/trace.normal" \
+		test-tool trace2 009bug_BUG 2>err &&
+	cat >expect <<-\EOF &&
+	a bug message
+	another bug message
+	had bug() call(s) in this process without explicit BUG_if_bug()
+	EOF
+	sed "s/^.*: //" <err >actual &&
+	test_cmp expect actual &&
+
+	scrub_normal <trace.normal >actual &&
+	cat >expect <<-EOF &&
+		version $V
+		start _EXE_ trace2 009bug_BUG
+		cmd_name trace2 (trace2)
+		error a bug message
+		error another bug message
+		error on exit(): had bug() call(s) in this process without explicit BUG_if_bug()
+		exit elapsed:_TIME_ code:99
+		atexit elapsed:_TIME_ code:99
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'bug messages followed by BUG() are written to trace2' '
+	test_when_finished "rm trace.normal actual expect" &&
+	test_expect_code 99 env GIT_TRACE2="$(pwd)/trace.normal" \
+		test-tool trace2 010bug_BUG 2>err &&
+	cat >expect <<-\EOF &&
+	a bug message
+	a BUG message
+	EOF
+	sed "s/^.*: //" <err >actual &&
+	test_cmp expect actual &&
+
+	scrub_normal <trace.normal >actual &&
+	cat >expect <<-EOF &&
+		version $V
+		start _EXE_ trace2 010bug_BUG
+		cmd_name trace2 (trace2)
+		error a bug message
+		error a BUG message
+		exit elapsed:_TIME_ code:99
+		atexit elapsed:_TIME_ code:99
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'a valueless true configuration variable is handled' '
+	test_when_finished "rm -f trace2.normal actual expect" &&
+	echo >expect &&
+	GIT_TRACE2="$(pwd)/trace2.normal" \
+	GIT_TRACE2_CONFIG_PARAMS=foo.true \
+	git -c foo.true config foo.true >actual &&
 	test_cmp expect actual
 '
 
@@ -157,7 +293,7 @@ test_expect_success 'using global config, normal stream, return code 0' '
 	test_config_global trace2.normalBrief 1 &&
 	test_config_global trace2.normalTarget "$(pwd)/trace.normal" &&
 	test-tool trace2 001return 0 &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	scrub_normal <trace.normal >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 001return 0
@@ -175,7 +311,7 @@ test_expect_success 'using global config with include' '
 	mv "$(pwd)/.gitconfig" "$(pwd)/real.gitconfig" &&
 	test_config_global include.path "$(pwd)/real.gitconfig" &&
 	test-tool trace2 001return 0 &&
-	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	scrub_normal <trace.normal >actual &&
 	cat >expect <<-EOF &&
 		version $V
 		start _EXE_ trace2 001return 0
@@ -184,6 +320,24 @@ test_expect_success 'using global config with include' '
 		atexit elapsed:_TIME_ code:0
 	EOF
 	test_cmp expect actual
+'
+
+test_expect_success 'unsafe URLs are redacted by default' '
+	test_when_finished \
+		"rm -r trace.normal unredacted.normal clone clone2" &&
+
+	test_config_global \
+		"url.$(pwd).insteadOf" https://user:pwd@example.com/ &&
+	test_config_global trace2.configParams "core.*,remote.*.url" &&
+
+	GIT_TRACE2="$(pwd)/trace.normal" \
+		git clone https://user:pwd@example.com/ clone &&
+	! grep user:pwd trace.normal &&
+
+	GIT_TRACE2_REDACT=0 GIT_TRACE2="$(pwd)/unredacted.normal" \
+		git clone https://user:pwd@example.com/ clone2 &&
+	grep "start .* clone https://user:pwd@example.com" unredacted.normal &&
+	grep "remote.origin.url=https://user:pwd@example.com" unredacted.normal
 '
 
 test_done

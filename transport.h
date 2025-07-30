@@ -1,7 +1,6 @@
 #ifndef TRANSPORT_H
 #define TRANSPORT_H
 
-#include "cache.h"
 #include "run-command.h"
 #include "remote.h"
 #include "list-objects-filter-options.h"
@@ -14,7 +13,9 @@ struct git_transport_options {
 	unsigned check_self_contained_and_connected : 1;
 	unsigned self_contained_and_connected : 1;
 	unsigned update_shallow : 1;
+	unsigned reject_shallow : 1;
 	unsigned deepen_relative : 1;
+	unsigned refetch : 1;
 
 	/* see documentation of corresponding flag in fetch-pack.h */
 	unsigned from_promisor : 1;
@@ -46,6 +47,12 @@ struct git_transport_options {
 	 * transport_set_option().
 	 */
 	struct oid_array *negotiation_tips;
+
+	/*
+	 * If allocated, whenever transport_fetch_refs() is called, add known
+	 * common commits to this oidset instead of fetching any packfiles.
+	 */
+	struct oidset *acked_commits;
 };
 
 enum transport_family {
@@ -54,6 +61,7 @@ enum transport_family {
 	TRANSPORT_FAMILY_IPV6
 };
 
+struct bundle_list;
 struct transport {
 	const struct transport_vtable *vtable;
 
@@ -67,6 +75,18 @@ struct transport {
 	 * transport.c::transport_get_remote_refs().
 	 */
 	unsigned got_remote_refs : 1;
+
+	/**
+	 * Indicates whether we already called get_bundle_uri_list(); set by
+	 * transport.c::transport_get_remote_bundle_uri().
+	 */
+	unsigned got_remote_bundle_uri : 1;
+
+	/*
+	 * The results of "command=bundle-uri", if both sides support
+	 * the "bundle-uri" capability.
+	 */
+	struct bundle_list *bundles;
 
 	/*
 	 * Transports that call take-over destroys the data specific to
@@ -137,6 +157,7 @@ struct transport {
 #define TRANSPORT_PUSH_OPTIONS			(1<<14)
 #define TRANSPORT_RECURSE_SUBMODULES_ONLY	(1<<15)
 #define TRANSPORT_PUSH_FORCE_IF_INCLUDES	(1<<16)
+#define TRANSPORT_PUSH_AUTO_UPSTREAM		(1<<17)
 
 int transport_summary_width(const struct ref *refs);
 
@@ -147,7 +168,7 @@ struct transport *transport_get(struct remote *, const char *);
  * Check whether a transport is allowed by the environment.
  *
  * Type should generally be the URL scheme, as described in
- * Documentation/git.txt
+ * Documentation/git.adoc
  *
  * from_user specifies if the transport was given by the user.  If unknown pass
  * a -1 to read from the environment to determine if the transport was given by
@@ -194,6 +215,9 @@ void transport_check_allowed(const char *type);
 /* Aggressively fetch annotated tags if possible */
 #define TRANS_OPT_FOLLOWTAGS "followtags"
 
+/* Reject shallow repo transport */
+#define TRANS_OPT_REJECT_SHALLOW "rejectshallow"
+
 /* Accept refs that may update .git/shallow without --depth */
 #define TRANS_OPT_UPDATE_SHALLOW "updateshallow"
 
@@ -205,6 +229,9 @@ void transport_check_allowed(const char *type);
 
 /* Filter objects for partial clone and fetch */
 #define TRANS_OPT_LIST_OBJECTS_FILTER "filter"
+
+/* Refetch all objects without negotiating */
+#define TRANS_OPT_REFETCH "refetch"
 
 /* Request atomic (all-or-nothing) updates when pushing */
 #define TRANS_OPT_ATOMIC "atomic"
@@ -233,17 +260,44 @@ int transport_push(struct repository *repo,
 		   struct refspec *rs, int flags,
 		   unsigned int * reject_reasons);
 
+struct transport_ls_refs_options {
+	/*
+	 * Optionally, a list of ref prefixes can be provided which can be sent
+	 * to the server (when communicating using protocol v2) to enable it to
+	 * limit the ref advertisement.  Since ref filtering is done on the
+	 * server's end (and only when using protocol v2),
+	 * transport_get_remote_refs() could return refs which don't match the
+	 * provided ref_prefixes.
+	 */
+	struct strvec ref_prefixes;
+
+	/*
+	 * If unborn_head_target is not NULL, and the remote reports HEAD as
+	 * pointing to an unborn branch, transport_get_remote_refs() stores the
+	 * unborn branch in unborn_head_target.
+	 */
+	const char *unborn_head_target;
+};
+#define TRANSPORT_LS_REFS_OPTIONS_INIT { \
+	.ref_prefixes = STRVEC_INIT, \
+}
+
+/**
+ * Release the "struct transport_ls_refs_options".
+ */
+void transport_ls_refs_options_release(struct transport_ls_refs_options *opts);
+
 /*
  * Retrieve refs from a remote.
- *
- * Optionally a list of ref prefixes can be provided which can be sent to the
- * server (when communicating using protocol v2) to enable it to limit the ref
- * advertisement.  Since ref filtering is done on the server's end (and only
- * when using protocol v2), this can return refs which don't match the provided
- * ref_prefixes.
  */
 const struct ref *transport_get_remote_refs(struct transport *transport,
-					    const struct strvec *ref_prefixes);
+					    struct transport_ls_refs_options *transport_options);
+
+/**
+ * Retrieve bundle URI(s) from a remote. Populates "struct
+ * transport"'s "bundle_uri" and "got_remote_bundle_uri".
+ */
+int transport_get_remote_bundle_uri(struct transport *transport);
 
 /*
  * Fetch the hash algorithm used by a remote.
@@ -252,7 +306,19 @@ const struct ref *transport_get_remote_refs(struct transport *transport,
  */
 const struct git_hash_algo *transport_get_hash_algo(struct transport *transport);
 int transport_fetch_refs(struct transport *transport, struct ref *refs);
-void transport_unlock_pack(struct transport *transport);
+
+/*
+ * If this flag is set, unlocking will avoid to call non-async-signal-safe
+ * functions. This will necessarily leave behind some data structures which
+ * cannot be cleaned up.
+ */
+#define TRANSPORT_UNLOCK_PACK_IN_SIGNAL_HANDLER (1 << 0)
+
+/*
+ * Unlock all packfiles locked by the transport.
+ */
+void transport_unlock_pack(struct transport *transport, unsigned int flags);
+
 int transport_disconnect(struct transport *transport);
 char *transport_anonymize_url(const char *url);
 void transport_take_over(struct transport *transport,
@@ -275,5 +341,9 @@ void transport_print_push_status(const char *dest, struct ref *refs,
 
 /* common method used by transport-helper.c and send-pack.c */
 void reject_atomic_push(struct ref *refs, int mirror_mode);
+
+/* common method to parse push-option or server-option from config */
+int parse_transport_option(const char *var, const char *value,
+			   struct string_list *transport_options);
 
 #endif

@@ -43,6 +43,10 @@ static int xdl_emit_record(xdfile_t *xdf, long ri, char const *pre, xdemitcb_t *
 	return 0;
 }
 
+static long saturating_add(long a, long b)
+{
+	return signed_add_overflows(a, b) ? LONG_MAX : a + b;
+}
 
 /*
  * Starting at the passed change atom, find the latest change atom to be included
@@ -52,9 +56,11 @@ static int xdl_emit_record(xdfile_t *xdf, long ri, char const *pre, xdemitcb_t *
 xdchange_t *xdl_get_hunk(xdchange_t **xscr, xdemitconf_t const *xecfg)
 {
 	xdchange_t *xch, *xchp, *lxch;
-	long max_common = 2 * xecfg->ctxlen + xecfg->interhunkctxlen;
+	long max_common = saturating_add(saturating_add(xecfg->ctxlen,
+							xecfg->ctxlen),
+					 xecfg->interhunkctxlen);
 	long max_ignorable = xecfg->ctxlen;
-	unsigned long ignored = 0; /* number of ignored blank lines */
+	long ignored = 0; /* number of ignored blank lines */
 
 	/* remove ignorable changes that are too far before other changes */
 	for (xchp = *xscr; xchp && xchp->ignore; xchp = xchp->next) {
@@ -65,7 +71,7 @@ xdchange_t *xdl_get_hunk(xdchange_t **xscr, xdemitconf_t const *xecfg)
 			*xscr = xch;
 	}
 
-	if (*xscr == NULL)
+	if (!*xscr)
 		return NULL;
 
 	lxch = *xscr;
@@ -95,7 +101,7 @@ xdchange_t *xdl_get_hunk(xdchange_t **xscr, xdemitconf_t const *xecfg)
 }
 
 
-static long def_ff(const char *rec, long len, char *buf, long sz, void *priv)
+static long def_ff(const char *rec, long len, char *buf, long sz)
 {
 	if (len > 0 &&
 			(isalpha((unsigned char)*rec) || /* identifier? */
@@ -117,7 +123,7 @@ static long match_func_rec(xdfile_t *xdf, xdemitconf_t const *xecfg, long ri,
 	const char *rec;
 	long len = xdl_get_rec(xdf, ri, &rec);
 	if (!xecfg->find_func)
-		return def_ff(rec, len, buf, sz, xecfg->find_func_priv);
+		return def_ff(rec, len, buf, sz);
 	return xecfg->find_func(rec, len, buf, sz, xecfg->find_func_priv);
 }
 
@@ -278,7 +284,8 @@ pre_context_calculation:
 				      s1 - 1, funclineprev);
 			funclineprev = s1 - 1;
 		}
-		if (xdl_emit_hunk_hdr(s1 + 1, e1 - s1, s2 + 1, e2 - s2,
+		if (!(xecfg->flags & XDL_EMIT_NO_HUNK_HDR) &&
+		    xdl_emit_hunk_hdr(s1 + 1, e1 - s1, s2 + 1, e2 - s2,
 				      func_line.buf, func_line.len, ecb) < 0)
 			return -1;
 

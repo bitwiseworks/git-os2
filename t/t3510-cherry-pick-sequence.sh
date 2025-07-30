@@ -25,7 +25,7 @@ pristine_detach () {
 }
 
 test_expect_success setup '
-	git config advice.detachedhead false &&
+	git config set advice.detachedhead false &&
 	echo unrelated >unrelated &&
 	git add unrelated &&
 	test_commit initial foo a &&
@@ -65,7 +65,7 @@ test_expect_success 'cherry-pick persists opts correctly' '
 	# gets interrupted, use a high-enough number that is larger
 	# than the number of parents of any commit we have created
 	mainline=4 &&
-	test_expect_code 128 git cherry-pick -s -m $mainline --strategy=recursive -X patience -X ours initial..anotherpick &&
+	test_expect_code 128 git cherry-pick -s -m $mainline --strategy=recursive -X patience -X ours --edit initial..anotherpick &&
 	test_path_is_dir .git/sequencer &&
 	test_path_is_file .git/sequencer/head &&
 	test_path_is_file .git/sequencer/todo &&
@@ -84,6 +84,68 @@ test_expect_success 'cherry-pick persists opts correctly' '
 	ours
 	EOF
 	git config --file=.git/sequencer/opts --get-all options.strategy-option >actual &&
+	test_cmp expect actual &&
+	echo "true" >expect &&
+	git config --file=.git/sequencer/opts --get-all options.edit >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'cherry-pick persists --empty=stop correctly' '
+	pristine_detach yetanotherpick &&
+	# Picking `anotherpick` forces a conflict so that we stop. That
+	# commit is then skipped, after which we pick `yetanotherpick`
+	# while already on `yetanotherpick` to cause an empty commit
+	test_must_fail git cherry-pick --empty=stop anotherpick yetanotherpick &&
+	test_must_fail git cherry-pick --skip 2>msg &&
+	test_grep "The previous cherry-pick is now empty" msg &&
+	rm msg &&
+	git cherry-pick --abort
+'
+
+test_expect_success 'cherry-pick persists --empty=drop correctly' '
+	pristine_detach yetanotherpick &&
+	# Picking `anotherpick` forces a conflict so that we stop. That
+	# commit is then skipped, after which we pick `yetanotherpick`
+	# while already on `yetanotherpick` to cause an empty commit
+	test_must_fail git cherry-pick --empty=drop anotherpick yetanotherpick &&
+	git cherry-pick --skip &&
+	test_cmp_rev yetanotherpick HEAD
+'
+
+test_expect_success 'cherry-pick persists --empty=keep correctly' '
+	pristine_detach yetanotherpick &&
+	# Picking `anotherpick` forces a conflict so that we stop. That
+	# commit is then skipped, after which we pick `yetanotherpick`
+	# while already on `yetanotherpick` to cause an empty commit
+	test_must_fail git cherry-pick --empty=keep anotherpick yetanotherpick &&
+	git cherry-pick --skip &&
+	test_cmp_rev yetanotherpick HEAD^
+'
+
+test_expect_success 'revert persists opts correctly' '
+	pristine_detach initial &&
+	# to make sure that the session to revert a sequence
+	# gets interrupted, revert commits that are not in the history
+	# of HEAD.
+	test_expect_code 1 git revert -s --strategy=recursive -X patience -X ours --no-edit picked yetanotherpick &&
+	test_path_is_dir .git/sequencer &&
+	test_path_is_file .git/sequencer/head &&
+	test_path_is_file .git/sequencer/todo &&
+	test_path_is_file .git/sequencer/opts &&
+	echo "true" >expect &&
+	git config --file=.git/sequencer/opts --get-all options.signoff >actual &&
+	test_cmp expect actual &&
+	echo "recursive" >expect &&
+	git config --file=.git/sequencer/opts --get-all options.strategy >actual &&
+	test_cmp expect actual &&
+	cat >expect <<-\EOF &&
+	patience
+	ours
+	EOF
+	git config --file=.git/sequencer/opts --get-all options.strategy-option >actual &&
+	test_cmp expect actual &&
+	echo "false" >expect &&
+	git config --file=.git/sequencer/opts --get-all options.edit >actual &&
 	test_cmp expect actual
 '
 
@@ -124,7 +186,7 @@ test_expect_success 'skip "empty" commit' '
 	pristine_detach picked &&
 	test_commit dummy foo d &&
 	test_must_fail git cherry-pick anotherpick 2>err &&
-	test_i18ngrep "git cherry-pick --skip" err &&
+	test_grep "git cherry-pick --skip" err &&
 	git cherry-pick --skip &&
 	test_cmp_rev dummy HEAD
 '
@@ -170,7 +232,7 @@ test_expect_success 'check advice when we move HEAD by committing' '
 	git commit -a &&
 	test_path_is_missing .git/CHERRY_PICK_HEAD &&
 	test_must_fail git cherry-pick --skip 2>advice &&
-	test_i18ncmp expect advice
+	test_cmp expect advice
 '
 
 test_expect_success 'selectively advise --skip while launching another sequence' '
@@ -182,7 +244,7 @@ test_expect_success 'selectively advise --skip while launching another sequence'
 	EOF
 	test_must_fail git cherry-pick picked..yetanotherpick &&
 	test_must_fail git cherry-pick picked..yetanotherpick 2>advice &&
-	test_i18ncmp expect advice &&
+	test_cmp expect advice &&
 	cat >expect <<-EOF &&
 	error: cherry-pick is already in progress
 	hint: try "git cherry-pick (--continue | --abort | --quit)"
@@ -190,7 +252,7 @@ test_expect_success 'selectively advise --skip while launching another sequence'
 	EOF
 	git reset --merge &&
 	test_must_fail git cherry-pick picked..yetanotherpick 2>advice &&
-	test_i18ncmp expect advice
+	test_cmp expect advice
 '
 
 test_expect_success 'allow skipping commit but not abort for a new history' '
@@ -204,10 +266,11 @@ test_expect_success 'allow skipping commit but not abort for a new history' '
 	test_must_fail git cherry-pick anotherpick &&
 	test_must_fail git cherry-pick --abort 2>advice &&
 	git cherry-pick --skip &&
-	test_i18ncmp expect advice
+	test_cmp expect advice
 '
 
 test_expect_success 'allow skipping stopped cherry-pick because of untracked file modifications' '
+	test_when_finished "rm unrelated" &&
 	pristine_detach initial &&
 	git rm --cached unrelated &&
 	git commit -m "untrack unrelated" &&
@@ -283,7 +346,7 @@ test_expect_success '--abort does not unsafely change HEAD' '
 	git reset --hard base &&
 	test_must_fail git cherry-pick picked anotherpick &&
 	git cherry-pick --abort 2>actual &&
-	test_i18ngrep "You seem to have moved HEAD" actual &&
+	test_grep "You seem to have moved HEAD" actual &&
 	test_cmp_rev base HEAD
 '
 
@@ -489,7 +552,7 @@ test_expect_success '--continue asks for help after resolving patch to nil' '
 	test_cmp_rev unrelatedpick CHERRY_PICK_HEAD &&
 	git checkout HEAD -- unrelated &&
 	test_must_fail git cherry-pick --continue 2>msg &&
-	test_i18ngrep "The previous cherry-pick is now empty" msg
+	test_grep "The previous cherry-pick is now empty" msg
 '
 
 test_expect_success 'follow advice and skip nil patch' '

@@ -1,6 +1,10 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "test-tool.h"
-#include "cache.h"
 #include "config.h"
+#include "read-cache-ll.h"
+#include "repository.h"
+#include "setup.h"
 
 int cmd__read_cache(int argc, const char **argv)
 {
@@ -16,21 +20,22 @@ int cmd__read_cache(int argc, const char **argv)
 		cnt = strtol(argv[1], NULL, 0);
 	setup_git_directory();
 	git_config(git_default_config, NULL);
+
 	for (i = 0; i < cnt; i++) {
-		read_cache();
+		repo_read_index(the_repository);
 		if (name) {
 			int pos;
 
-			refresh_index(&the_index, REFRESH_QUIET,
+			refresh_index(the_repository->index, REFRESH_QUIET,
 				      NULL, NULL, NULL);
-			pos = index_name_pos(&the_index, name, strlen(name));
+			pos = index_name_pos(the_repository->index, name, strlen(name));
 			if (pos < 0)
 				die("%s not in index", name);
 			printf("%s is%s up to date\n", name,
-			       ce_uptodate(the_index.cache[pos]) ? "" : " not");
+			       ce_uptodate(the_repository->index->cache[pos]) ? "" : " not");
 			write_file(name, "%d\n", i);
 		}
-		discard_cache();
+		discard_index(the_repository->index);
 	}
 	return 0;
 }

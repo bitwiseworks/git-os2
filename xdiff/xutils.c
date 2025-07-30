@@ -122,7 +122,7 @@ long xdl_guess_lines(mmfile_t *mf, long sample) {
 	long nl = 0, size, tsize = 0;
 	char const *data, *cur, *top;
 
-	if ((cur = data = xdl_mmfile_first(mf, &size)) != NULL) {
+	if ((cur = data = xdl_mmfile_first(mf, &size))) {
 		for (top = data + size; nl < sample && cur < top; ) {
 			nl++;
 			if (!(cur = memchr(cur, '\n', top - cur)))
@@ -375,7 +375,7 @@ static int xdl_format_hunk_hdr(long s1, long c1, long s2, long c2,
 	nb += 3;
 	if (func && funclen) {
 		buf[nb++] = ' ';
-		if (funclen > sizeof(buf) - nb - 1)
+		if ((size_t)funclen > sizeof(buf) - nb - 1)
 			funclen = sizeof(buf) - nb - 1;
 		memcpy(buf + nb, func, funclen);
 		nb += funclen;
@@ -431,4 +431,21 @@ int xdl_fall_back_diff(xdfenv_t *diff_env, xpparam_t const *xpp,
 	xdl_free_env(&env);
 
 	return 0;
+}
+
+void* xdl_alloc_grow_helper(void *p, long nr, long *alloc, size_t size)
+{
+	void *tmp = NULL;
+	size_t n = ((LONG_MAX - 16) / 2 >= *alloc) ? 2 * *alloc + 16 : LONG_MAX;
+	if ((size_t)nr > n)
+		n = nr;
+	if (SIZE_MAX / size >= n)
+		tmp = xdl_realloc(p, n * size);
+	if (tmp) {
+		*alloc = n;
+	} else {
+		xdl_free(p);
+		*alloc = 0;
+	}
+	return tmp;
 }

@@ -1,69 +1,133 @@
-#!/usr/bin/env bash
+#!/bin/sh
 #
 # Install dependencies required to build and test Git on Linux and macOS
 #
 
 . ${0%/*}/lib.sh
 
-P4WHENCE=http://filehost.perforce.com/perforce/r$LINUX_P4_VERSION
-LFSWHENCE=https://github.com/github/git-lfs/releases/download/v$LINUX_GIT_LFS_VERSION
-UBUNTU_COMMON_PKGS="make libssl-dev libcurl4-openssl-dev libexpat-dev
- tcl tk gettext zlib1g-dev perl-modules liberror-perl libauthen-sasl-perl
- libemail-valid-perl libio-socket-ssl-perl libnet-smtp-ssl-perl"
+begin_group "Install dependencies"
 
-case "$jobname" in
-linux-clang|linux-gcc)
-	sudo apt-add-repository -y "ppa:ubuntu-toolchain-r/test"
-	sudo apt-get -q update
-	sudo apt-get -q -y install language-pack-is libsvn-perl apache2 \
-		$UBUNTU_COMMON_PKGS
-	case "$jobname" in
-	linux-gcc)
-		sudo apt-get -q -y install gcc-8
+P4WHENCE=https://cdist2.perforce.com/perforce/r23.2
+LFSWHENCE=https://github.com/github/git-lfs/releases/download/v$LINUX_GIT_LFS_VERSION
+JGITWHENCE=https://repo1.maven.org/maven2/org/eclipse/jgit/org.eclipse.jgit.pgm/6.8.0.202311291450-r/org.eclipse.jgit.pgm-6.8.0.202311291450-r.sh
+
+# Make sudo a no-op and execute the command directly when running as root.
+# While using sudo would be fine on most platforms when we are root already,
+# some platforms like e.g. Alpine Linux do not have sudo available by default
+# and would thus break.
+if test "$(id -u)" -eq 0
+then
+	sudo () {
+		"$@"
+	}
+fi
+
+case "$distro" in
+alpine-*)
+	apk add --update shadow sudo meson ninja-build gcc libc-dev curl-dev openssl-dev expat-dev gettext \
+		zlib-ng-dev pcre2-dev python3 musl-libintl perl-utils ncurses \
+		apache2 apache2-http2 apache2-proxy apache2-ssl apache2-webdav apr-util-dbd_sqlite3 \
+		bash cvs gnupg perl-cgi perl-dbd-sqlite perl-io-tty >/dev/null
+	;;
+fedora-*|almalinux-*)
+	dnf -yq update >/dev/null &&
+	dnf -yq install shadow-utils sudo make gcc findutils diffutils perl python3 gawk gettext zlib-devel expat-devel openssl-devel curl-devel pcre2-devel >/dev/null
+	;;
+ubuntu-*|i386/ubuntu-*|debian-*)
+	# Required so that apt doesn't wait for user input on certain packages.
+	export DEBIAN_FRONTEND=noninteractive
+
+	case "$distro" in
+	ubuntu-*)
+		SVN='libsvn-perl subversion'
+		LANGUAGES='language-pack-is'
+		;;
+	i386/ubuntu-*)
+		SVN=
+		LANGUAGES='language-pack-is'
+		;;
+	*)
+		SVN='libsvn-perl subversion'
+		LANGUAGES='locales-all'
 		;;
 	esac
 
-	mkdir --parents "$P4_PATH"
-	pushd "$P4_PATH"
-		wget --quiet "$P4WHENCE/bin.linux26x86_64/p4d"
-		wget --quiet "$P4WHENCE/bin.linux26x86_64/p4"
-		chmod u+x p4d
-		chmod u+x p4
-	popd
-	mkdir --parents "$GIT_LFS_PATH"
-	pushd "$GIT_LFS_PATH"
-		wget --quiet "$LFSWHENCE/git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz"
-		tar --extract --gunzip --file "git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz"
-		cp git-lfs-$LINUX_GIT_LFS_VERSION/git-lfs .
-	popd
+	sudo apt-get -q update
+	sudo apt-get -q -y install \
+		$LANGUAGES apache2 cvs cvsps git gnupg $SVN \
+		make libssl-dev libcurl4-openssl-dev libexpat-dev wget sudo default-jre \
+		tcl tk gettext zlib1g-dev perl-modules liberror-perl libauthen-sasl-perl \
+		libemail-valid-perl libio-pty-perl libio-socket-ssl-perl libnet-smtp-ssl-perl libdbd-sqlite3-perl libcgi-pm-perl \
+		libsecret-1-dev libpcre2-dev meson ninja-build pkg-config \
+		${CC_PACKAGE:-${CC:-gcc}} $PYTHON_PACKAGE
+
+	case "$distro" in
+	ubuntu-*)
+		mkdir --parents "$CUSTOM_PATH"
+
+		wget --quiet --directory-prefix="$CUSTOM_PATH" \
+			"$P4WHENCE/bin.linux26x86_64/p4d" \
+			"$P4WHENCE/bin.linux26x86_64/p4" &&
+		chmod a+x "$CUSTOM_PATH/p4d" "$CUSTOM_PATH/p4" || {
+			rm -f "$CUSTOM_PATH/p4"
+			rm -f "$CUSTOM_PATH/p4d"
+		}
+
+		wget --quiet \
+		     "$LFSWHENCE/git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz" &&
+		tar -xzf "git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz" \
+			-C "$CUSTOM_PATH" --strip-components=1 \
+			"git-lfs-$LINUX_GIT_LFS_VERSION/git-lfs" &&
+		rm "git-lfs-linux-amd64-$LINUX_GIT_LFS_VERSION.tar.gz" ||
+		rm -f "$CUSTOM_PATH/git-lfs"
+
+		wget --quiet "$JGITWHENCE" --output-document="$CUSTOM_PATH/jgit" &&
+		chmod a+x "$CUSTOM_PATH/jgit" ||
+		rm -f "$CUSTOM_PATH/jgit"
+		;;
+	esac
 	;;
-osx-clang|osx-gcc)
+macos-*)
 	export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 	# Uncomment this if you want to run perf tests:
 	# brew install gnu-time
-	test -z "$BREW_INSTALL_PACKAGES" ||
-	brew install $BREW_INSTALL_PACKAGES
 	brew link --force gettext
-	brew install --cask --no-quarantine perforce || {
-		# Update the definitions and try again
-		cask_repo="$(brew --repository)"/Library/Taps/homebrew/homebrew-cask &&
-		git -C "$cask_repo" pull --no-stat --ff-only &&
-		brew install --cask --no-quarantine perforce
-	} ||
-	brew install homebrew/cask/perforce
+
+	mkdir -p "$CUSTOM_PATH"
+	wget -q "$P4WHENCE/bin.macosx1015x86_64/helix-core-server.tgz" &&
+	tar -xf helix-core-server.tgz -C "$CUSTOM_PATH" p4 p4d &&
+	sudo xattr -d com.apple.quarantine "$CUSTOM_PATH/p4" "$CUSTOM_PATH/p4d" 2>/dev/null || true
+	rm helix-core-server.tgz
+
 	case "$jobname" in
-	osx-gcc)
-		brew install gcc@9
-		# Just in case the image is updated to contain gcc@9
-		# pre-installed but not linked.
-		brew link gcc@9
+	osx-meson)
+		brew install meson ninja pcre2
 		;;
 	esac
+
+	if test -n "$CC_PACKAGE"
+	then
+		BREW_PACKAGE=${CC_PACKAGE/-/@}
+		brew install "$BREW_PACKAGE"
+		brew link "$BREW_PACKAGE"
+	fi
+	;;
+esac
+
+case "$jobname" in
+ClangFormat)
+	sudo apt-get -q update
+	sudo apt-get -q -y install clang-format
 	;;
 StaticAnalysis)
 	sudo apt-get -q update
 	sudo apt-get -q -y install coccinelle libcurl4-openssl-dev libssl-dev \
 		libexpat-dev gettext make
+	;;
+sparse)
+	sudo apt-get -q update -q
+	sudo apt-get -q -y install libssl-dev libcurl4-openssl-dev \
+		libexpat-dev gettext zlib1g-dev sparse
 	;;
 Documentation)
 	sudo apt-get -q update
@@ -71,22 +135,34 @@ Documentation)
 
 	test -n "$ALREADY_HAVE_ASCIIDOCTOR" ||
 	sudo gem install --version 1.5.8 asciidoctor
-	;;
-linux-gcc-4.8|GETTEXT_POISON)
-	sudo apt-get -q update
-	sudo apt-get -q -y install $UBUNTU_COMMON_PKGS
+	sudo gem install concurrent-ruby
 	;;
 esac
 
-if type p4d >/dev/null && type p4 >/dev/null
+if type p4d >/dev/null 2>&1 && type p4 >/dev/null 2>&1
 then
 	echo "$(tput setaf 6)Perforce Server Version$(tput sgr0)"
-	p4d -V | grep Rev.
+	p4d -V
 	echo "$(tput setaf 6)Perforce Client Version$(tput sgr0)"
-	p4 -V | grep Rev.
+	p4 -V
+else
+	echo >&2 "::warning:: perforce wasn't installed, see above for clues why"
 fi
-if type git-lfs >/dev/null
+
+if type git-lfs >/dev/null 2>&1
 then
 	echo "$(tput setaf 6)Git-LFS Version$(tput sgr0)"
 	git-lfs version
+else
+	echo >&2 "::warning:: git-lfs wasn't installed, see above for clues why"
 fi
+
+if type jgit >/dev/null 2>&1
+then
+	echo "$(tput setaf 6)JGit Version$(tput sgr0)"
+	jgit version
+else
+	echo >&2 "::warning:: JGit wasn't installed, see above for clues why"
+fi
+
+end_group "Install dependencies"

@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='git blame ignore fuzzy heuristic'
+
 . ./test-lib.sh
 
 pick_author='s/^[0-9a-f^]* *(\([^ ]*\) .*/\1/'
@@ -310,7 +311,7 @@ test_expect_success setup '
 			echo "$line" >>"$i" &&
 			git add "$i" &&
 			test_tick &&
-			GIT_AUTHOR_NAME="$line_count" git commit -m "$line_count"
+			GIT_AUTHOR_NAME="$line_count" git commit -m "$line_count" || return 1
 		done <"a$i"
 	done &&
 
@@ -318,7 +319,7 @@ test_expect_success setup '
 	do
 		# Overwrite the files with the final content.
 		cp b$i $i &&
-		git add $i
+		git add $i || return 1
 	done &&
 	test_tick &&
 

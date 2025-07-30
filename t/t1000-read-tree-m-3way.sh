@@ -71,6 +71,7 @@ In addition:
  DF: a special case, where A makes a directory and B makes a file.
 
 '
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-read-tree.sh
 . "$TEST_DIRECTORY"/lib-read-tree-m-3way.sh

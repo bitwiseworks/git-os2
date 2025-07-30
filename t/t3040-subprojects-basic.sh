@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='Basic subproject functionality'
+
 . ./test-lib.sh
 
 test_expect_success 'setup: create superproject' '

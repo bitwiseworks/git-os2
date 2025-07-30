@@ -7,6 +7,7 @@ test_description='git apply --whitespace=strip and configuration file.
 
 '
 
+
 . ./test-lib.sh
 
 test_expect_success setup '

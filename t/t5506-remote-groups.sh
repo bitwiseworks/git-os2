@@ -1,6 +1,9 @@
 #!/bin/sh
 
 test_description='git remote group handling'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 mark() {
@@ -31,8 +34,8 @@ repo_fetched() {
 test_expect_success 'setup' '
 	mkdir one && (cd one && git init) &&
 	mkdir two && (cd two && git init) &&
-	git remote add -m master one one &&
-	git remote add -m master two two
+	git remote add -m main one one &&
+	git remote add -m main two two
 '
 
 test_expect_success 'no group updates all' '
@@ -93,6 +96,15 @@ test_expect_success 'updating remote name updates that remote' '
 	git remote update one &&
 	repo_fetched one &&
 	! repo_fetched two
+'
+
+test_expect_success 'updating group in parallel with a duplicate remote does not fail (fetch)' '
+	mark fetch-group-duplicate &&
+	update_repo one &&
+	git config --add remotes.duplicate one &&
+	git config --add remotes.duplicate one &&
+	git -c fetch.parallel=2 remote update duplicate &&
+	repo_fetched one
 '
 
 test_done

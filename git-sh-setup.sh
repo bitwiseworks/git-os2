@@ -41,7 +41,7 @@ git_broken_path_fix () {
 	esac
 }
 
-# @@BROKEN_PATH_FIX@@
+# @BROKEN_PATH_FIX@
 
 # Source git-sh-i18n for gettext support.
 . "$(git --exec-path)/git-sh-i18n"
@@ -55,15 +55,6 @@ die_with_status () {
 	shift
 	printf >&2 '%s\n' "$*"
 	exit "$status"
-}
-
-GIT_QUIET=
-
-say () {
-	if test -z "$GIT_QUIET"
-	then
-		printf '%s\n' "$*"
-	fi
 }
 
 if test -n "$OPTIONS_SPEC"; then
@@ -101,7 +92,6 @@ $LONG_USAGE")"
 	case "$1" in
 		-h)
 		echo "$LONG_USAGE"
-		case "$0" in *git-legacy-stash) exit 129;; esac
 		exit
 	esac
 fi
@@ -164,21 +154,13 @@ git_pager() {
 	else
 		GIT_PAGER=cat
 	fi
-	for vardef in @@PAGER_ENV@@
+	for vardef in @PAGER_ENV@
 	do
 		var=${vardef%%=*}
 		eval ": \"\${$vardef}\" && export $var"
 	done
 
 	eval "$GIT_PAGER" '"$@"'
-}
-
-sane_grep () {
-	GREP_OPTIONS= LC_ALL=C grep @@SANE_TEXT_GREP@@ "$@"
-}
-
-sane_egrep () {
-	GREP_OPTIONS= LC_ALL=C egrep @@SANE_TEXT_GREP@@ "$@"
 }
 
 is_bare_repository () {
@@ -217,14 +199,8 @@ require_clean_work_tree () {
 	then
 		action=$1
 		case "$action" in
-		rebase)
-			gettextln "Cannot rebase: You have unstaged changes." >&2
-			;;
 		"rewrite branches")
 			gettextln "Cannot rewrite branches: You have unstaged changes." >&2
-			;;
-		"pull with rebase")
-			gettextln "Cannot pull with rebase: You have unstaged changes." >&2
 			;;
 		*)
 			eval_gettextln "Cannot \$action: You have unstaged changes." >&2
@@ -238,17 +214,7 @@ require_clean_work_tree () {
 		if test $err = 0
 		then
 			action=$1
-			case "$action" in
-			rebase)
-				gettextln "Cannot rebase: Your index contains uncommitted changes." >&2
-				;;
-			"pull with rebase")
-				gettextln "Cannot pull with rebase: Your index contains uncommitted changes." >&2
-				;;
-			*)
-				eval_gettextln "Cannot \$action: Your index contains uncommitted changes." >&2
-				;;
-			esac
+			eval_gettextln "Cannot \$action: Your index contains uncommitted changes." >&2
 		else
 		    gettextln "Additionally, your index contains uncommitted changes." >&2
 		fi
@@ -310,18 +276,11 @@ get_author_ident_from_commit () {
 	parse_ident_from_commit author AUTHOR
 }
 
-# Clear repo-local GIT_* environment variables. Useful when switching to
-# another repository (e.g. when entering a submodule). See also the env
-# list in git_connect()
-clear_local_git_env() {
-	unset $(git rev-parse --local-env-vars)
-}
-
 # Generate a virtual base file for a two-file merge. Uses git apply to
 # remove lines from $1 that are not in $2, leaving only common lines.
 create_virtual_base() {
 	sz0=$(wc -c <"$1")
-	@@DIFF@@ -u -La/"$1" -Lb/"$1" "$1" "$2" | git apply --no-add
+	@DIFF@ -u -La/"$1" -Lb/"$1" "$1" "$2" | git apply --no-add
 	sz1=$(wc -c <"$1")
 
 	# If we do not have enough common material, it is not

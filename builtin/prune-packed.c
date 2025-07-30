@@ -1,13 +1,17 @@
 #include "builtin.h"
+#include "gettext.h"
 #include "parse-options.h"
 #include "prune-packed.h"
 
 static const char * const prune_packed_usage[] = {
-	N_("git prune-packed [-n | --dry-run] [-q | --quiet]"),
+	"git prune-packed [-n | --dry-run] [-q | --quiet]",
 	NULL
 };
 
-int cmd_prune_packed(int argc, const char **argv, const char *prefix)
+int cmd_prune_packed(int argc,
+		     const char **argv,
+		     const char *prefix,
+		     struct repository *repo UNUSED)
 {
 	int opts = isatty(2) ? PRUNE_PACKED_VERBOSE : 0;
 	const struct option prune_packed_options[] = {

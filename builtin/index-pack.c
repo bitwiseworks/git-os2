@@ -1,6 +1,12 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
 #include "config.h"
 #include "delta.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "pack.h"
 #include "csum-file.h"
 #include "blob.h"
@@ -9,15 +15,25 @@
 #include "tree.h"
 #include "progress.h"
 #include "fsck.h"
-#include "exec-cmd.h"
+#include "strbuf.h"
 #include "streaming.h"
 #include "thread-utils.h"
 #include "packfile.h"
+#include "pack-revindex.h"
+#include "object-file.h"
 #include "object-store.h"
+#include "oid-array.h"
+#include "oidset.h"
+#include "path.h"
+#include "replace-object.h"
+#include "tree-walk.h"
 #include "promisor-remote.h"
+#include "run-command.h"
+#include "setup.h"
+#include "strvec.h"
 
 static const char index_pack_usage[] =
-"git index-pack [-v] [-o <index-file>] [--keep | --keep=<msg>] [--verify] [--strict] (<pack-file> | --stdin [--fix-thin] [<pack-file>])";
+"git index-pack [-v] [-o <index-file>] [--keep | --keep=<msg>] [--[no-]rev-index] [--verify] [--strict[=<msg-id>=<severity>...]] [--fsck-objects[=<msg-id>=<severity>...]] (<pack-file> | --stdin [--fix-thin] [<pack-file>])";
 
 struct object_entry {
 	struct pack_idx_entry idx;
@@ -86,7 +102,7 @@ static LIST_HEAD(done_head);
 static size_t base_cache_used;
 static size_t base_cache_limit;
 
-struct thread_local {
+struct thread_local_data {
 	pthread_t thread;
 	int pack_fd;
 };
@@ -109,7 +125,7 @@ static struct object_entry *objects;
 static struct object_stat *obj_stat;
 static struct ofs_delta_entry *ofs_deltas;
 static struct ref_delta_entry *ref_deltas;
-static struct thread_local nothread_data;
+static struct thread_local_data nothread_data;
 static int nr_objects;
 static int nr_ofs_deltas;
 static int nr_ref_deltas;
@@ -120,8 +136,9 @@ static int nr_threads;
 static int from_stdin;
 static int strict;
 static int do_fsck_object;
-static struct fsck_options fsck_options = FSCK_OPTIONS_STRICT;
+static struct fsck_options fsck_options = FSCK_OPTIONS_MISSING_GITMODULES;
 static int verbose;
+static const char *progress_title;
 static int show_resolving_progress;
 static int show_stat;
 static int check_self_contained_and_connected;
@@ -134,12 +151,19 @@ static unsigned int input_offset, input_len;
 static off_t consumed_bytes;
 static off_t max_input_size;
 static unsigned deepest_delta;
-static git_hash_ctx input_ctx;
+static struct git_hash_ctx input_ctx;
 static uint32_t input_crc32;
 static int input_fd, output_fd;
 static const char *curr_pack;
 
-static struct thread_local *thread_data;
+/*
+ * outgoing_links is guarded by read_mutex, and record_outgoing_links is
+ * read-only in a thread.
+ */
+static struct oidset outgoing_links = OIDSET_INIT;
+static int record_outgoing_links;
+
+static struct thread_local_data *thread_data;
 static int nr_dispatched;
 static int threads_active;
 
@@ -185,11 +209,9 @@ static void init_thread(void)
 	if (show_stat)
 		pthread_mutex_init(&deepest_delta_mutex, NULL);
 	pthread_key_create(&key, NULL);
-	thread_data = xcalloc(nr_threads, sizeof(*thread_data));
+	CALLOC_ARRAY(thread_data, nr_threads);
 	for (i = 0; i < nr_threads; i++) {
-		thread_data[i].pack_fd = open(curr_pack, O_RDONLY);
-		if (thread_data[i].pack_fd == -1)
-			die_errno(_("unable to open %s"), curr_pack);
+		thread_data[i].pack_fd = xopen(curr_pack, O_RDONLY);
 	}
 
 	threads_active = 1;
@@ -212,7 +234,9 @@ static void cleanup_thread(void)
 	free(thread_data);
 }
 
-static int mark_link(struct object *obj, int type, void *data, struct fsck_options *options)
+static int mark_link(struct object *obj, enum object_type type,
+		     void *data UNUSED,
+		     struct fsck_options *options UNUSED)
 {
 	if (!obj)
 		return -1;
@@ -255,13 +279,14 @@ static unsigned check_objects(void)
 {
 	unsigned i, max, foreign_nr = 0;
 
-	max = get_max_object_index();
+	max = get_max_object_index(the_repository);
 
 	if (verbose)
-		progress = start_delayed_progress(_("Checking objects"), max);
+		progress = start_delayed_progress(the_repository,
+						  _("Checking objects"), max);
 
 	for (i = 0; i < max; i++) {
-		foreign_nr += check_object(get_indexed_object(i));
+		foreign_nr += check_object(get_indexed_object(the_repository, i));
 		display_progress(progress, i + 1);
 	}
 
@@ -276,7 +301,7 @@ static void flush(void)
 	if (input_offset) {
 		if (output_fd >= 0)
 			write_or_die(output_fd, input_buffer, input_offset);
-		the_hash_algo->update_fn(&input_ctx, input_buffer, input_offset);
+		git_hash_update(&input_ctx, input_buffer, input_offset);
 		memmove(input_buffer, input_buffer + input_offset, input_len);
 		input_offset = 0;
 	}
@@ -323,8 +348,12 @@ static void use(int bytes)
 	if (signed_add_overflows(consumed_bytes, bytes))
 		die(_("pack too large for current definition of off_t"));
 	consumed_bytes += bytes;
-	if (max_input_size && consumed_bytes > max_input_size)
-		die(_("pack exceeds maximum allowed size"));
+	if (max_input_size && consumed_bytes > max_input_size) {
+		struct strbuf size_limit = STRBUF_INIT;
+		strbuf_humanise_bytes(&size_limit, max_input_size);
+		die(_("pack exceeds maximum allowed size (%s)"),
+		    size_limit.buf);
+	}
 }
 
 static const char *open_pack_file(const char *pack_name)
@@ -337,15 +366,11 @@ static const char *open_pack_file(const char *pack_name)
 						"pack/tmp_pack_XXXXXX");
 			pack_name = strbuf_detach(&tmp_file, NULL);
 		} else {
-			output_fd = open(pack_name, O_CREAT|O_EXCL|O_RDWR, 0600);
-			if (output_fd < 0)
-				die_errno(_("unable to create '%s'"), pack_name);
+			output_fd = xopen(pack_name, O_CREAT|O_EXCL|O_RDWR, 0600);
 		}
 		nothread_data.pack_fd = output_fd;
 	} else {
-		input_fd = open(pack_name, O_RDONLY);
-		if (input_fd < 0)
-			die_errno(_("cannot open packfile '%s'"), pack_name);
+		input_fd = xopen(pack_name, O_RDONLY);
 		output_fd = -1;
 		nothread_data.pack_fd = input_fd;
 	}
@@ -355,22 +380,22 @@ static const char *open_pack_file(const char *pack_name)
 
 static void parse_pack_header(void)
 {
-	struct pack_header *hdr = fill(sizeof(struct pack_header));
+	unsigned char *hdr = fill(sizeof(struct pack_header));
 
 	/* Header consistency check */
-	if (hdr->hdr_signature != htonl(PACK_SIGNATURE))
+	if (get_be32(hdr) != PACK_SIGNATURE)
 		die(_("pack signature mismatch"));
-	if (!pack_version_ok(hdr->hdr_version))
+	hdr += 4;
+	if (!pack_version_ok_native(get_be32(hdr)))
 		die(_("pack version %"PRIu32" unsupported"),
-			ntohl(hdr->hdr_version));
+		    get_be32(hdr));
+	hdr += 4;
 
-	nr_objects = ntohl(hdr->hdr_entries);
+	nr_objects = get_be32(hdr);
 	use(sizeof(struct pack_header));
 }
 
-static NORETURN void bad_object(off_t offset, const char *format,
-		       ...) __attribute__((format (printf, 2, 3)));
-
+__attribute__((format (printf, 2, 3)))
 static NORETURN void bad_object(off_t offset, const char *format, ...)
 {
 	va_list params;
@@ -383,7 +408,7 @@ static NORETURN void bad_object(off_t offset, const char *format, ...)
 	    (uintmax_t)offset, buf);
 }
 
-static inline struct thread_local *get_thread_data(void)
+static inline struct thread_local_data *get_thread_data(void)
 {
 	if (HAVE_THREADS) {
 		if (threads_active)
@@ -394,7 +419,7 @@ static inline struct thread_local *get_thread_data(void)
 	return &nothread_data;
 }
 
-static void set_thread_data(struct thread_local *data)
+static void set_thread_data(struct thread_local_data *data)
 {
 	if (threads_active)
 		pthread_setspecific(key, data);
@@ -450,18 +475,18 @@ static void *unpack_entry_data(off_t offset, unsigned long size,
 	int status;
 	git_zstream stream;
 	void *buf;
-	git_hash_ctx c;
+	struct git_hash_ctx c;
 	char hdr[32];
 	int hdrlen;
 
 	if (!is_delta_type(type)) {
-		hdrlen = xsnprintf(hdr, sizeof(hdr), "%s %"PRIuMAX,
-				   type_name(type),(uintmax_t)size) + 1;
+		hdrlen = format_object_header(hdr, sizeof(hdr), type, size);
 		the_hash_algo->init_fn(&c);
-		the_hash_algo->update_fn(&c, hdr, hdrlen);
+		git_hash_update(&c, hdr, hdrlen);
 	} else
 		oid = NULL;
-	if (type == OBJ_BLOB && size > big_file_threshold)
+	if (type == OBJ_BLOB &&
+	    size > repo_settings_get_big_file_threshold(the_repository))
 		buf = fixed_buf;
 	else
 		buf = xmallocz(size);
@@ -478,7 +503,7 @@ static void *unpack_entry_data(off_t offset, unsigned long size,
 		status = git_inflate(&stream, 0);
 		use(input_len - stream.avail_in);
 		if (oid)
-			the_hash_algo->update_fn(&c, last_out, stream.next_out - last_out);
+			git_hash_update(&c, last_out, stream.next_out - last_out);
 		if (buf == fixed_buf) {
 			stream.next_out = buf;
 			stream.avail_out = sizeof(fixed_buf);
@@ -488,7 +513,7 @@ static void *unpack_entry_data(off_t offset, unsigned long size,
 		bad_object(offset, _("inflate returned %d"), status);
 	git_inflate_end(&stream);
 	if (oid)
-		the_hash_algo->final_fn(oid->hash, &c);
+		git_hash_final_oid(oid, &c);
 	return buf == fixed_buf ? NULL : buf;
 }
 
@@ -523,7 +548,8 @@ static void *unpack_raw_entry(struct object_entry *obj,
 
 	switch (obj->type) {
 	case OBJ_REF_DELTA:
-		hashcpy(ref_oid->hash, fill(the_hash_algo->rawsz));
+		oidread(ref_oid, fill(the_hash_algo->rawsz),
+			the_repository->hash_algo);
 		use(the_hash_algo->rawsz);
 		break;
 	case OBJ_OFS_DELTA:
@@ -585,7 +611,7 @@ static void *unpack_data(struct object_entry *obj,
 		if (!n)
 			die(Q_("premature end of pack file, %"PRIuMAX" byte missing",
 			       "premature end of pack file, %"PRIuMAX" bytes missing",
-			       (unsigned int)len),
+			       len),
 			    (uintmax_t)len);
 		from += n;
 		len -= n;
@@ -774,7 +800,8 @@ static int check_collison(struct object_entry *entry)
 	enum object_type type;
 	unsigned long size;
 
-	if (entry->size <= big_file_threshold || entry->type != OBJ_BLOB)
+	if (entry->size <= repo_settings_get_big_file_threshold(the_repository) ||
+	    entry->type != OBJ_BLOB)
 		return -1;
 
 	memset(&data, 0, sizeof(data));
@@ -792,6 +819,68 @@ static int check_collison(struct object_entry *entry)
 	return 0;
 }
 
+static void record_outgoing_link(const struct object_id *oid)
+{
+	oidset_insert(&outgoing_links, oid);
+}
+
+static void maybe_record_name_entry(const struct name_entry *entry)
+{
+	/*
+	 * Checking only trees here results in a significantly faster packfile
+	 * indexing, but the drawback is that if the packfile to be indexed
+	 * references a local blob only directly (that is, never through a
+	 * local tree), that local blob is in danger of being garbage
+	 * collected. Such a situation may arise if we push local commits,
+	 * including one with a change to a blob in the root tree, and then the
+	 * server incorporates them into its main branch through a "rebase" or
+	 * "squash" merge strategy, and then we fetch the new main branch from
+	 * the server.
+	 *
+	 * This situation has not been observed yet - we have only noticed
+	 * missing commits, not missing trees or blobs. (In fact, if it were
+	 * believed that only missing commits are problematic, one could argue
+	 * that we should also exclude trees during the outgoing link check;
+	 * but it is safer to include them.)
+	 *
+	 * Due to the rarity of the situation (it has not been observed to
+	 * happen in real life), and because the "penalty" in such a situation
+	 * is merely to refetch the missing blob when it's needed (and this
+	 * happens only once - when refetched, the blob goes into a promisor
+	 * pack, so it won't be GC-ed, the tradeoff seems worth it.
+	*/
+	if (S_ISDIR(entry->mode))
+		record_outgoing_link(&entry->oid);
+}
+
+static void do_record_outgoing_links(struct object *obj)
+{
+	if (obj->type == OBJ_TREE) {
+		struct tree *tree = (struct tree *)obj;
+		struct tree_desc desc;
+		struct name_entry entry;
+		if (init_tree_desc_gently(&desc, &tree->object.oid,
+					  tree->buffer, tree->size, 0))
+			/*
+			 * Error messages are given when packs are
+			 * verified, so do not print any here.
+			 */
+			return;
+		while (tree_entry_gently(&desc, &entry))
+			maybe_record_name_entry(&entry);
+	} else if (obj->type == OBJ_COMMIT) {
+		struct commit *commit = (struct commit *) obj;
+		struct commit_list *parents = commit->parents;
+
+		record_outgoing_link(get_commit_tree_oid(commit));
+		for (; parents; parents = parents->next)
+			record_outgoing_link(&parents->item->object.oid);
+	} else if (obj->type == OBJ_TAG) {
+		struct tag *tag = (struct tag *) obj;
+		record_outgoing_link(get_tagged_oid(tag));
+	}
+}
+
 static void sha1_object(const void *data, struct object_entry *obj_entry,
 			unsigned long size, enum object_type type,
 			const struct object_id *oid)
@@ -803,8 +892,8 @@ static void sha1_object(const void *data, struct object_entry *obj_entry,
 
 	if (startup_info->have_repository) {
 		read_lock();
-		collision_test_needed =
-			has_object_file_with_flags(oid, OBJECT_INFO_QUICK);
+		collision_test_needed = has_object(the_repository, oid,
+						   HAS_OBJECT_FETCH_PROMISOR);
 		read_unlock();
 	}
 
@@ -824,7 +913,8 @@ static void sha1_object(const void *data, struct object_entry *obj_entry,
 			die(_("cannot read existing object info %s"), oid_to_hex(oid));
 		if (has_type != type || has_size != size)
 			die(_("SHA1 COLLISION FOUND WITH %s !"), oid_to_hex(oid));
-		has_data = read_object_file(oid, &has_type, &has_size);
+		has_data = repo_read_object_file(the_repository, oid,
+						 &has_type, &has_size);
 		read_unlock();
 		if (!data)
 			data = new_data = get_data_from_pack(obj_entry);
@@ -836,7 +926,7 @@ static void sha1_object(const void *data, struct object_entry *obj_entry,
 		free(has_data);
 	}
 
-	if (strict || do_fsck_object) {
+	if (strict || do_fsck_object || record_outgoing_links) {
 		read_lock();
 		if (type == OBJ_BLOB) {
 			struct blob *blob = lookup_blob(the_repository, oid);
@@ -868,6 +958,8 @@ static void sha1_object(const void *data, struct object_entry *obj_entry,
 				die(_("fsck error in packed object"));
 			if (strict && fsck_walk(obj, NULL, &fsck_options))
 				die(_("Not all child objects of %s are reachable"), oid_to_hex(&obj->oid));
+			if (record_outgoing_links)
+				do_record_outgoing_links(obj);
 
 			if (obj->type == OBJ_TREE) {
 				struct tree *item = (struct tree *) obj;
@@ -977,7 +1069,7 @@ static struct base_data *resolve_delta(struct object_entry *delta_obj,
 	if (!result_data)
 		bad_object(delta_obj->idx.offset, _("failed to apply delta"));
 	hash_object_file(the_hash_algo, result_data, result_size,
-			 type_name(delta_obj->real_type), &delta_obj->idx.oid);
+			 delta_obj->real_type, &delta_obj->idx.oid);
 	sha1_object(result_data, NULL, result_size, delta_obj->real_type,
 		    &delta_obj->idx.oid);
 
@@ -1016,8 +1108,8 @@ static void *threaded_second_pass(void *data)
 		set_thread_data(data);
 	for (;;) {
 		struct base_data *parent = NULL;
-		struct object_entry *child_obj;
-		struct base_data *child;
+		struct object_entry *child_obj = NULL;
+		struct base_data *child = NULL;
 
 		counter_lock();
 		display_progress(progress, nr_resolved_deltas);
@@ -1044,15 +1136,18 @@ static void *threaded_second_pass(void *data)
 			parent = list_first_entry(&work_head, struct base_data,
 						  list);
 
-			if (parent->ref_first <= parent->ref_last) {
+			while (parent->ref_first <= parent->ref_last) {
 				int offset = ref_deltas[parent->ref_first++].obj_no;
 				child_obj = objects + offset;
-				if (child_obj->real_type != OBJ_REF_DELTA)
-					die("REF_DELTA at offset %"PRIuMAX" already resolved (duplicate base %s?)",
-					    (uintmax_t) child_obj->idx.offset,
-					    oid_to_hex(&parent->obj->idx.oid));
+				if (child_obj->real_type != OBJ_REF_DELTA) {
+					child_obj = NULL;
+					continue;
+				}
 				child_obj->real_type = parent->obj->real_type;
-			} else {
+				break;
+			}
+
+			if (!child_obj && parent->ofs_first <= parent->ofs_last) {
 				child_obj = objects +
 					ofs_deltas[parent->ofs_first++].obj_no;
 				assert(child_obj->real_type == OBJ_OFS_DELTA);
@@ -1085,29 +1180,32 @@ static void *threaded_second_pass(void *data)
 		}
 		work_unlock();
 
-		if (parent) {
-			child = resolve_delta(child_obj, parent);
-			if (!child->children_remaining)
-				FREE_AND_NULL(child->data);
-		} else {
-			child = make_base(child_obj, NULL);
-			if (child->children_remaining) {
-				/*
-				 * Since this child has its own delta children,
-				 * we will need this data in the future.
-				 * Inflate now so that future iterations will
-				 * have access to this object's data while
-				 * outside the work mutex.
-				 */
-				child->data = get_data_from_pack(child_obj);
-				child->size = child_obj->size;
+		if (child_obj) {
+			if (parent) {
+				child = resolve_delta(child_obj, parent);
+				if (!child->children_remaining)
+					FREE_AND_NULL(child->data);
+			} else{
+				child = make_base(child_obj, NULL);
+				if (child->children_remaining) {
+					/*
+					 * Since this child has its own delta children,
+					 * we will need this data in the future.
+					 * Inflate now so that future iterations will
+					 * have access to this object's data while
+					 * outside the work mutex.
+					 */
+					child->data = get_data_from_pack(child_obj);
+					child->size = child_obj->size;
+				}
 			}
 		}
 
 		work_lock();
 		if (parent)
 			parent->retain_data--;
-		if (child->data) {
+
+		if (child && child->data) {
 			/*
 			 * This child has its own children, so add it to
 			 * work_head.
@@ -1115,7 +1213,8 @@ static void *threaded_second_pass(void *data)
 			list_add(&child->list, &work_head);
 			base_cache_used += child->size;
 			prune_base_data(NULL);
-		} else {
+			free_base_data(child);
+		} else if (child) {
 			/*
 			 * This child does not have its own children. It may be
 			 * the last descendant of its ancestors; free those
@@ -1137,6 +1236,7 @@ static void *threaded_second_pass(void *data)
 
 				p = next_p;
 			}
+			FREE_AND_NULL(child);
 		}
 		work_unlock();
 	}
@@ -1155,9 +1255,12 @@ static void parse_pack_objects(unsigned char *hash)
 	struct ofs_delta_entry *ofs_delta = ofs_deltas;
 	struct object_id ref_delta_oid;
 	struct stat st;
+	struct git_hash_ctx tmp_ctx;
 
 	if (verbose)
 		progress = start_progress(
+				the_repository,
+				progress_title ? progress_title :
 				from_stdin ? _("Receiving objects") : _("Indexing objects"),
 				nr_objects);
 	for (i = 0; i < nr_objects; i++) {
@@ -1190,8 +1293,10 @@ static void parse_pack_objects(unsigned char *hash)
 
 	/* Check pack integrity */
 	flush();
-	the_hash_algo->final_fn(hash, &input_ctx);
-	if (!hasheq(fill(the_hash_algo->rawsz), hash))
+	the_hash_algo->init_fn(&tmp_ctx);
+	git_hash_clone(&tmp_ctx, &input_ctx);
+	git_hash_final(hash, &tmp_ctx);
+	if (!hasheq(fill(the_hash_algo->rawsz), hash, the_repository->hash_algo))
 		die(_("pack is corrupted (SHA1 mismatch)"));
 	use(the_hash_algo->rawsz);
 
@@ -1223,7 +1328,7 @@ static void parse_pack_objects(unsigned char *hash)
  *   recursively checking if the resulting object is used as a base
  *   for some more deltas.
  */
-static void resolve_deltas(void)
+static void resolve_deltas(struct pack_idx_option *opts)
 {
 	int i;
 
@@ -1235,11 +1340,12 @@ static void resolve_deltas(void)
 	QSORT(ref_deltas, nr_ref_deltas, compare_ref_delta_entry);
 
 	if (verbose || show_resolving_progress)
-		progress = start_progress(_("Resolving deltas"),
+		progress = start_progress(the_repository,
+					  _("Resolving deltas"),
 					  nr_ref_deltas + nr_ofs_deltas);
 
 	nr_dispatched = 0;
-	base_cache_limit = delta_base_cache_limit * nr_threads;
+	base_cache_limit = opts->delta_base_cache_limit * nr_threads;
 	if (nr_threads > 1 || getenv("GIT_FORCE_THREADS")) {
 		init_thread();
 		for (i = 0; i < nr_threads; i++) {
@@ -1283,7 +1389,7 @@ static void conclude_pack(int fix_thin_pack, const char *curr_pack, unsigned cha
 		REALLOC_ARRAY(objects, nr_objects + nr_unresolved + 1);
 		memset(objects + nr_objects + 1, 0,
 		       nr_unresolved * sizeof(*objects));
-		f = hashfd(output_fd, curr_pack);
+		f = hashfd(the_repository->hash_algo, output_fd, curr_pack);
 		fix_unresolved_deltas(f);
 		strbuf_addf(&msg, Q_("completed with %d local object",
 				     "completed with %d local objects",
@@ -1291,12 +1397,12 @@ static void conclude_pack(int fix_thin_pack, const char *curr_pack, unsigned cha
 			    nr_objects - nr_objects_initial);
 		stop_progress_msg(&progress, msg.buf);
 		strbuf_release(&msg);
-		finalize_hashfile(f, tail_hash, 0);
-		hashcpy(read_hash, pack_hash);
-		fixup_pack_header_footer(output_fd, pack_hash,
+		finalize_hashfile(f, tail_hash, FSYNC_COMPONENT_PACK, 0);
+		hashcpy(read_hash, pack_hash, the_repository->hash_algo);
+		fixup_pack_header_footer(the_hash_algo, output_fd, pack_hash,
 					 curr_pack, nr_objects,
 					 read_hash, consumed_bytes-the_hash_algo->rawsz);
-		if (!hasheq(read_hash, tail_hash))
+		if (!hasheq(read_hash, tail_hash, the_repository->hash_algo))
 			die(_("Unexpected tail checksum for %s "
 			      "(disk corruption?)"), curr_pack);
 	}
@@ -1357,7 +1463,7 @@ static struct object_entry *append_obj_to_pack(struct hashfile *f,
 	obj[1].idx.offset += write_compressed(f, buf, size);
 	obj[0].idx.crc32 = crc32_end(f);
 	hashflush(f);
-	hashcpy(obj->idx.oid.hash, sha1);
+	oidread(&obj->idx.oid, sha1, the_repository->hash_algo);
 	return obj;
 }
 
@@ -1388,7 +1494,7 @@ static void fix_unresolved_deltas(struct hashfile *f)
 		sorted_by_pos[i] = &ref_deltas[i];
 	QSORT(sorted_by_pos, nr_ref_deltas, delta_pos_compare);
 
-	if (has_promisor_remote()) {
+	if (repo_has_promisor_remote(the_repository)) {
 		/*
 		 * Prefetch the delta bases.
 		 */
@@ -1414,13 +1520,13 @@ static void fix_unresolved_deltas(struct hashfile *f)
 
 		if (objects[d->obj_no].real_type != OBJ_REF_DELTA)
 			continue;
-		data = read_object_file(&d->oid, &type, &size);
+		data = repo_read_object_file(the_repository, &d->oid, &type,
+					     &size);
 		if (!data)
 			continue;
 
-		if (check_object_signature(the_repository, &d->oid,
-					   data, size,
-					   type_name(type)))
+		if (check_object_signature(the_repository, &d->oid, data, size,
+					   type) < 0)
 			die(_("local object %s is corrupt"), oid_to_hex(&d->oid));
 
 		/*
@@ -1429,6 +1535,7 @@ static void fix_unresolved_deltas(struct hashfile *f)
 		 * object).
 		 */
 		append_obj_to_pack(f, d->oid.hash, data, size, type);
+		free(data);
 		threaded_second_pass(NULL);
 
 		display_progress(progress, nr_resolved_deltas);
@@ -1436,15 +1543,15 @@ static void fix_unresolved_deltas(struct hashfile *f)
 	free(sorted_by_pos);
 }
 
-static const char *derive_filename(const char *pack_name, const char *suffix,
-				   struct strbuf *buf)
+static const char *derive_filename(const char *pack_name, const char *strip,
+				   const char *suffix, struct strbuf *buf)
 {
 	size_t len;
-	if (!strip_suffix(pack_name, ".pack", &len))
-		die(_("packfile name '%s' does not end with '.pack'"),
-		    pack_name);
+	if (!strip_suffix(pack_name, strip, &len) || !len ||
+	    pack_name[len - 1] != '.')
+		die(_("packfile name '%s' does not end with '.%s'"),
+		    pack_name, strip);
 	strbuf_add(buf, pack_name, len);
-	strbuf_addch(buf, '.');
 	strbuf_addstr(buf, suffix);
 	return buf->buf;
 }
@@ -1459,11 +1566,11 @@ static void write_special_file(const char *suffix, const char *msg,
 	int msg_len = strlen(msg);
 
 	if (pack_name)
-		filename = derive_filename(pack_name, suffix, &name_buf);
+		filename = derive_filename(pack_name, "pack", suffix, &name_buf);
 	else
-		filename = odb_pack_name(&name_buf, hash, suffix);
+		filename = odb_pack_name(the_repository, &name_buf, hash, suffix);
 
-	fd = odb_pack_keep(filename);
+	fd = safe_create_file_with_leading_directories(the_repository, filename);
 	if (fd < 0) {
 		if (errno != EEXIST)
 			die_errno(_("cannot write %s file '%s'"),
@@ -1482,22 +1589,38 @@ static void write_special_file(const char *suffix, const char *msg,
 	strbuf_release(&name_buf);
 }
 
+static void rename_tmp_packfile(const char **final_name,
+				const char *curr_name,
+				struct strbuf *name, unsigned char *hash,
+				const char *ext, int make_read_only_if_same)
+{
+	if (!*final_name || strcmp(*final_name, curr_name)) {
+		if (!*final_name)
+			*final_name = odb_pack_name(the_repository, name, hash, ext);
+		if (finalize_object_file(curr_name, *final_name))
+			die(_("unable to rename temporary '*.%s' file to '%s'"),
+			    ext, *final_name);
+	} else if (make_read_only_if_same) {
+		chmod(*final_name, 0444);
+	}
+}
+
 static void final(const char *final_pack_name, const char *curr_pack_name,
 		  const char *final_index_name, const char *curr_index_name,
+		  const char *final_rev_index_name, const char *curr_rev_index_name,
 		  const char *keep_msg, const char *promisor_msg,
 		  unsigned char *hash)
 {
 	const char *report = "pack";
 	struct strbuf pack_name = STRBUF_INIT;
 	struct strbuf index_name = STRBUF_INIT;
-	int err;
+	struct strbuf rev_index_name = STRBUF_INIT;
 
 	if (!from_stdin) {
 		close(input_fd);
 	} else {
-		fsync_or_die(output_fd, curr_pack_name);
-		err = close(output_fd);
-		if (err)
+		fsync_component_or_die(FSYNC_COMPONENT_PACK, output_fd, curr_pack_name);
+		if (close(output_fd))
 			die_errno(_("error while closing pack file"));
 	}
 
@@ -1508,25 +1631,18 @@ static void final(const char *final_pack_name, const char *curr_pack_name,
 		write_special_file("promisor", promisor_msg, final_pack_name,
 				   hash, NULL);
 
-	if (final_pack_name != curr_pack_name) {
-		if (!final_pack_name)
-			final_pack_name = odb_pack_name(&pack_name, hash, "pack");
-		if (finalize_object_file(curr_pack_name, final_pack_name))
-			die(_("cannot store pack file"));
-	} else if (from_stdin)
-		chmod(final_pack_name, 0444);
-
-	if (final_index_name != curr_index_name) {
-		if (!final_index_name)
-			final_index_name = odb_pack_name(&index_name, hash, "idx");
-		if (finalize_object_file(curr_index_name, final_index_name))
-			die(_("cannot store index file"));
-	} else
-		chmod(final_index_name, 0444);
+	rename_tmp_packfile(&final_pack_name, curr_pack_name, &pack_name,
+			    hash, "pack", from_stdin);
+	if (curr_rev_index_name)
+		rename_tmp_packfile(&final_rev_index_name, curr_rev_index_name,
+				    &rev_index_name, hash, "rev", 1);
+	rename_tmp_packfile(&final_index_name, curr_index_name, &index_name,
+			    hash, "idx", 1);
 
 	if (do_fsck_object) {
 		struct packed_git *p;
-		p = add_packed_git(final_index_name, strlen(final_index_name), 0);
+		p = add_packed_git(the_repository, final_index_name,
+				   strlen(final_index_name), 0);
 		if (p)
 			install_packed_git(the_repository, p);
 	}
@@ -1540,35 +1656,28 @@ static void final(const char *final_pack_name, const char *curr_pack_name,
 		write_or_die(1, buf.buf, buf.len);
 		strbuf_release(&buf);
 
-		/*
-		 * Let's just mimic git-unpack-objects here and write
-		 * the last part of the input buffer to stdout.
-		 */
-		while (input_len) {
-			err = xwrite(1, input_buffer + input_offset, input_len);
-			if (err <= 0)
-				break;
-			input_len -= err;
-			input_offset += err;
-		}
+		/* Write the last part of the buffer to stdout */
+		write_in_full(1, input_buffer + input_offset, input_len);
 	}
 
+	strbuf_release(&rev_index_name);
 	strbuf_release(&index_name);
 	strbuf_release(&pack_name);
 }
 
-static int git_index_pack_config(const char *k, const char *v, void *cb)
+static int git_index_pack_config(const char *k, const char *v,
+				 const struct config_context *ctx, void *cb)
 {
 	struct pack_idx_option *opts = cb;
 
 	if (!strcmp(k, "pack.indexversion")) {
-		opts->version = git_config_int(k, v);
+		opts->version = git_config_int(k, v, ctx->kvi);
 		if (opts->version > 2)
-			die(_("bad pack.indexversion=%"PRIu32), opts->version);
+			die(_("bad pack.indexVersion=%"PRIu32), opts->version);
 		return 0;
 	}
 	if (!strcmp(k, "pack.threads")) {
-		nr_threads = git_config_int(k, v);
+		nr_threads = git_config_int(k, v, ctx->kvi);
 		if (nr_threads < 0)
 			die(_("invalid number of threads specified (%d)"),
 			    nr_threads);
@@ -1578,7 +1687,17 @@ static int git_index_pack_config(const char *k, const char *v, void *cb)
 		}
 		return 0;
 	}
-	return git_default_config(k, v, cb);
+	if (!strcmp(k, "pack.writereverseindex")) {
+		if (git_config_bool(k, v))
+			opts->flags |= WRITE_REV;
+		else
+			opts->flags &= ~WRITE_REV;
+	}
+	if (!strcmp(k, "core.deltabasecachelimit")) {
+		opts->delta_base_cache_limit = git_config_ulong(k, v, ctx->kvi);
+		return 0;
+	}
+	return git_default_config(k, v, ctx, cb);
 }
 
 static int cmp_uint32(const void *a_, const void *b_)
@@ -1625,7 +1744,8 @@ static void read_v2_anomalous_offsets(struct packed_git *p,
 
 static void read_idx_option(struct pack_idx_option *opts, const char *pack_name)
 {
-	struct packed_git *p = add_packed_git(pack_name, strlen(pack_name), 1);
+	struct packed_git *p = add_packed_git(the_repository, pack_name,
+					      strlen(pack_name), 1);
 
 	if (!p)
 		die(_("Cannot open existing pack file '%s'"), pack_name);
@@ -1641,7 +1761,7 @@ static void read_idx_option(struct pack_idx_option *opts, const char *pack_name)
 	/*
 	 * Get rid of the idx file as we do not need it anymore.
 	 * NEEDSWORK: extract this bit from free_pack_by_name() in
-	 * sha1-file.c, perhaps?  It shouldn't matter very much as we
+	 * object-file.c, perhaps?  It shouldn't matter very much as we
 	 * know we haven't installed this pack (hence we never have
 	 * read anything from it).
 	 */
@@ -1655,7 +1775,7 @@ static void show_pack_info(int stat_only)
 	unsigned long *chain_histogram = NULL;
 
 	if (deepest_delta)
-		chain_histogram = xcalloc(deepest_delta, sizeof(unsigned long));
+		CALLOC_ARRAY(chain_histogram, deepest_delta);
 
 	for (i = 0; i < nr_objects; i++) {
 		struct object_entry *obj = &objects[i];
@@ -1691,16 +1811,89 @@ static void show_pack_info(int stat_only)
 			  i + 1,
 			  chain_histogram[i]);
 	}
+	free(chain_histogram);
 }
 
-int cmd_index_pack(int argc, const char **argv, const char *prefix)
+static void repack_local_links(void)
 {
-	int i, fix_thin_pack = 0, verify = 0, stat_only = 0;
+	struct child_process cmd = CHILD_PROCESS_INIT;
+	FILE *out;
+	struct strbuf line = STRBUF_INIT;
+	struct oidset_iter iter;
+	struct object_id *oid;
+	char *base_name = NULL;
+
+	if (!oidset_size(&outgoing_links))
+		return;
+
+	oidset_iter_init(&outgoing_links, &iter);
+	while ((oid = oidset_iter_next(&iter))) {
+		struct object_info info = OBJECT_INFO_INIT;
+		if (oid_object_info_extended(the_repository, oid, &info, 0))
+			/* Missing; assume it is a promisor object */
+			continue;
+		if (info.whence == OI_PACKED && info.u.packed.pack->pack_promisor)
+			continue;
+
+		if (!cmd.args.nr) {
+			base_name = mkpathdup(
+				"%s/pack/pack",
+				repo_get_object_directory(the_repository));
+			strvec_push(&cmd.args, "pack-objects");
+			strvec_push(&cmd.args,
+				    "--exclude-promisor-objects-best-effort");
+			strvec_push(&cmd.args, base_name);
+			cmd.git_cmd = 1;
+			cmd.in = -1;
+			cmd.out = -1;
+			if (start_command(&cmd))
+				die(_("could not start pack-objects to repack local links"));
+		}
+
+		if (write_in_full(cmd.in, oid_to_hex(oid), the_hash_algo->hexsz) < 0 ||
+		    write_in_full(cmd.in, "\n", 1) < 0)
+			die(_("failed to feed local object to pack-objects"));
+	}
+
+	if (!cmd.args.nr)
+		return;
+
+	close(cmd.in);
+
+	out = xfdopen(cmd.out, "r");
+	while (strbuf_getline_lf(&line, out) != EOF) {
+		unsigned char binary[GIT_MAX_RAWSZ];
+		if (line.len != the_hash_algo->hexsz ||
+		    !hex_to_bytes(binary, line.buf, line.len))
+			die(_("index-pack: Expecting full hex object ID lines only from pack-objects."));
+
+		/*
+		 * pack-objects creates the .pack and .idx files, but not the
+		 * .promisor file. Create the .promisor file, which is empty.
+		 */
+		write_special_file("promisor", "", NULL, binary, NULL);
+	}
+
+	fclose(out);
+	if (finish_command(&cmd))
+		die(_("could not finish pack-objects to repack local links"));
+	strbuf_release(&line);
+	free(base_name);
+}
+
+int cmd_index_pack(int argc,
+		   const char **argv,
+		   const char *prefix,
+		   struct repository *repo UNUSED)
+{
+	int i, fix_thin_pack = 0, verify = 0, stat_only = 0, rev_index;
 	const char *curr_index;
-	const char *index_name = NULL, *pack_name = NULL;
+	char *curr_rev_index = NULL;
+	const char *index_name = NULL, *pack_name = NULL, *rev_index_name = NULL;
 	const char *keep_msg = NULL;
 	const char *promisor_msg = NULL;
 	struct strbuf index_name_buf = STRBUF_INIT;
+	struct strbuf rev_index_name_buf = STRBUF_INIT;
 	struct pack_idx_entry **idx_objects;
 	struct pack_idx_option opts;
 	unsigned char pack_hash[GIT_MAX_RAWSZ];
@@ -1716,16 +1909,21 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 	 */
 	fetch_if_missing = 0;
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage(index_pack_usage);
+	show_usage_if_asked(argc, argv, index_pack_usage);
 
-	read_replace_refs = 0;
+	disable_replace_refs();
 	fsck_options.walk = mark_link;
 
 	reset_pack_idx_option(&opts);
+	opts.flags |= WRITE_REV;
 	git_config(git_index_pack_config, &opts);
 	if (prefix && chdir(prefix))
 		die(_("Cannot come back to cwd"));
+
+	if (git_env_bool(GIT_TEST_NO_WRITE_REV_INDEX, 0))
+		rev_index = 0;
+	else
+		rev_index = !!(opts.flags & (WRITE_REV_VERIFY | WRITE_REV));
 
 	for (i = 1; i < argc; i++) {
 		const char *arg = argv[i];
@@ -1742,8 +1940,9 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 			} else if (!strcmp(arg, "--check-self-contained-and-connected")) {
 				strict = 1;
 				check_self_contained_and_connected = 1;
-			} else if (!strcmp(arg, "--fsck-objects")) {
+			} else if (skip_to_optional_arg(arg, "--fsck-objects", &arg)) {
 				do_fsck_object = 1;
+				fsck_set_msg_types(&fsck_options, arg);
 			} else if (!strcmp(arg, "--verify")) {
 				verify = 1;
 			} else if (!strcmp(arg, "--verify-stat")) {
@@ -1756,7 +1955,7 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 			} else if (skip_to_optional_arg(arg, "--keep", &keep_msg)) {
 				; /* nothing to do */
 			} else if (skip_to_optional_arg(arg, "--promisor", &promisor_msg)) {
-				; /* already parsed */
+				record_outgoing_links = 1;
 			} else if (starts_with(arg, "--threads=")) {
 				char *end;
 				nr_threads = strtoul(arg+10, &end, 0);
@@ -1766,21 +1965,17 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 					warning(_("no threads support, ignoring %s"), arg);
 					nr_threads = 1;
 				}
-			} else if (starts_with(arg, "--pack_header=")) {
-				struct pack_header *hdr;
-				char *c;
-
-				hdr = (struct pack_header *)input_buffer;
-				hdr->hdr_signature = htonl(PACK_SIGNATURE);
-				hdr->hdr_version = htonl(strtoul(arg + 14, &c, 10));
-				if (*c != ',')
-					die(_("bad %s"), arg);
-				hdr->hdr_entries = htonl(strtoul(c + 1, &c, 10));
-				if (*c)
-					die(_("bad %s"), arg);
-				input_len = sizeof(*hdr);
+			} else if (skip_prefix(arg, "--pack_header=", &arg)) {
+				if (parse_pack_header_option(arg,
+							     input_buffer,
+							     &input_len) < 0)
+					die(_("bad --pack_header: %s"), arg);
 			} else if (!strcmp(arg, "-v")) {
 				verbose = 1;
+			} else if (!strcmp(arg, "--progress-title")) {
+				if (progress_title || (i+1) >= argc)
+					usage(index_pack_usage);
+				progress_title = argv[++i];
 			} else if (!strcmp(arg, "--show-resolving-progress")) {
 				show_resolving_progress = 1;
 			} else if (!strcmp(arg, "--report-end-of-input")) {
@@ -1805,6 +2000,10 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 				if (hash_algo == GIT_HASH_UNKNOWN)
 					die(_("unknown hash algorithm '%s'"), arg);
 				repo_set_hash_algo(the_repository, hash_algo);
+			} else if (!strcmp(arg, "--rev-index")) {
+				rev_index = 1;
+			} else if (!strcmp(arg, "--no-rev-index")) {
+				rev_index = 0;
 			} else
 				usage(index_pack_usage);
 			continue;
@@ -1818,13 +2017,33 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 	if (!pack_name && !from_stdin)
 		usage(index_pack_usage);
 	if (fix_thin_pack && !from_stdin)
-		die(_("--fix-thin cannot be used without --stdin"));
+		die(_("the option '%s' requires '%s'"), "--fix-thin", "--stdin");
+	if (promisor_msg && pack_name)
+		die(_("--promisor cannot be used with a pack name"));
 	if (from_stdin && !startup_info->have_repository)
 		die(_("--stdin requires a git repository"));
 	if (from_stdin && hash_algo)
-		die(_("--object-format cannot be used with --stdin"));
+		die(_("options '%s' and '%s' cannot be used together"), "--object-format", "--stdin");
 	if (!index_name && pack_name)
-		index_name = derive_filename(pack_name, "idx", &index_name_buf);
+		index_name = derive_filename(pack_name, "pack", "idx", &index_name_buf);
+
+	/*
+	 * Packfiles and indices do not carry enough information to be able to
+	 * identify their object hash. So when we are neither in a repository
+	 * nor has the user told us which object hash to use we have no other
+	 * choice but to guess the object hash.
+	 */
+	if (!the_repository->hash_algo)
+		repo_set_hash_algo(the_repository, GIT_HASH_SHA1);
+
+	opts.flags &= ~(WRITE_REV | WRITE_REV_VERIFY);
+	if (rev_index) {
+		opts.flags |= verify ? WRITE_REV_VERIFY : WRITE_REV;
+		if (index_name)
+			rev_index_name = derive_filename(index_name,
+							 "idx", "rev",
+							 &rev_index_name_buf);
+	}
 
 	if (verify) {
 		if (!index_name)
@@ -1857,14 +2076,14 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 
 	curr_pack = open_pack_file(pack_name);
 	parse_pack_header();
-	objects = xcalloc(st_add(nr_objects, 1), sizeof(struct object_entry));
+	CALLOC_ARRAY(objects, st_add(nr_objects, 1));
 	if (show_stat)
-		obj_stat = xcalloc(st_add(nr_objects, 1), sizeof(struct object_stat));
-	ofs_deltas = xcalloc(nr_objects, sizeof(struct ofs_delta_entry));
+		CALLOC_ARRAY(obj_stat, st_add(nr_objects, 1));
+	CALLOC_ARRAY(ofs_deltas, nr_objects);
 	parse_pack_objects(pack_hash);
 	if (report_end_of_input)
 		write_in_full(2, "\0", 1);
-	resolve_deltas();
+	resolve_deltas(&opts);
 	conclude_pack(fix_thin_pack, curr_pack, pack_hash);
 	free(ofs_deltas);
 	free(ref_deltas);
@@ -1877,12 +2096,18 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 	ALLOC_ARRAY(idx_objects, nr_objects);
 	for (i = 0; i < nr_objects; i++)
 		idx_objects[i] = &objects[i].idx;
-	curr_index = write_idx_file(index_name, idx_objects, nr_objects, &opts, pack_hash);
+	curr_index = write_idx_file(the_repository, index_name, idx_objects,
+				    nr_objects, &opts, pack_hash);
+	if (rev_index)
+		curr_rev_index = write_rev_file(the_repository, rev_index_name,
+						idx_objects, nr_objects,
+						pack_hash, opts.flags);
 	free(idx_objects);
 
 	if (!verify)
 		final(pack_name, curr_pack,
 		      index_name, curr_index,
+		      rev_index_name, curr_rev_index,
 		      keep_msg, promisor_msg,
 		      pack_hash);
 	else
@@ -1891,12 +2116,17 @@ int cmd_index_pack(int argc, const char **argv, const char *prefix)
 	if (do_fsck_object && fsck_finish(&fsck_options))
 		die(_("fsck error in pack objects"));
 
+	free(opts.anomaly);
 	free(objects);
 	strbuf_release(&index_name_buf);
-	if (pack_name == NULL)
+	strbuf_release(&rev_index_name_buf);
+	if (!pack_name)
 		free((void *) curr_pack);
-	if (index_name == NULL)
+	if (!index_name)
 		free((void *) curr_index);
+	free(curr_rev_index);
+
+	repack_local_links();
 
 	/*
 	 * Let the caller know this pack is not self contained

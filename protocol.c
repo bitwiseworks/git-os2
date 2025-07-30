@@ -1,6 +1,10 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
 #include "config.h"
+#include "environment.h"
 #include "protocol.h"
+#include "trace2.h"
 
 static enum protocol_version parse_protocol_version(const char *value)
 {
@@ -72,6 +76,8 @@ enum protocol_version determine_protocol_version_server(void)
 
 		string_list_clear(&list, 0);
 	}
+
+	trace2_data_intmax("transfer", NULL, "negotiated-version", version);
 
 	return version;
 }

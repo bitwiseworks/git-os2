@@ -1,22 +1,31 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "git-curl-compat.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hex.h"
 #include "remote.h"
 #include "connect.h"
 #include "strbuf.h"
 #include "walker.h"
 #include "http.h"
-#include "exec-cmd.h"
 #include "run-command.h"
 #include "pkt-line.h"
 #include "string-list.h"
-#include "sideband.h"
 #include "strvec.h"
 #include "credential.h"
 #include "oid-array.h"
 #include "send-pack.h"
+#include "setup.h"
 #include "protocol.h"
 #include "quote.h"
+#include "trace2.h"
 #include "transport.h"
+#include "url.h"
+#include "write-or-die.h"
 
 static struct remote *remote;
 /* always ends with a trailing slash */
@@ -43,6 +52,7 @@ struct options {
 		/* see documentation of corresponding flag in fetch-pack.h */
 		from_promisor : 1,
 
+		refetch : 1,
 		atomic : 1,
 		object_format : 1,
 		force_if_includes : 1;
@@ -51,9 +61,9 @@ struct options {
 static struct options options;
 static struct string_list cas_options = STRING_LIST_INIT_DUP;
 
-static int set_option(const char *name, const char *value)
+static int set_option(const char *name, size_t namelen, const char *value)
 {
-	if (!strcmp(name, "verbosity")) {
+	if (!strncmp(name, "verbosity", namelen)) {
 		char *end;
 		int v = strtol(value, &end, 10);
 		if (value == end || *end)
@@ -61,7 +71,7 @@ static int set_option(const char *name, const char *value)
 		options.verbosity = v;
 		return 0;
 	}
-	else if (!strcmp(name, "progress")) {
+	else if (!strncmp(name, "progress", namelen)) {
 		if (!strcmp(value, "true"))
 			options.progress = 1;
 		else if (!strcmp(value, "false"))
@@ -70,7 +80,7 @@ static int set_option(const char *name, const char *value)
 			return -1;
 		return 0;
 	}
-	else if (!strcmp(name, "depth")) {
+	else if (!strncmp(name, "depth", namelen)) {
 		char *end;
 		unsigned long v = strtoul(value, &end, 10);
 		if (value == end || *end)
@@ -78,15 +88,15 @@ static int set_option(const char *name, const char *value)
 		options.depth = v;
 		return 0;
 	}
-	else if (!strcmp(name, "deepen-since")) {
+	else if (!strncmp(name, "deepen-since", namelen)) {
 		options.deepen_since = xstrdup(value);
 		return 0;
 	}
-	else if (!strcmp(name, "deepen-not")) {
+	else if (!strncmp(name, "deepen-not", namelen)) {
 		string_list_append(&options.deepen_not, value);
 		return 0;
 	}
-	else if (!strcmp(name, "deepen-relative")) {
+	else if (!strncmp(name, "deepen-relative", namelen)) {
 		if (!strcmp(value, "true"))
 			options.deepen_relative = 1;
 		else if (!strcmp(value, "false"))
@@ -95,7 +105,7 @@ static int set_option(const char *name, const char *value)
 			return -1;
 		return 0;
 	}
-	else if (!strcmp(name, "followtags")) {
+	else if (!strncmp(name, "followtags", namelen)) {
 		if (!strcmp(value, "true"))
 			options.followtags = 1;
 		else if (!strcmp(value, "false"))
@@ -104,7 +114,7 @@ static int set_option(const char *name, const char *value)
 			return -1;
 		return 0;
 	}
-	else if (!strcmp(name, "dry-run")) {
+	else if (!strncmp(name, "dry-run", namelen)) {
 		if (!strcmp(value, "true"))
 			options.dry_run = 1;
 		else if (!strcmp(value, "false"))
@@ -113,7 +123,7 @@ static int set_option(const char *name, const char *value)
 			return -1;
 		return 0;
 	}
-	else if (!strcmp(name, "check-connectivity")) {
+	else if (!strncmp(name, "check-connectivity", namelen)) {
 		if (!strcmp(value, "true"))
 			options.check_self_contained_and_connected = 1;
 		else if (!strcmp(value, "false"))
@@ -122,7 +132,7 @@ static int set_option(const char *name, const char *value)
 			return -1;
 		return 0;
 	}
-	else if (!strcmp(name, "cas")) {
+	else if (!strncmp(name, "cas", namelen)) {
 		struct strbuf val = STRBUF_INIT;
 		strbuf_addstr(&val, "--force-with-lease=");
 		if (*value != '"')
@@ -132,7 +142,7 @@ static int set_option(const char *name, const char *value)
 		string_list_append(&cas_options, val.buf);
 		strbuf_release(&val);
 		return 0;
-	} else if (!strcmp(name, TRANS_OPT_FORCE_IF_INCLUDES)) {
+	} else if (!strncmp(name, TRANS_OPT_FORCE_IF_INCLUDES, namelen)) {
 		if (!strcmp(value, "true"))
 			options.force_if_includes = 1;
 		else if (!strcmp(value, "false"))
@@ -140,7 +150,7 @@ static int set_option(const char *name, const char *value)
 		else
 			return -1;
 		return 0;
-	} else if (!strcmp(name, "cloning")) {
+	} else if (!strncmp(name, "cloning", namelen)) {
 		if (!strcmp(value, "true"))
 			options.cloning = 1;
 		else if (!strcmp(value, "false"))
@@ -148,7 +158,7 @@ static int set_option(const char *name, const char *value)
 		else
 			return -1;
 		return 0;
-	} else if (!strcmp(name, "update-shallow")) {
+	} else if (!strncmp(name, "update-shallow", namelen)) {
 		if (!strcmp(value, "true"))
 			options.update_shallow = 1;
 		else if (!strcmp(value, "false"))
@@ -156,7 +166,7 @@ static int set_option(const char *name, const char *value)
 		else
 			return -1;
 		return 0;
-	} else if (!strcmp(name, "pushcert")) {
+	} else if (!strncmp(name, "pushcert", namelen)) {
 		if (!strcmp(value, "true"))
 			options.push_cert = SEND_PACK_PUSH_CERT_ALWAYS;
 		else if (!strcmp(value, "false"))
@@ -166,7 +176,7 @@ static int set_option(const char *name, const char *value)
 		else
 			return -1;
 		return 0;
-	} else if (!strcmp(name, "atomic")) {
+	} else if (!strncmp(name, "atomic", namelen)) {
 		if (!strcmp(value, "true"))
 			options.atomic = 1;
 		else if (!strcmp(value, "false"))
@@ -174,7 +184,7 @@ static int set_option(const char *name, const char *value)
 		else
 			return -1;
 		return 0;
-	} else if (!strcmp(name, "push-option")) {
+	} else if (!strncmp(name, "push-option", namelen)) {
 		if (*value != '"')
 			string_list_append(&options.push_options, value);
 		else {
@@ -185,9 +195,7 @@ static int set_option(const char *name, const char *value)
 						 strbuf_detach(&unquoted, NULL));
 		}
 		return 0;
-
-#if LIBCURL_VERSION_NUM >= 0x070a08
-	} else if (!strcmp(name, "family")) {
+	} else if (!strncmp(name, "family", namelen)) {
 		if (!strcmp(value, "ipv4"))
 			git_curl_ipresolve = CURL_IPRESOLVE_V4;
 		else if (!strcmp(value, "ipv6"))
@@ -197,22 +205,19 @@ static int set_option(const char *name, const char *value)
 		else
 			return -1;
 		return 0;
-#endif /* LIBCURL_VERSION_NUM >= 0x070a08 */
-	} else if (!strcmp(name, "from-promisor")) {
+	} else if (!strncmp(name, "from-promisor", namelen)) {
 		options.from_promisor = 1;
 		return 0;
-	} else if (!strcmp(name, "filter")) {
+	} else if (!strncmp(name, "refetch", namelen)) {
+		options.refetch = 1;
+		return 0;
+	} else if (!strncmp(name, "filter", namelen)) {
 		options.filter = xstrdup(value);
 		return 0;
-	} else if (!strcmp(name, "object-format")) {
-		int algo;
+	} else if (!strncmp(name, "object-format", namelen)) {
 		options.object_format = 1;
-		if (strcmp(value, "true")) {
-			algo = hash_algo_by_name(value);
-			if (algo == GIT_HASH_UNKNOWN)
-				die("unknown object format '%s'", value);
-			options.hash_algo = &hash_algos[algo];
-		}
+		if (strcmp(value, "true"))
+			die(_("unknown value for object-format: %s"), value);
 		return 0;
 	} else {
 		return 1 /* unsupported */;
@@ -264,12 +269,23 @@ static struct ref *parse_git_refs(struct discovery *heads, int for_push)
 	return list;
 }
 
+/*
+ * Try to detect the hash algorithm used by the remote repository when using
+ * the dumb HTTP transport. As dumb transports cannot tell us the object hash
+ * directly have to derive it from the advertised ref lengths.
+ */
 static const struct git_hash_algo *detect_hash_algo(struct discovery *heads)
 {
 	const char *p = memchr(heads->buf, '\t', heads->len);
 	int algo;
+
+	/*
+	 * In case the remote has no refs we have no way to reliably determine
+	 * the object hash used by that repository. In that case we simply fall
+	 * back to SHA1, which may or may not be correct.
+	 */
 	if (!p)
-		return the_hash_algo;
+		return &hash_algos[GIT_HASH_SHA1];
 
 	algo = hash_algo_by_length((p - heads->buf) / 2);
 	if (algo == GIT_HASH_UNKNOWN)
@@ -292,6 +308,12 @@ static struct ref *parse_info_refs(struct discovery *heads)
 		die("%sinfo/refs not valid: could not determine hash algorithm; "
 		    "is this a git repository?",
 		    transport_anonymize_url(url.buf));
+
+	/*
+	 * Set the repository's hash algo to whatever we have just detected.
+	 * This ensures that we can correctly parse the remote references.
+	 */
+	repo_set_hash_algo(the_repository, hash_algo_by_ptr(options.hash_algo));
 
 	data = heads->buf;
 	start = NULL;
@@ -326,7 +348,7 @@ static struct ref *parse_info_refs(struct discovery *heads)
 		ref->next = refs;
 		refs = ref;
 	} else {
-		free(ref);
+		free_one_ref(ref);
 	}
 
 	return refs;
@@ -471,10 +493,11 @@ static struct discovery *discover_refs(const char *service, int for_push)
 
 	/*
 	 * NEEDSWORK: If we are trying to use protocol v2 and we are planning
-	 * to perform a push, then fallback to v0 since the client doesn't know
-	 * how to push yet using v2.
+	 * to perform any operation that doesn't involve upload-pack (i.e., a
+	 * fetch, ls-remote, etc), then fallback to v0 since we don't know how
+	 * to do anything else (like push or remote archive) via v2.
 	 */
-	if (version == protocol_v2 && !strcmp("git-receive-pack", service))
+	if (version == protocol_v2 && strcmp("git-upload-pack", service))
 		version = protocol_v0;
 
 	/* Add the extra Git-Protocol header */
@@ -502,6 +525,10 @@ static struct discovery *discover_refs(const char *service, int for_push)
 		show_http_message(&type, &charset, &buffer);
 		die(_("Authentication failed for '%s'"),
 		    transport_anonymize_url(url.buf));
+	case HTTP_NOMATCHPUBLICKEY:
+		show_http_message(&type, &charset, &buffer);
+		die(_("unable to access '%s' with http.pinnedPubkey configuration: %s"),
+		    transport_anonymize_url(url.buf), curl_errorstr);
 	default:
 		show_http_message(&type, &charset, &buffer);
 		die(_("unable to access '%s': %s"),
@@ -555,6 +582,8 @@ static void output_refs(struct ref *refs)
 	struct ref *posn;
 	if (options.object_format && options.hash_algo) {
 		printf(":object-format %s\n", options.hash_algo->name);
+		repo_set_hash_algo(the_repository,
+				hash_algo_by_ptr(options.hash_algo));
 	}
 	for (posn = refs; posn; posn = posn->next) {
 		if (posn->symref)
@@ -573,6 +602,7 @@ struct rpc_state {
 	char *service_url;
 	char *hdr_content_type;
 	char *hdr_accept;
+	char *hdr_accept_language;
 	char *protocol_header;
 	char *buf;
 	size_t alloc;
@@ -599,6 +629,8 @@ struct rpc_state {
 	 */
 	unsigned flush_read_but_not_sent : 1;
 };
+
+#define RPC_STATE_INIT { 0 }
 
 /*
  * Appends the result of reading from rpc->out to the string represented by
@@ -651,7 +683,7 @@ static int rpc_read_from_out(struct rpc_state *rpc, int options,
 			memcpy(buf - 4, "0000", 4);
 			break;
 		case PACKET_READ_RESPONSE_END:
-			die(_("remote server sent stateless separator"));
+			die(_("remote server sent unexpected response end packet"));
 		}
 	}
 
@@ -707,28 +739,24 @@ static size_t rpc_out(void *ptr, size_t eltsize,
 	return avail;
 }
 
-#ifndef NO_CURL_IOCTL
-static curlioerr rpc_ioctl(CURL *handle, int cmd, void *clientp)
+static int rpc_seek(void *clientp, curl_off_t offset, int origin)
 {
 	struct rpc_state *rpc = clientp;
 
-	switch (cmd) {
-	case CURLIOCMD_NOP:
-		return CURLIOE_OK;
+	if (origin != SEEK_SET)
+		BUG("rpc_seek only handles SEEK_SET, not %d", origin);
 
-	case CURLIOCMD_RESTARTREAD:
-		if (rpc->initial_buffer) {
-			rpc->pos = 0;
-			return CURLIOE_OK;
+	if (rpc->initial_buffer) {
+		if (offset < 0 || offset > rpc->len) {
+			error("curl seek would be outside of rpc buffer");
+			return CURL_SEEKFUNC_FAIL;
 		}
-		error(_("unable to rewind rpc post data - try increasing http.postBuffer"));
-		return CURLIOE_FAILRESTART;
-
-	default:
-		return CURLIOE_UNKNOWNCMD;
+		rpc->pos = offset;
+		return CURL_SEEKFUNC_OK;
 	}
+	error(_("unable to rewind rpc post data - try increasing http.postBuffer"));
+	return CURL_SEEKFUNC_FAIL;
 }
-#endif
 
 struct check_pktline_state {
 	char len_buf[4];
@@ -749,7 +777,8 @@ static void check_pktline(struct check_pktline_state *state, const char *ptr, si
 			size -= digits_remaining;
 
 			if (state->len_filled == 4) {
-				state->remaining = packet_length(state->len_buf);
+				state->remaining = packet_length(state->len_buf,
+								 sizeof(state->len_buf));
 				if (state->remaining < 0) {
 					die(_("remote-curl: bad line length character: %.4s"), state->len_buf);
 				} else if (state->remaining == 2) {
@@ -848,15 +877,15 @@ static int probe_rpc(struct rpc_state *rpc, struct slot_results *results)
 	headers = curl_slist_append(headers, rpc->hdr_content_type);
 	headers = curl_slist_append(headers, rpc->hdr_accept);
 
-	curl_easy_setopt(slot->curl, CURLOPT_NOBODY, 0);
-	curl_easy_setopt(slot->curl, CURLOPT_POST, 1);
+	curl_easy_setopt(slot->curl, CURLOPT_NOBODY, 0L);
+	curl_easy_setopt(slot->curl, CURLOPT_POST, 1L);
 	curl_easy_setopt(slot->curl, CURLOPT_URL, rpc->service_url);
 	curl_easy_setopt(slot->curl, CURLOPT_ENCODING, NULL);
 	curl_easy_setopt(slot->curl, CURLOPT_POSTFIELDS, "0000");
-	curl_easy_setopt(slot->curl, CURLOPT_POSTFIELDSIZE, 4);
+	curl_easy_setopt(slot->curl, CURLOPT_POSTFIELDSIZE, 4L);
 	curl_easy_setopt(slot->curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(slot->curl, CURLOPT_WRITEFUNCTION, fwrite_buffer);
-	curl_easy_setopt(slot->curl, CURLOPT_FILE, &buf);
+	curl_easy_setopt(slot->curl, CURLOPT_WRITEDATA, &buf);
 
 	err = run_slot(slot, results);
 
@@ -880,7 +909,7 @@ static curl_off_t xcurl_off_t(size_t len)
 static int post_rpc(struct rpc_state *rpc, int stateless_connect, int flush_received)
 {
 	struct active_request_slot *slot;
-	struct curl_slist *headers = http_copy_default_headers();
+	struct curl_slist *headers = NULL;
 	int use_gzip = rpc->gzip_request;
 	char *gzip_body = NULL;
 	size_t gzip_size = 0;
@@ -913,29 +942,36 @@ static int post_rpc(struct rpc_state *rpc, int stateless_connect, int flush_rece
 		do {
 			err = probe_rpc(rpc, &results);
 			if (err == HTTP_REAUTH)
-				credential_fill(&http_auth);
+				credential_fill(the_repository, &http_auth, 0);
 		} while (err == HTTP_REAUTH);
 		if (err != HTTP_OK)
 			return -1;
 
-		if (results.auth_avail & CURLAUTH_GSSNEGOTIATE)
+		if (results.auth_avail & CURLAUTH_GSSNEGOTIATE || http_auth.authtype)
 			needs_100_continue = 1;
 	}
 
+retry:
+	headers = http_copy_default_headers();
 	headers = curl_slist_append(headers, rpc->hdr_content_type);
 	headers = curl_slist_append(headers, rpc->hdr_accept);
 	headers = curl_slist_append(headers, needs_100_continue ?
 		"Expect: 100-continue" : "Expect:");
 
+	headers = http_append_auth_header(&http_auth, headers);
+
+	/* Add Accept-Language header */
+	if (rpc->hdr_accept_language)
+		headers = curl_slist_append(headers, rpc->hdr_accept_language);
+
 	/* Add the extra Git-Protocol header */
 	if (rpc->protocol_header)
 		headers = curl_slist_append(headers, rpc->protocol_header);
 
-retry:
 	slot = get_active_slot();
 
-	curl_easy_setopt(slot->curl, CURLOPT_NOBODY, 0);
-	curl_easy_setopt(slot->curl, CURLOPT_POST, 1);
+	curl_easy_setopt(slot->curl, CURLOPT_NOBODY, 0L);
+	curl_easy_setopt(slot->curl, CURLOPT_POST, 1L);
 	curl_easy_setopt(slot->curl, CURLOPT_URL, rpc->service_url);
 	curl_easy_setopt(slot->curl, CURLOPT_ENCODING, "");
 
@@ -943,14 +979,14 @@ retry:
 		/* The request body is large and the size cannot be predicted.
 		 * We must use chunked encoding to send it.
 		 */
+#ifdef GIT_CURL_NEED_TRANSFER_ENCODING_HEADER
 		headers = curl_slist_append(headers, "Transfer-Encoding: chunked");
+#endif
 		rpc->initial_buffer = 1;
 		curl_easy_setopt(slot->curl, CURLOPT_READFUNCTION, rpc_out);
 		curl_easy_setopt(slot->curl, CURLOPT_INFILE, rpc);
-#ifndef NO_CURL_IOCTL
-		curl_easy_setopt(slot->curl, CURLOPT_IOCTLFUNCTION, rpc_ioctl);
-		curl_easy_setopt(slot->curl, CURLOPT_IOCTLDATA, rpc);
-#endif
+		curl_easy_setopt(slot->curl, CURLOPT_SEEKFUNCTION, rpc_seek);
+		curl_easy_setopt(slot->curl, CURLOPT_SEEKDATA, rpc);
 		if (options.verbosity > 1) {
 			fprintf(stderr, "POST %s (chunked)\n", rpc->service_name);
 			fflush(stderr);
@@ -1021,14 +1057,15 @@ retry:
 	rpc_in_data.slot = slot;
 	rpc_in_data.check_pktline = stateless_connect;
 	memset(&rpc_in_data.pktline_state, 0, sizeof(rpc_in_data.pktline_state));
-	curl_easy_setopt(slot->curl, CURLOPT_FILE, &rpc_in_data);
-	curl_easy_setopt(slot->curl, CURLOPT_FAILONERROR, 0);
+	curl_easy_setopt(slot->curl, CURLOPT_WRITEDATA, &rpc_in_data);
+	curl_easy_setopt(slot->curl, CURLOPT_FAILONERROR, 0L);
 
 
 	rpc->any_written = 0;
 	err = run_slot(slot, NULL);
 	if (err == HTTP_REAUTH && !large_request) {
-		credential_fill(&http_auth);
+		credential_fill(the_repository, &http_auth, 0);
+		curl_slist_free_all(headers);
 		goto retry;
 	}
 	if (err != HTTP_OK)
@@ -1062,7 +1099,7 @@ static int rpc_service(struct rpc_state *rpc, struct discovery *heads,
 	client.in = -1;
 	client.out = -1;
 	client.git_cmd = 1;
-	client.argv = client_argv;
+	strvec_pushv(&client.args, client_argv);
 	if (start_command(&client))
 		exit(1);
 	write_or_die(client.in, preamble->buf, preamble->len);
@@ -1077,6 +1114,8 @@ static int rpc_service(struct rpc_state *rpc, struct discovery *heads,
 	strbuf_addf(&buf, "%s%s", url.buf, svc);
 	rpc->service_url = strbuf_detach(&buf, NULL);
 
+	rpc->hdr_accept_language = xstrdup_or_null(http_get_accept_language_header());
+
 	strbuf_addf(&buf, "Content-Type: application/x-%s-request", svc);
 	rpc->hdr_content_type = strbuf_detach(&buf, NULL);
 
@@ -1089,7 +1128,7 @@ static int rpc_service(struct rpc_state *rpc, struct discovery *heads,
 		rpc->protocol_header = NULL;
 
 	while (!err) {
-		int n = packet_read(rpc->out, NULL, NULL, rpc->buf, rpc->alloc, 0);
+		int n = packet_read(rpc->out, rpc->buf, rpc->alloc, 0);
 		if (!n)
 			break;
 		rpc->pos = 0;
@@ -1115,6 +1154,7 @@ static int rpc_service(struct rpc_state *rpc, struct discovery *heads,
 	free(rpc->service_url);
 	free(rpc->hdr_content_type);
 	free(rpc->hdr_accept);
+	free(rpc->hdr_accept_language);
 	free(rpc->protocol_header);
 	free(rpc->buf);
 	strbuf_release(&buf);
@@ -1150,7 +1190,7 @@ static int fetch_dumb(int nr_heads, struct ref **to_fetch)
 static int fetch_git(struct discovery *heads,
 	int nr_heads, struct ref **to_fetch)
 {
-	struct rpc_state rpc;
+	struct rpc_state rpc = RPC_STATE_INIT;
 	struct strbuf preamble = STRBUF_INIT;
 	int i, err;
 	struct strvec args = STRVEC_INIT;
@@ -1183,6 +1223,8 @@ static int fetch_git(struct discovery *heads,
 		strvec_push(&args, "--deepen-relative");
 	if (options.from_promisor)
 		strvec_push(&args, "--from-promisor");
+	if (options.refetch)
+		strvec_push(&args, "--refetch");
 	if (options.filter)
 		strvec_pushf(&args, "--filter=%s", options.filter);
 	strvec_push(&args, url.buf);
@@ -1197,7 +1239,7 @@ static int fetch_git(struct discovery *heads,
 	packet_buf_flush(&preamble);
 
 	memset(&rpc, 0, sizeof(rpc));
-	rpc.service_name = "git-upload-pack",
+	rpc.service_name = "git-upload-pack";
 	rpc.gzip_request = 1;
 
 	err = rpc_service(&rpc, heads, args.v, &preamble, &rpc_result);
@@ -1271,6 +1313,29 @@ static void parse_fetch(struct strbuf *buf)
 	strbuf_reset(buf);
 }
 
+static void parse_get(const char *arg)
+{
+	struct strbuf url = STRBUF_INIT;
+	struct strbuf path = STRBUF_INIT;
+	const char *space;
+
+	space = strchr(arg, ' ');
+
+	if (!space)
+		die(_("protocol error: expected '<url> <path>', missing space"));
+
+	strbuf_add(&url, arg, space - arg);
+	strbuf_addstr(&path, space + 1);
+
+	if (http_get_file(url.buf, path.buf, NULL))
+		die(_("failed to download file at URL '%s'"), url.buf);
+
+	strbuf_release(&url);
+	strbuf_release(&path);
+	printf("\n");
+	fflush(stdout);
+}
+
 static int push_dav(int nr_spec, const char **specs)
 {
 	struct child_process child = CHILD_PROCESS_INIT;
@@ -1294,7 +1359,7 @@ static int push_dav(int nr_spec, const char **specs)
 
 static int push_git(struct discovery *heads, int nr_spec, const char **specs)
 {
-	struct rpc_state rpc;
+	struct rpc_state rpc = RPC_STATE_INIT;
 	int i, err;
 	struct strvec args;
 	struct string_list_item *cas_option;
@@ -1336,7 +1401,7 @@ static int push_git(struct discovery *heads, int nr_spec, const char **specs)
 	packet_buf_flush(&preamble);
 
 	memset(&rpc, 0, sizeof(rpc));
-	rpc.service_name = "git-receive-pack",
+	rpc.service_name = "git-receive-pack";
 
 	err = rpc_service(&rpc, heads, args.v, &preamble, &rpc_result);
 	if (rpc_result.len)
@@ -1393,8 +1458,9 @@ free_specs:
 static int stateless_connect(const char *service_name)
 {
 	struct discovery *discover;
-	struct rpc_state rpc;
+	struct rpc_state rpc = RPC_STATE_INIT;
 	struct strbuf buf = STRBUF_INIT;
+	const char *accept_language;
 
 	/*
 	 * Run the info/refs request and see if the server supports protocol
@@ -1402,8 +1468,14 @@ static int stateless_connect(const char *service_name)
 	 * establish a stateless connection, otherwise we need to tell the
 	 * client to fallback to using other transport helper functions to
 	 * complete their request.
+	 *
+	 * The "git-upload-archive" service is a read-only operation. Fallback
+	 * to use "git-upload-pack" service to discover protocol version.
 	 */
-	discover = discover_refs(service_name, 0);
+	if (!strcmp(service_name, "git-upload-archive"))
+		discover = discover_refs("git-upload-pack", 0);
+	else
+		discover = discover_refs(service_name, 0);
 	if (discover->version != protocol_v2) {
 		printf("fallback\n");
 		fflush(stdout);
@@ -1413,6 +1485,9 @@ static int stateless_connect(const char *service_name)
 		printf("\n");
 		fflush(stdout);
 	}
+	accept_language = http_get_accept_language_header();
+	if (accept_language)
+		rpc.hdr_accept_language = xstrfmt("%s", accept_language);
 
 	rpc.service_name = service_name;
 	rpc.service_url = xstrfmt("%s%s", url.buf, rpc.service_name);
@@ -1438,9 +1513,11 @@ static int stateless_connect(const char *service_name)
 
 	/*
 	 * Dump the capability listing that we got from the server earlier
-	 * during the info/refs request.
+	 * during the info/refs request. This does not work with the
+	 * "git-upload-archive" service.
 	 */
-	write_or_die(rpc.in, discover->buf, discover->len);
+	if (strcmp(service_name, "git-upload-archive"))
+		write_or_die(rpc.in, discover->buf, discover->len);
 
 	/* Until we see EOF keep sending POSTs */
 	while (1) {
@@ -1462,6 +1539,7 @@ static int stateless_connect(const char *service_name)
 	free(rpc.service_url);
 	free(rpc.hdr_content_type);
 	free(rpc.hdr_accept);
+	free(rpc.hdr_accept_language);
 	free(rpc.protocol_header);
 	free(rpc.buf);
 	strbuf_release(&buf);
@@ -1473,18 +1551,19 @@ int cmd_main(int argc, const char **argv)
 {
 	struct strbuf buf = STRBUF_INIT;
 	int nongit;
+	int ret = 1;
 
 	setup_git_directory_gently(&nongit);
 	if (argc < 2) {
 		error(_("remote-curl: usage: git remote-curl <remote> [<url>]"));
-		return 1;
+		goto cleanup;
 	}
 
 	options.verbosity = 1;
 	options.progress = !!isatty(2);
 	options.thin = 1;
-	string_list_init(&options.deepen_not, 1);
-	string_list_init(&options.push_options, 1);
+	string_list_init_dup(&options.deepen_not);
+	string_list_init_dup(&options.push_options);
 
 	/*
 	 * Just report "remote-curl" here (folding all the various aliases
@@ -1498,7 +1577,7 @@ int cmd_main(int argc, const char **argv)
 	if (argc > 2) {
 		end_url_with_slash(&url, argv[2]);
 	} else {
-		end_url_with_slash(&url, remote->url[0]);
+		end_url_with_slash(&url, remote->url.v[0]);
 	}
 
 	http_init(remote, url.buf, 0);
@@ -1509,13 +1588,16 @@ int cmd_main(int argc, const char **argv)
 		if (strbuf_getline_lf(&buf, stdin) == EOF) {
 			if (ferror(stdin))
 				error(_("remote-curl: error reading command stream from git"));
-			return 1;
+			goto cleanup;
 		}
 		if (buf.len == 0)
 			break;
 		if (starts_with(buf.buf, "fetch ")) {
-			if (nongit)
-				die(_("remote-curl: fetch attempted without a local repo"));
+			if (nongit) {
+				setup_git_directory_gently(&nongit);
+				if (nongit)
+					die(_("remote-curl: fetch attempted without a local repo"));
+			}
 			parse_fetch(&buf);
 
 		} else if (!strcmp(buf.buf, "list") || starts_with(buf.buf, "list ")) {
@@ -1526,15 +1608,16 @@ int cmd_main(int argc, const char **argv)
 			parse_push(&buf);
 
 		} else if (skip_prefix(buf.buf, "option ", &arg)) {
-			char *value = strchr(arg, ' ');
+			const char *value = strchrnul(arg, ' ');
+			size_t arglen = value - arg;
 			int result;
 
-			if (value)
-				*value++ = '\0';
+			if (*value)
+				value++; /* skip over SP */
 			else
 				value = "true";
 
-			result = set_option(arg, value);
+			result = set_option(arg, arglen, value);
 			if (!result)
 				printf("ok\n");
 			else if (result < 0)
@@ -1543,9 +1626,14 @@ int cmd_main(int argc, const char **argv)
 				printf("unsupported\n");
 			fflush(stdout);
 
+		} else if (skip_prefix(buf.buf, "get ", &arg)) {
+			parse_get(arg);
+			fflush(stdout);
+
 		} else if (!strcmp(buf.buf, "capabilities")) {
 			printf("stateless-connect\n");
 			printf("fetch\n");
+			printf("get\n");
 			printf("option\n");
 			printf("push\n");
 			printf("check-connectivity\n");
@@ -1557,12 +1645,15 @@ int cmd_main(int argc, const char **argv)
 				break;
 		} else {
 			error(_("remote-curl: unknown command '%s' from git"), buf.buf);
-			return 1;
+			goto cleanup;
 		}
 		strbuf_reset(&buf);
 	} while (1);
 
 	http_cleanup();
+	ret = 0;
+cleanup:
+	strbuf_release(&buf);
 
-	return 0;
+	return ret;
 }

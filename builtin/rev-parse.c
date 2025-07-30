@@ -3,20 +3,35 @@
  *
  * Copyright (C) Linus Torvalds, 2005
  */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
-#include "cache.h"
+
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "builtin.h"
+
+#include "abspath.h"
 #include "config.h"
 #include "commit.h"
+#include "environment.h"
+#include "gettext.h"
+#include "hash.h"
+#include "hex.h"
 #include "refs.h"
 #include "quote.h"
-#include "builtin.h"
+#include "object-name.h"
 #include "parse-options.h"
+#include "path.h"
 #include "diff.h"
+#include "read-cache-ll.h"
+#include "repo-settings.h"
+#include "repository.h"
 #include "revision.h"
+#include "setup.h"
 #include "split-index.h"
 #include "submodule.h"
 #include "commit-reach.h"
 #include "shallow.h"
+#include "object-file-convert.h"
 
 #define DO_REVS		1
 #define DO_NOREV	2
@@ -39,7 +54,7 @@ static int abbrev_ref_strict;
 static int output_sq;
 
 static int stuck_long;
-static struct string_list *ref_excludes;
+static struct ref_exclusions ref_excludes = REF_EXCLUSIONS_INIT;
 
 /*
  * Some arguments are relevant "revision" arguments,
@@ -136,7 +151,9 @@ static void show_rev(int type, const struct object_id *oid, const char *name)
 			struct object_id discard;
 			char *full;
 
-			switch (dwim_ref(name, strlen(name), &discard, &full, 0)) {
+			switch (repo_dwim_ref(the_repository, name,
+					      strlen(name), &discard, &full,
+					      0)) {
 			case 0:
 				/*
 				 * Not found -- not a ref.  We could
@@ -147,9 +164,13 @@ static void show_rev(int type, const struct object_id *oid, const char *name)
 				 */
 				break;
 			case 1: /* happy */
-				if (abbrev_ref)
-					full = shorten_unambiguous_ref(full,
-						abbrev_ref_strict);
+				if (abbrev_ref) {
+					char *old = full;
+					full = refs_shorten_unambiguous_ref(get_main_ref_store(the_repository),
+									    full,
+									    abbrev_ref_strict);
+					free(old);
+				}
 				show_with_type(type, full);
 				break;
 			default: /* ambiguous */
@@ -162,7 +183,8 @@ static void show_rev(int type, const struct object_id *oid, const char *name)
 		}
 	}
 	else if (abbrev)
-		show_with_type(type, find_unique_abbrev(oid, abbrev));
+		show_with_type(type,
+			       repo_find_unique_abbrev(the_repository, oid, abbrev));
 	else
 		show_with_type(type, oid_to_hex(oid));
 }
@@ -187,7 +209,7 @@ static int show_default(void)
 		struct object_id oid;
 
 		def = NULL;
-		if (!get_oid(s, &oid)) {
+		if (!repo_get_oid(the_repository, s, &oid)) {
 			show_rev(NORMAL, &oid, s);
 			return 1;
 		}
@@ -195,21 +217,23 @@ static int show_default(void)
 	return 0;
 }
 
-static int show_reference(const char *refname, const struct object_id *oid, int flag, void *cb_data)
+static int show_reference(const char *refname, const char *referent UNUSED, const struct object_id *oid,
+			  int flag UNUSED, void *cb_data UNUSED)
 {
-	if (ref_excluded(ref_excludes, refname))
+	if (ref_excluded(&ref_excludes, refname))
 		return 0;
 	show_rev(NORMAL, oid, refname);
 	return 0;
 }
 
-static int anti_reference(const char *refname, const struct object_id *oid, int flag, void *cb_data)
+static int anti_reference(const char *refname, const char *referent UNUSED, const struct object_id *oid,
+			  int flag UNUSED, void *cb_data UNUSED)
 {
 	show_rev(REVERSED, oid, refname);
 	return 0;
 }
 
-static int show_abbrev(const struct object_id *oid, void *cb_data)
+static int show_abbrev(const struct object_id *oid, void *cb_data UNUSED)
 {
 	show_rev(NORMAL, oid, NULL);
 	return 0;
@@ -277,11 +301,11 @@ static int try_difference(const char *arg)
 		return 0;
 	}
 
-	if (!get_oid_committish(start, &start_oid) && !get_oid_committish(end, &end_oid)) {
+	if (!repo_get_oid_committish(the_repository, start, &start_oid) && !repo_get_oid_committish(the_repository, end, &end_oid)) {
 		show_rev(NORMAL, &end_oid, end);
 		show_rev(symmetric ? NORMAL : REVERSED, &start_oid, start);
 		if (symmetric) {
-			struct commit_list *exclude;
+			struct commit_list *exclude = NULL;
 			struct commit *a, *b;
 			a = lookup_commit_reference(the_repository, &start_oid);
 			b = lookup_commit_reference(the_repository, &end_oid);
@@ -289,7 +313,8 @@ static int try_difference(const char *arg)
 				*dotdot = '.';
 				return 0;
 			}
-			exclude = get_merge_bases(a, b);
+			if (repo_get_merge_bases(the_repository, a, b, &exclude) < 0)
+				exit(128);
 			while (exclude) {
 				struct commit *commit = pop_commit(&exclude);
 				show_rev(REVERSED, &commit->object.oid, NULL);
@@ -335,7 +360,7 @@ static int try_parent_shorthands(const char *arg)
 		return 0;
 
 	*dotdot = 0;
-	if (get_oid_committish(arg, &oid) ||
+	if (repo_get_oid_committish(the_repository, arg, &oid) ||
 	    !(commit = lookup_commit_reference(the_repository, &oid))) {
 		*dotdot = '^';
 		return 0;
@@ -404,12 +429,12 @@ static char *findspace(const char *s)
 
 static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 {
-	static int keep_dashdash = 0, stop_at_non_option = 0;
-	static char const * const parseopt_usage[] = {
+	int keep_dashdash = 0, stop_at_non_option = 0;
+	char const * const parseopt_usage[] = {
 		N_("git rev-parse --parseopt [<options>] -- [<args>...]"),
 		NULL
 	};
-	static struct option parseopt_opts[] = {
+	struct option parseopt_opts[] = {
 		OPT_BOOL(0, "keep-dashdash", &keep_dashdash,
 					N_("keep the `--` passed as an arg")),
 		OPT_BOOL(0, "stop-at-non-option", &stop_at_non_option,
@@ -419,12 +444,11 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 					N_("output in stuck long form")),
 		OPT_END(),
 	};
-	static const char * const flag_chars = "*=?!";
-
 	struct strbuf sb = STRBUF_INIT, parsed = STRBUF_INIT;
-	const char **usage = NULL;
+	struct strvec longnames = STRVEC_INIT;
+	struct strvec usage = STRVEC_INIT;
 	struct option *opts = NULL;
-	int onb = 0, osz = 0, unb = 0, usz = 0;
+	size_t opts_nr = 0, opts_alloc = 0;
 
 	strbuf_addstr(&parsed, "set --");
 	argc = parse_options(argc, argv, prefix, parseopt_opts, parseopt_usage,
@@ -434,16 +458,16 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 
 	/* get the usage up to the first line with a -- on it */
 	for (;;) {
+		strbuf_reset(&sb);
 		if (strbuf_getline(&sb, stdin) == EOF)
-			die("premature end of input");
-		ALLOC_GROW(usage, unb + 1, usz);
+			die(_("premature end of input"));
 		if (!strcmp("--", sb.buf)) {
-			if (unb < 1)
-				die("no usage string given before the `--' separator");
-			usage[unb] = NULL;
+			if (!usage.nr)
+				die(_("no usage string given before the `--' separator"));
 			break;
 		}
-		usage[unb++] = strbuf_detach(&sb, NULL);
+
+		strvec_push(&usage, sb.buf);
 	}
 
 	/* parse: (<short>|<short>,<long>|<long>)[*=?!]*<arghint>? SP+ <help> */
@@ -455,10 +479,10 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 		if (!sb.len)
 			continue;
 
-		ALLOC_GROW(opts, onb + 1, osz);
-		memset(opts + onb, 0, sizeof(opts[onb]));
+		ALLOC_GROW(opts, opts_nr + 1, opts_alloc);
+		memset(opts + opts_nr, 0, sizeof(*opts));
 
-		o = &opts[onb++];
+		o = &opts[opts_nr++];
 		help = findspace(sb.buf);
 		if (!help || sb.buf == help) {
 			o->type = OPTION_GROUP;
@@ -475,17 +499,22 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 		o->callback = &parseopt_dump;
 
 		/* name(s) */
-		s = strpbrk(sb.buf, flag_chars);
-		if (s == NULL)
+		s = strpbrk(sb.buf, "*=?!");
+		if (!s)
 			s = help;
 
-		if (s - sb.buf == 1) /* short option only */
+		if (s == sb.buf)
+			die(_("missing opt-spec before option flags"));
+
+		if (s - sb.buf == 1) { /* short option only */
 			o->short_name = *sb.buf;
-		else if (sb.buf[1] != ',') /* long option only */
-			o->long_name = xmemdupz(sb.buf, s - sb.buf);
-		else {
+		} else if (sb.buf[1] != ',') { /* long option only */
+			o->long_name = strvec_pushf(&longnames, "%.*s",
+						    (int)(s - sb.buf), sb.buf);
+		} else {
 			o->short_name = *sb.buf;
-			o->long_name = xmemdupz(sb.buf + 2, s - sb.buf - 2);
+			o->long_name = strvec_pushf(&longnames, "%.*s",
+						    (int)(s - sb.buf - 2), sb.buf + 2);
 		}
 
 		/* flags */
@@ -515,9 +544,9 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 	strbuf_release(&sb);
 
 	/* put an OPT_END() */
-	ALLOC_GROW(opts, onb + 1, osz);
-	memset(opts + onb, 0, sizeof(opts[onb]));
-	argc = parse_options(argc, argv, prefix, opts, usage,
+	ALLOC_GROW(opts, opts_nr + 1, opts_alloc);
+	memset(opts + opts_nr, 0, sizeof(*opts));
+	argc = parse_options(argc, argv, prefix, opts, usage.v,
 			(keep_dashdash ? PARSE_OPT_KEEP_DASHDASH : 0) |
 			(stop_at_non_option ? PARSE_OPT_STOP_AT_NON_OPTION : 0) |
 			PARSE_OPT_SHELL_EVAL);
@@ -525,6 +554,16 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 	strbuf_addstr(&parsed, " --");
 	sq_quote_argv(&parsed, argv);
 	puts(parsed.buf);
+
+	strbuf_release(&parsed);
+	strbuf_release(&sb);
+	strvec_clear(&longnames);
+	strvec_clear(&usage);
+	for (size_t i = 0; i < opts_nr; i++) {
+		free((char *) opts[i].help);
+		free((char *) opts[i].argh);
+	}
+	free(opts);
 	return 0;
 }
 
@@ -545,7 +584,7 @@ static void die_no_single_rev(int quiet)
 	if (quiet)
 		exit(1);
 	else
-		die("Needed a single revision");
+		die(_("Needed a single revision"));
 }
 
 static const char builtin_rev_parse_usage[] =
@@ -577,15 +616,92 @@ static int opt_with_value(const char *arg, const char *opt, const char **value)
 static void handle_ref_opt(const char *pattern, const char *prefix)
 {
 	if (pattern)
-		for_each_glob_ref_in(show_reference, pattern, prefix, NULL);
+		refs_for_each_glob_ref_in(get_main_ref_store(the_repository),
+					  show_reference, pattern, prefix,
+					  NULL);
 	else
-		for_each_ref_in(prefix, show_reference, NULL);
-	clear_ref_exclusion(&ref_excludes);
+		refs_for_each_ref_in(get_main_ref_store(the_repository),
+				     prefix, show_reference, NULL);
+	clear_ref_exclusions(&ref_excludes);
 }
 
-int cmd_rev_parse(int argc, const char **argv, const char *prefix)
+enum format_type {
+	/* We would like a relative path. */
+	FORMAT_RELATIVE,
+	/* We would like a canonical absolute path. */
+	FORMAT_CANONICAL,
+	/* We would like the default behavior. */
+	FORMAT_DEFAULT,
+};
+
+enum default_type {
+	/* Our default is a relative path. */
+	DEFAULT_RELATIVE,
+	/* Our default is a relative path if there's a shared root. */
+	DEFAULT_RELATIVE_IF_SHARED,
+	/* Our default is a canonical absolute path. */
+	DEFAULT_CANONICAL,
+	/* Our default is not to modify the item. */
+	DEFAULT_UNMODIFIED,
+};
+
+static void print_path(const char *path, const char *prefix, enum format_type format, enum default_type def)
+{
+	char *cwd = NULL;
+	/*
+	 * We don't ever produce a relative path if prefix is NULL, so set the
+	 * prefix to the current directory so that we can produce a relative
+	 * path whenever possible.  If we're using RELATIVE_IF_SHARED mode, then
+	 * we want an absolute path unless the two share a common prefix, so don't
+	 * set it in that case, since doing so causes a relative path to always
+	 * be produced if possible.
+	 */
+	if (!prefix && (format != FORMAT_DEFAULT || def != DEFAULT_RELATIVE_IF_SHARED))
+		prefix = cwd = xgetcwd();
+	if (format == FORMAT_DEFAULT && def == DEFAULT_UNMODIFIED) {
+		puts(path);
+	} else if (format == FORMAT_RELATIVE ||
+		  (format == FORMAT_DEFAULT && def == DEFAULT_RELATIVE)) {
+		/*
+		 * In order for relative_path to work as expected, we need to
+		 * make sure that both paths are absolute paths.  If we don't,
+		 * we can end up with an unexpected absolute path that the user
+		 * didn't want.
+		 */
+		struct strbuf buf = STRBUF_INIT, realbuf = STRBUF_INIT, prefixbuf = STRBUF_INIT;
+		if (!is_absolute_path(path)) {
+			strbuf_realpath_forgiving(&realbuf, path,  1);
+			path = realbuf.buf;
+		}
+		if (!is_absolute_path(prefix)) {
+			strbuf_realpath_forgiving(&prefixbuf, prefix, 1);
+			prefix = prefixbuf.buf;
+		}
+		puts(relative_path(path, prefix, &buf));
+		strbuf_release(&buf);
+		strbuf_release(&realbuf);
+		strbuf_release(&prefixbuf);
+	} else if (format == FORMAT_DEFAULT && def == DEFAULT_RELATIVE_IF_SHARED) {
+		struct strbuf buf = STRBUF_INIT;
+		puts(relative_path(path, prefix, &buf));
+		strbuf_release(&buf);
+	} else {
+		struct strbuf buf = STRBUF_INIT;
+		strbuf_realpath_forgiving(&buf, path, 1);
+		puts(buf.buf);
+		strbuf_release(&buf);
+	}
+	free(cwd);
+}
+
+int cmd_rev_parse(int argc,
+		  const char **argv,
+		  const char *prefix,
+		  struct repository *repo UNUSED)
 {
 	int i, as_is = 0, verify = 0, quiet = 0, revs_count = 0, type = 0;
+	const struct git_hash_algo *output_algo = NULL;
+	const struct git_hash_algo *compat = NULL;
 	int did_repo_setup = 0;
 	int has_dashdash = 0;
 	int output_prefix = 0;
@@ -594,8 +710,10 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 	const char *name = NULL;
 	struct object_context unused;
 	struct strbuf buf = STRBUF_INIT;
-	const int hexsz = the_hash_algo->hexsz;
 	int seen_end_of_options = 0;
+	enum format_type format = FORMAT_DEFAULT;
+
+	show_usage_if_asked(argc, argv, builtin_rev_parse_usage);
 
 	if (argc > 1 && !strcmp("--parseopt", argv[1]))
 		return cmd_parseopt(argc - 1, argv + 1, prefix);
@@ -639,10 +757,10 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 			if (!strcmp(arg, "--resolve-git-dir")) {
 				const char *gitdir = argv[++i];
 				if (!gitdir)
-					die("--resolve-git-dir requires an argument");
+					die(_("--resolve-git-dir requires an argument"));
 				gitdir = resolve_gitdir(gitdir);
 				if (!gitdir)
-					die("not a gitdir '%s'", argv[i]);
+					die(_("not a gitdir '%s'"), argv[i]);
 				puts(gitdir);
 				continue;
 			}
@@ -653,6 +771,10 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 			prefix = setup_git_directory();
 			git_config(git_default_config, NULL);
 			did_repo_setup = 1;
+
+			prepare_repo_settings(the_repository);
+			the_repository->settings.command_requires_full_index = 0;
+			compat = the_repository->compat_hash_algo;
 		}
 
 		if (!strcmp(arg, "--")) {
@@ -666,16 +788,17 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 		if (!seen_end_of_options && *arg == '-') {
 			if (!strcmp(arg, "--git-path")) {
 				if (!argv[i + 1])
-					die("--git-path requires an argument");
-				strbuf_reset(&buf);
-				puts(relative_path(git_path("%s", argv[i + 1]),
-						   prefix, &buf));
+					die(_("--git-path requires an argument"));
+				print_path(repo_git_path_replace(the_repository, &buf,
+								 "%s", argv[i + 1]), prefix,
+						format,
+						DEFAULT_RELATIVE_IF_SHARED);
 				i++;
 				continue;
 			}
 			if (!strcmp(arg,"-n")) {
 				if (++i >= argc)
-					die("-n requires an argument");
+					die(_("-n requires an argument"));
 				if ((filter & DO_FLAGS) && (filter & DO_REVS)) {
 					show(arg);
 					show(argv[i]);
@@ -687,16 +810,28 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 					show(arg);
 				continue;
 			}
+			if (opt_with_value(arg, "--path-format", &arg)) {
+				if (!arg)
+					die(_("--path-format requires an argument"));
+				if (!strcmp(arg, "absolute")) {
+					format = FORMAT_CANONICAL;
+				} else if (!strcmp(arg, "relative")) {
+					format = FORMAT_RELATIVE;
+				} else {
+					die(_("unknown argument to --path-format: %s"), arg);
+				}
+				continue;
+			}
 			if (!strcmp(arg, "--default")) {
 				def = argv[++i];
 				if (!def)
-					die("--default requires an argument");
+					die(_("--default requires an argument"));
 				continue;
 			}
 			if (!strcmp(arg, "--prefix")) {
 				prefix = argv[++i];
 				if (!prefix)
-					die("--prefix requires an argument");
+					die(_("--prefix requires an argument"));
 				startup_info->prefix = prefix;
 				output_prefix = 1;
 				continue;
@@ -727,6 +862,22 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				flags |= GET_OID_QUIETLY;
 				continue;
 			}
+			if (opt_with_value(arg, "--output-object-format", &arg)) {
+				if (!arg)
+					die(_("no object format specified"));
+				if (!strcmp(arg, the_hash_algo->name) ||
+				    !strcmp(arg, "storage")) {
+					flags |= GET_OID_HASH_ANY;
+					output_algo = the_hash_algo;
+					continue;
+				}
+				else if (compat && !strcmp(arg, compat->name)) {
+					flags |= GET_OID_HASH_ANY;
+					output_algo = compat;
+					continue;
+				}
+				else die(_("unsupported object format: %s"), arg);
+			}
 			if (opt_with_value(arg, "--short", &arg)) {
 				filter &= ~(DO_FLAGS|DO_NOREV);
 				verify = 1;
@@ -736,8 +887,8 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				abbrev = strtoul(arg, NULL, 10);
 				if (abbrev < MINIMUM_ABBREV)
 					abbrev = MINIMUM_ABBREV;
-				else if (hexsz <= abbrev)
-					abbrev = hexsz;
+				else if ((int)the_hash_algo->hexsz <= abbrev)
+					abbrev = the_hash_algo->hexsz;
 				continue;
 			}
 			if (!strcmp(arg, "--sq")) {
@@ -758,37 +909,52 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 			}
 			if (opt_with_value(arg, "--abbrev-ref", &arg)) {
 				abbrev_ref = 1;
-				abbrev_ref_strict = warn_ambiguous_refs;
+				abbrev_ref_strict =
+					repo_settings_get_warn_ambiguous_refs(the_repository);
 				if (arg) {
 					if (!strcmp(arg, "strict"))
 						abbrev_ref_strict = 1;
 					else if (!strcmp(arg, "loose"))
 						abbrev_ref_strict = 0;
 					else
-						die("unknown mode for --abbrev-ref: %s",
+						die(_("unknown mode for --abbrev-ref: %s"),
 						    arg);
 				}
 				continue;
 			}
 			if (!strcmp(arg, "--all")) {
-				for_each_ref(show_reference, NULL);
-				clear_ref_exclusion(&ref_excludes);
+				refs_for_each_ref(get_main_ref_store(the_repository),
+						  show_reference, NULL);
+				clear_ref_exclusions(&ref_excludes);
 				continue;
 			}
 			if (skip_prefix(arg, "--disambiguate=", &arg)) {
-				for_each_abbrev(arg, show_abbrev, NULL);
+				repo_for_each_abbrev(the_repository, arg, the_hash_algo,
+						     show_abbrev, NULL);
 				continue;
 			}
 			if (!strcmp(arg, "--bisect")) {
-				for_each_fullref_in("refs/bisect/bad", show_reference, NULL, 0);
-				for_each_fullref_in("refs/bisect/good", anti_reference, NULL, 0);
+				refs_for_each_fullref_in(get_main_ref_store(the_repository),
+							 "refs/bisect/bad",
+							 NULL, show_reference,
+							 NULL);
+				refs_for_each_fullref_in(get_main_ref_store(the_repository),
+							 "refs/bisect/good",
+							 NULL, anti_reference,
+							 NULL);
 				continue;
 			}
 			if (opt_with_value(arg, "--branches", &arg)) {
+				if (ref_excludes.hidden_refs_configured)
+					return error(_("options '%s' and '%s' cannot be used together"),
+						     "--exclude-hidden", "--branches");
 				handle_ref_opt(arg, "refs/heads/");
 				continue;
 			}
 			if (opt_with_value(arg, "--tags", &arg)) {
+				if (ref_excludes.hidden_refs_configured)
+					return error(_("options '%s' and '%s' cannot be used together"),
+						     "--exclude-hidden", "--tags");
 				handle_ref_opt(arg, "refs/tags/");
 				continue;
 			}
@@ -797,6 +963,9 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				continue;
 			}
 			if (opt_with_value(arg, "--remotes", &arg)) {
+				if (ref_excludes.hidden_refs_configured)
+					return error(_("options '%s' and '%s' cannot be used together"),
+						     "--exclude-hidden", "--remotes");
 				handle_ref_opt(arg, "refs/remotes/");
 				continue;
 			}
@@ -804,18 +973,22 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				add_ref_exclusion(&ref_excludes, arg);
 				continue;
 			}
+			if (skip_prefix(arg, "--exclude-hidden=", &arg)) {
+				exclude_hidden_refs(&ref_excludes, arg);
+				continue;
+			}
 			if (!strcmp(arg, "--show-toplevel")) {
-				const char *work_tree = get_git_work_tree();
+				const char *work_tree = repo_get_work_tree(the_repository);
 				if (work_tree)
-					puts(work_tree);
+					print_path(work_tree, prefix, format, DEFAULT_UNMODIFIED);
 				else
-					die("this operation must be run in a work tree");
+					die(_("this operation must be run in a work tree"));
 				continue;
 			}
 			if (!strcmp(arg, "--show-superproject-working-tree")) {
 				struct strbuf superproject = STRBUF_INIT;
 				if (get_superproject_working_tree(&superproject))
-					puts(superproject.buf);
+					print_path(superproject.buf, prefix, format, DEFAULT_UNMODIFIED);
 				strbuf_release(&superproject);
 				continue;
 			}
@@ -830,7 +1003,7 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				const char *pfx = prefix;
 				if (!is_inside_work_tree()) {
 					const char *work_tree =
-						get_git_work_tree();
+						repo_get_work_tree(the_repository);
 					if (work_tree)
 						printf("%s\n", work_tree);
 					continue;
@@ -850,16 +1023,18 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				const char *gitdir = getenv(GIT_DIR_ENVIRONMENT);
 				char *cwd;
 				int len;
+				enum format_type wanted = format;
 				if (arg[2] == 'g') {	/* --git-dir */
 					if (gitdir) {
-						puts(gitdir);
+						print_path(gitdir, prefix, format, DEFAULT_UNMODIFIED);
 						continue;
 					}
 					if (!prefix) {
-						puts(".git");
+						print_path(".git", prefix, format, DEFAULT_UNMODIFIED);
 						continue;
 					}
 				} else {		/* --absolute-git-dir */
+					wanted = FORMAT_CANONICAL;
 					if (!gitdir && !prefix)
 						gitdir = ".git";
 					if (gitdir) {
@@ -872,14 +1047,14 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				}
 				cwd = xgetcwd();
 				len = strlen(cwd);
-				printf("%s%s.git\n", cwd, len && cwd[len-1] != '/' ? "/" : "");
+				strbuf_reset(&buf);
+				strbuf_addf(&buf, "%s%s.git", cwd, len && cwd[len-1] != '/' ? "/" : "");
 				free(cwd);
+				print_path(buf.buf, prefix, wanted, DEFAULT_CANONICAL);
 				continue;
 			}
 			if (!strcmp(arg, "--git-common-dir")) {
-				strbuf_reset(&buf);
-				puts(relative_path(get_git_common_dir(),
-						   prefix, &buf));
+				print_path(repo_get_common_dir(the_repository), prefix, format, DEFAULT_RELATIVE_IF_SHARED);
 				continue;
 			}
 			if (!strcmp(arg, "--is-inside-git-dir")) {
@@ -904,13 +1079,12 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				continue;
 			}
 			if (!strcmp(arg, "--shared-index-path")) {
-				if (read_cache() < 0)
+				if (repo_read_index(the_repository) < 0)
 					die(_("Could not read the index"));
-				if (the_index.split_index) {
-					const struct object_id *oid = &the_index.split_index->base_oid;
-					const char *path = git_path("sharedindex.%s", oid_to_hex(oid));
-					strbuf_reset(&buf);
-					puts(relative_path(path, prefix, &buf));
+				if (the_repository->index->split_index) {
+					const struct object_id *oid = &the_repository->index->split_index->base_oid;
+					const char *path = repo_git_path_replace(the_repository, &buf, "sharedindex.%s", oid_to_hex(oid));
+					print_path(path, prefix, format, DEFAULT_RELATIVE);
 				}
 				continue;
 			}
@@ -936,9 +1110,13 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 				if (strcmp(val, "storage") &&
 				    strcmp(val, "input") &&
 				    strcmp(val, "output"))
-					die("unknown mode for --show-object-format: %s",
+					die(_("unknown mode for --show-object-format: %s"),
 					    arg);
 				puts(the_hash_algo->name);
+				continue;
+			}
+			if (!strcmp(arg, "--show-ref-format")) {
+				puts(ref_storage_format_to_name(the_repository->ref_storage_format));
 				continue;
 			}
 			if (!strcmp(arg, "--end-of-options")) {
@@ -965,16 +1143,21 @@ int cmd_rev_parse(int argc, const char **argv, const char *prefix)
 		}
 		if (!get_oid_with_context(the_repository, name,
 					  flags, &oid, &unused)) {
+			object_context_release(&unused);
+			if (output_algo)
+				repo_oid_to_algop(the_repository, &oid,
+						  output_algo, &oid);
 			if (verify)
 				revs_count++;
 			else
 				show_rev(type, &oid, name);
 			continue;
 		}
+		object_context_release(&unused);
 		if (verify)
 			die_no_single_rev(quiet);
 		if (has_dashdash)
-			die("bad revision '%s'", arg);
+			die(_("bad revision '%s'"), arg);
 		as_is = 1;
 		if (!show_file(arg, output_prefix))
 			continue;

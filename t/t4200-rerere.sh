@@ -8,7 +8,7 @@ test_description='git rerere
 ! [fifth] version1
  ! [first] first
   ! [fourth] version1
-   ! [master] initial
+   ! [main] initial
     ! [second] prefer first over second
      ! [third] version2
 ------
@@ -19,8 +19,11 @@ test_description='git rerere
     -  [second] prefer first over second
  +  +  [first] first
     +  [second^] second
-++++++ [master] initial
+++++++ [main] initial
 '
+
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
 
@@ -57,7 +60,7 @@ test_expect_success 'setup' '
 	test_tick &&
 	git commit -q -a -m first &&
 
-	git checkout -b second master &&
+	git checkout -b second main &&
 	git show first:a1 |
 	sed -e "s/To die, t/To die! T/" -e "s/Some title/Some Title/" >a1 &&
 	echo "* END *" >>a1 &&
@@ -78,7 +81,7 @@ test_expect_success 'activate rerere, old style (conflicting merge)' '
 	test_might_fail git config --unset rerere.enabled &&
 	test_must_fail git merge first &&
 
-	sha1=$(perl -pe "s/	.*//" .git/MERGE_RR) &&
+	sha1=$(sed "s/	.*//" .git/MERGE_RR) &&
 	rr=.git/rr-cache/$sha1 &&
 	grep "^=======\$" $rr/preimage &&
 	! test -f $rr/postimage &&
@@ -91,7 +94,7 @@ test_expect_success 'rerere.enabled works, too' '
 	git reset --hard &&
 	test_must_fail git merge first &&
 
-	sha1=$(perl -pe "s/	.*//" .git/MERGE_RR) &&
+	sha1=$(sed "s/	.*//" .git/MERGE_RR) &&
 	rr=.git/rr-cache/$sha1 &&
 	grep ^=======$ $rr/preimage
 '
@@ -101,7 +104,7 @@ test_expect_success 'set up rr-cache' '
 	git config rerere.enabled true &&
 	git reset --hard &&
 	test_must_fail git merge first &&
-	sha1=$(perl -pe "s/	.*//" .git/MERGE_RR) &&
+	sha1=$(sed "s/	.*//" .git/MERGE_RR) &&
 	rr=.git/rr-cache/$sha1
 '
 
@@ -168,7 +171,7 @@ test_expect_success 'first postimage wins' '
 
 	oldmtimepost=$(test-tool chmtime --get -60 $rr/postimage) &&
 
-	git checkout -b third master &&
+	git checkout -b third main &&
 	git show second^:a1 | sed "s/To die: t/To die! T/" >a1 &&
 	git commit -q -a -m third &&
 
@@ -185,7 +188,7 @@ test_expect_success 'rerere updates postimage timestamp' '
 
 test_expect_success 'rerere clear' '
 	mv $rr/postimage .git/post-saved &&
-	echo "$sha1	a1" | perl -pe "y/\012/\000/" >.git/MERGE_RR &&
+	echo "$sha1	a1" | tr "\012" "\000" >.git/MERGE_RR &&
 	git rerere clear &&
 	! test -d $rr
 '
@@ -362,9 +365,6 @@ test_expect_success 'set up an unresolved merge' '
 	test_might_fail git config --unset rerere.autoupdate &&
 	git reset --hard &&
 	git checkout version2 &&
-	fifth=$(git rev-parse fifth) &&
-	echo "$fifth		branch fifth of ." |
-	git fmt-merge-msg >msg &&
 	ancestor=$(git merge-base version2 fifth) &&
 	test_must_fail git merge-recursive "$ancestor" -- HEAD fifth &&
 
@@ -433,13 +433,13 @@ test_expect_success 'rerere --no-no-rerere-autoupdate' '
 	git update-index --index-info <failedmerge &&
 	cp file3.conflict file3 &&
 	test_must_fail git rerere --no-no-rerere-autoupdate 2>err &&
-	test_i18ngrep [Uu]sage err &&
+	test_grep [Uu]sage err &&
 	test_must_fail git update-index --refresh
 '
 
 test_expect_success 'rerere -h' '
 	test_must_fail git rerere -h >help &&
-	test_i18ngrep [Uu]sage help
+	test_grep [Uu]sage help
 '
 
 concat_insert () {
@@ -580,13 +580,13 @@ test_expect_success 'multiple identical conflicts' '
 test_expect_success 'rerere with unexpected conflict markers does not crash' '
 	git reset --hard &&
 
-	git checkout -b branch-1 master &&
+	git checkout -b branch-1 main &&
 	echo "bar" >test &&
 	git add test &&
 	git commit -q -m two &&
 
 	git reset --hard &&
-	git checkout -b branch-2 master &&
+	git checkout -b branch-2 main &&
 	echo "foo" >test &&
 	git add test &&
 	git commit -q -a -m one &&
@@ -601,7 +601,7 @@ test_expect_success 'rerere with unexpected conflict markers does not crash' '
 test_expect_success 'rerere with inner conflict markers' '
 	git reset --hard &&
 
-	git checkout -b A master &&
+	git checkout -b A main &&
 	echo "bar" >test &&
 	git add test &&
 	git commit -q -m two &&
@@ -610,7 +610,7 @@ test_expect_success 'rerere with inner conflict markers' '
 	git commit -q -m three &&
 
 	git reset --hard &&
-	git checkout -b B master &&
+	git checkout -b B main &&
 	echo "foo" >test &&
 	git add test &&
 	git commit -q -a -m one &&
@@ -651,11 +651,11 @@ test_expect_success 'setup simple stage 1 handling' '
 		git add original &&
 		git commit -m original &&
 
-		git checkout -b A master &&
+		git checkout -b A main &&
 		git mv original A &&
 		git commit -m "rename to A" &&
 
-		git checkout -b B master &&
+		git checkout -b B main &&
 		git mv original B &&
 		git commit -m "rename to B"
 	)
@@ -669,6 +669,69 @@ test_expect_success 'test simple stage 1 handling' '
 		git checkout A^0 &&
 		test_must_fail git merge B^0
 	)
+'
+
+test_expect_success 'rerere does not crash with missing preimage' '
+	git config rerere.enabled true &&
+
+	echo bar >test &&
+	git add test &&
+	git commit -m "one" &&
+	git branch rerere_no_crash &&
+
+	echo foo >>test &&
+	git add test &&
+	git commit -m "two" &&
+
+	git checkout rerere_no_crash &&
+	echo "bar" >>test &&
+	git add test &&
+	git commit -m "three" &&
+
+	test_must_fail git rebase main &&
+	rm .git/rr-cache/*/preimage &&
+	git rebase --abort
+'
+
+test_expect_success 'rerere does not crash with unmatched conflict marker' '
+	git config rerere.enabled true &&
+
+	echo bar >test &&
+	git add test &&
+	git commit -m "one" &&
+	git branch rerere_no_preimage &&
+
+	cat >test <<-EOF &&
+	test
+	bar
+	foobar
+	EOF
+	git add test &&
+	git commit -m "two" &&
+
+	git checkout rerere_no_preimage &&
+	echo "bar" >>test &&
+	git add test &&
+	git commit -m "three" &&
+
+	cat >test <<-EOF &&
+	foobar
+	bar
+	bar
+	EOF
+	git add test &&
+	git commit -m "four" &&
+
+	test_must_fail git rebase main &&
+	cat >test <<-EOF &&
+	test
+	bar
+	<<<<<<< HEAD
+	foobar
+	bar
+	EOF
+	git add test &&
+	test_must_fail git rebase --continue
 '
 
 test_done

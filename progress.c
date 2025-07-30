@@ -9,13 +9,17 @@
  */
 
 #define GIT_TEST_PROGRESS_ONLY
-#include "cache.h"
-#include "gettext.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
+#include "pager.h"
 #include "progress.h"
+#include "repository.h"
 #include "strbuf.h"
 #include "trace.h"
+#include "trace2.h"
 #include "utf8.h"
-#include "config.h"
+#include "parse.h"
 
 #define TP_IDX_MAX      8
 
@@ -32,6 +36,7 @@ struct throughput {
 };
 
 struct progress {
+	struct repository *repo;
 	const char *title;
 	uint64_t last_value;
 	uint64_t total;
@@ -59,7 +64,7 @@ void progress_test_force_update(void)
 }
 
 
-static void progress_interval(int signum)
+static void progress_interval(int signum UNUSED)
 {
 	progress_update = 1;
 }
@@ -196,7 +201,7 @@ void display_throughput(struct progress *progress, uint64_t total)
 	now_ns = progress_getnanotime(progress);
 
 	if (!tp) {
-		progress->throughput = tp = xcalloc(1, sizeof(*tp));
+		progress->throughput = CALLOC_ARRAY(tp, 1);
 		tp->prev_total = tp->curr_total = total;
 		tp->prev_ns = now_ns;
 		strbuf_init(&tp->display, 0);
@@ -249,10 +254,12 @@ void display_progress(struct progress *progress, uint64_t n)
 		display(progress, n, NULL);
 }
 
-static struct progress *start_progress_delay(const char *title, uint64_t total,
+static struct progress *start_progress_delay(struct repository *r,
+					     const char *title, uint64_t total,
 					     unsigned delay, unsigned sparse)
 {
 	struct progress *progress = xmalloc(sizeof(*progress));
+	progress->repo = r;
 	progress->title = title;
 	progress->total = total;
 	progress->last_value = -1;
@@ -265,7 +272,7 @@ static struct progress *start_progress_delay(const char *title, uint64_t total,
 	progress->title_len = utf8_strwidth(title);
 	progress->split = 0;
 	set_progress_signal();
-	trace2_region_enter("progress", title, the_repository);
+	trace2_region_enter("progress", title, r);
 	return progress;
 }
 
@@ -279,14 +286,16 @@ static int get_default_delay(void)
 	return delay_in_secs;
 }
 
-struct progress *start_delayed_progress(const char *title, uint64_t total)
+struct progress *start_delayed_progress(struct repository *r,
+					const char *title, uint64_t total)
 {
-	return start_progress_delay(title, total, get_default_delay(), 0);
+	return start_progress_delay(r, title, total, get_default_delay(), 0);
 }
 
-struct progress *start_progress(const char *title, uint64_t total)
+struct progress *start_progress(struct repository *r,
+				const char *title, uint64_t total)
 {
-	return start_progress_delay(title, total, 0, 0);
+	return start_progress_delay(r, title, total, 0, 0);
 }
 
 /*
@@ -298,45 +307,54 @@ struct progress *start_progress(const char *title, uint64_t total)
  * When "sparse" is set, stop_progress() will automatically force the done
  * message to show 100%.
  */
-struct progress *start_sparse_progress(const char *title, uint64_t total)
+struct progress *start_sparse_progress(struct repository *r,
+				       const char *title, uint64_t total)
 {
-	return start_progress_delay(title, total, 0, 1);
+	return start_progress_delay(r, title, total, 0, 1);
 }
 
-struct progress *start_delayed_sparse_progress(const char *title,
+struct progress *start_delayed_sparse_progress(struct repository *r,
+					       const char *title,
 					       uint64_t total)
 {
-	return start_progress_delay(title, total, get_default_delay(), 1);
+	return start_progress_delay(r, title, total, get_default_delay(), 1);
 }
 
 static void finish_if_sparse(struct progress *progress)
 {
-	if (progress &&
-	    progress->sparse &&
+	if (progress->sparse &&
 	    progress->last_value != progress->total)
 		display_progress(progress, progress->total);
 }
 
-void stop_progress(struct progress **p_progress)
+static void force_last_update(struct progress *progress, const char *msg)
 {
-	if (!p_progress)
-		BUG("don't provide NULL to stop_progress");
+	char *buf;
+	struct throughput *tp = progress->throughput;
 
-	finish_if_sparse(*p_progress);
-
-	if (*p_progress) {
-		trace2_data_intmax("progress", the_repository, "total_objects",
-				   (*p_progress)->total);
-
-		if ((*p_progress)->throughput)
-			trace2_data_intmax("progress", the_repository,
-					   "total_bytes",
-					   (*p_progress)->throughput->curr_total);
-
-		trace2_region_leave("progress", (*p_progress)->title, the_repository);
+	if (tp) {
+		uint64_t now_ns = progress_getnanotime(progress);
+		unsigned int misecs, rate;
+		misecs = ((now_ns - progress->start_ns) * 4398) >> 32;
+		rate = tp->curr_total / (misecs ? misecs : 1);
+		throughput_string(&tp->display, tp->curr_total, rate);
 	}
+	progress_update = 1;
+	buf = xstrfmt(", %s.\n", msg);
+	display(progress, progress->last_value, buf);
+	free(buf);
+}
 
-	stop_progress_msg(p_progress, _("done"));
+static void log_trace2(struct progress *progress)
+{
+	trace2_data_intmax("progress", progress->repo, "total_objects",
+			   progress->total);
+
+	if (progress->throughput)
+		trace2_data_intmax("progress", progress->repo, "total_bytes",
+				   progress->throughput->curr_total);
+
+	trace2_region_leave("progress", progress->title, progress->repo);
 }
 
 void stop_progress_msg(struct progress **p_progress, const char *msg)
@@ -350,23 +368,12 @@ void stop_progress_msg(struct progress **p_progress, const char *msg)
 	if (!progress)
 		return;
 	*p_progress = NULL;
-	if (progress->last_value != -1) {
-		/* Force the last update */
-		char *buf;
-		struct throughput *tp = progress->throughput;
 
-		if (tp) {
-			uint64_t now_ns = progress_getnanotime(progress);
-			unsigned int misecs, rate;
-			misecs = ((now_ns - progress->start_ns) * 4398) >> 32;
-			rate = tp->curr_total / (misecs ? misecs : 1);
-			throughput_string(&tp->display, tp->curr_total, rate);
-		}
-		progress_update = 1;
-		buf = xstrfmt(", %s.\n", msg);
-		display(progress, progress->last_value, buf);
-		free(buf);
-	}
+	finish_if_sparse(progress);
+	if (progress->last_value != -1)
+		force_last_update(progress, msg);
+	log_trace2(progress);
+
 	clear_progress_signal();
 	strbuf_release(&progress->counters_sb);
 	if (progress->throughput)

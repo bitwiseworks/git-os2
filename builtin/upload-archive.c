@@ -1,28 +1,34 @@
 /*
  * Copyright (c) 2006 Franck Bui-Huu
  */
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
 #include "builtin.h"
 #include "archive.h"
+#include "path.h"
 #include "pkt-line.h"
 #include "sideband.h"
 #include "run-command.h"
 #include "strvec.h"
 
 static const char upload_archive_usage[] =
-	"git upload-archive <repo>";
+	"git upload-archive <repository>";
 
 static const char deadchild[] =
 "git upload-archive: archiver died with error";
 
 #define MAX_ARGS (64)
 
-int cmd_upload_archive_writer(int argc, const char **argv, const char *prefix)
+int cmd_upload_archive_writer(int argc,
+			      const char **argv,
+			      const char *prefix,
+			      struct repository *repo UNUSED)
 {
 	struct strvec sent_argv = STRVEC_INIT;
 	const char *arg_cmd = "argument ";
+	int ret;
 
-	if (argc != 2 || !strcmp(argv[1], "-h"))
+	show_usage_if_asked(argc, argv, upload_archive_usage);
+	if (argc != 2)
 		usage(upload_archive_usage);
 
 	if (!enter_repo(argv[1], 0))
@@ -45,8 +51,11 @@ int cmd_upload_archive_writer(int argc, const char **argv, const char *prefix)
 	}
 
 	/* parse all options sent by the client */
-	return write_archive(sent_argv.nr, sent_argv.v, prefix,
-			     the_repository, NULL, 1);
+	ret = write_archive(sent_argv.nr, sent_argv.v, prefix,
+			    the_repository, NULL, 1);
+
+	strvec_clear(&sent_argv);
+	return ret;
 }
 
 __attribute__((format (printf, 1, 2)))
@@ -75,12 +84,16 @@ static ssize_t process_input(int child_fd, int band)
 	return sz;
 }
 
-int cmd_upload_archive(int argc, const char **argv, const char *prefix)
+int cmd_upload_archive(int argc,
+const char **argv,
+const char *prefix,
+struct repository *repo UNUSED)
 {
-	struct child_process writer = { argv };
+	struct child_process writer = CHILD_PROCESS_INIT;
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage(upload_archive_usage);
+	BUG_ON_NON_EMPTY_PREFIX(prefix);
+
+	show_usage_if_asked(argc, argv, upload_archive_usage);
 
 	/*
 	 * Set up sideband subprocess.
@@ -89,9 +102,10 @@ int cmd_upload_archive(int argc, const char **argv, const char *prefix)
 	 * multiplexed out to our fd#1.  If the child dies, we tell the other
 	 * end over channel #3.
 	 */
-	argv[0] = "upload-archive--writer";
 	writer.out = writer.err = -1;
 	writer.git_cmd = 1;
+	strvec_push(&writer.args, "upload-archive--writer");
+	strvec_pushv(&writer.args, argv + 1);
 	if (start_command(&writer)) {
 		int err = errno;
 		packet_write_fmt(1, "NACK unable to spawn subprocess\n");

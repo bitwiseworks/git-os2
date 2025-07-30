@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='handling of duplicate objects in incoming packfiles'
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-pack.sh
 

@@ -1,12 +1,16 @@
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "builtin.h"
 #include "config.h"
 #include "diff.h"
 #include "commit.h"
+#include "gettext.h"
+#include "hex.h"
 #include "log-tree.h"
-#include "builtin.h"
-#include "submodule.h"
-#include "repository.h"
+#include "read-cache-ll.h"
+#include "revision.h"
+#include "tmp-objdir.h"
+#include "tree.h"
 
 static struct rev_info log_tree_opt;
 
@@ -83,8 +87,10 @@ static int diff_tree_stdin(char *line)
 }
 
 static const char diff_tree_usage[] =
-"git diff-tree [--stdin] [-m] [-c | --cc] [-s] [-v] [--pretty] [-t] [-r] [--root] "
-"[<common-diff-options>] <tree-ish> [<tree-ish>] [<path>...]\n"
+"git diff-tree [--stdin] [-m] [-s] [-v] [--no-commit-id] [--pretty]\n"
+"              [-t] [-r] [-c | --cc] [--combined-all-paths] [--root] [--merge-base]\n"
+"              [<common-diff-options>] <tree-ish> [<tree-ish>] [<path>...]\n"
+"\n"
 "  -r            diff recursively\n"
 "  -c            show combined diff for merge commits\n"
 "  --cc          show combined diff for merge commits removing uninteresting hunks\n"
@@ -93,7 +99,7 @@ static const char diff_tree_usage[] =
 "  --root        include the initial commit as diff against /dev/null\n"
 COMMON_DIFF_OPTIONS_HELP;
 
-static void diff_tree_tweak_rev(struct rev_info *rev, struct setup_revision_opt *opt)
+static void diff_tree_tweak_rev(struct rev_info *rev)
 {
 	if (!rev->diffopt.output_format) {
 		if (rev->dense_combined_merges)
@@ -103,7 +109,10 @@ static void diff_tree_tweak_rev(struct rev_info *rev, struct setup_revision_opt 
 	}
 }
 
-int cmd_diff_tree(int argc, const char **argv, const char *prefix)
+int cmd_diff_tree(int argc,
+		  const char **argv,
+		  const char *prefix,
+		  struct repository *repo UNUSED)
 {
 	char line[1000];
 	struct object *tree1, *tree2;
@@ -113,12 +122,15 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 	int read_stdin = 0;
 	int merge_base = 0;
 
-	if (argc == 2 && !strcmp(argv[1], "-h"))
-		usage(diff_tree_usage);
+	show_usage_if_asked(argc, argv, diff_tree_usage);
 
 	git_config(git_diff_basic_config, NULL); /* no "diff" UI options */
+
+	prepare_repo_settings(the_repository);
+	the_repository->settings.command_requires_full_index = 0;
+
 	repo_init_revisions(the_repository, opt, prefix);
-	if (read_cache() < 0)
+	if (repo_read_index(the_repository) < 0)
 		die(_("index file corrupt"));
 	opt->abbrev = 0;
 	opt->diff = 1;
@@ -126,7 +138,7 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 	memset(&s_r_opt, 0, sizeof(s_r_opt));
 	s_r_opt.tweak = diff_tree_tweak_rev;
 
-	precompose_argv(argc, argv);
+	prefix = precompose_argv_prefix(argc, argv, prefix);
 	argc = setup_revisions(argc, argv, opt, &s_r_opt);
 
 	memset(&w, 0, sizeof(w));
@@ -152,9 +164,11 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 	}
 
 	if (read_stdin && merge_base)
-		die(_("--stdin and --merge-base are mutually exclusive"));
+		die(_("options '%s' and '%s' cannot be used together"), "--stdin", "--merge-base");
 	if (merge_base && opt->pending.nr != 2)
 		die(_("--merge-base only works with two commits"));
+
+	opt->diffopt.rotate_to_strict = 1;
 
 	/*
 	 * NOTE!  We expect "a..b" to expand to "^a b" but it is
@@ -192,8 +206,10 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 		int saved_nrl = 0;
 		int saved_dcctc = 0;
 
+		opt->diffopt.rotate_to_strict = 0;
+		opt->diffopt.no_free = 1;
 		if (opt->diffopt.detect_rename) {
-			if (!the_index.cache)
+			if (the_repository->index->cache)
 				repo_read_index(the_repository);
 			opt->diffopt.setup |= DIFF_SETUP_USE_SIZE_CACHE;
 		}
@@ -214,7 +230,9 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 		}
 		opt->diffopt.degraded_cc_to_c = saved_dcctc;
 		opt->diffopt.needed_rename_limit = saved_nrl;
+		opt->diffopt.no_free = 0;
+		diff_free(&opt->diffopt);
 	}
 
-	return diff_result_code(&opt->diffopt, 0);
+	return diff_result_code(opt);
 }

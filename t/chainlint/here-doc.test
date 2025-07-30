@@ -1,3 +1,4 @@
+test_expect_success 'here-doc' '
 # LINT: stitch together incomplete \-ending lines
 # LINT: swallow here-doc to avoid false positives in content
 boodle wobba \
@@ -14,13 +15,6 @@ boz
 woz
 Arbitrary_Tag_42
 
-# LINT: swallow 'quoted' here-doc
-cat <<'FUMP' >bar &&
-snoz
-boz
-woz
-FUMP
-
 # LINT: swallow "quoted" here-doc
 cat <<"zump" >boo &&
 snoz
@@ -35,3 +29,4 @@ morticia
 wednesday
 pugsly
 EOF
+'

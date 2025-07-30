@@ -1,7 +1,15 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
+#include "abspath.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "path.h"
 #include "pkt-line.h"
+#include "protocol.h"
 #include "run-command.h"
+#include "setup.h"
 #include "strbuf.h"
 #include "string-list.h"
 
@@ -63,6 +71,12 @@ struct hostinfo {
 	unsigned int hostname_lookup_done:1;
 	unsigned int saw_extended_args:1;
 };
+#define HOSTINFO_INIT { \
+	.hostname = STRBUF_INIT, \
+	.canon_hostname = STRBUF_INIT, \
+	.ip_address = STRBUF_INIT, \
+	.tcp_port = STRBUF_INIT, \
+}
 
 static void lookup_hostname(struct hostinfo *hi);
 
@@ -131,42 +145,6 @@ static void NORETURN daemon_die(const char *err, va_list params)
 	exit(1);
 }
 
-struct expand_path_context {
-	const char *directory;
-	struct hostinfo *hostinfo;
-};
-
-static size_t expand_path(struct strbuf *sb, const char *placeholder, void *ctx)
-{
-	struct expand_path_context *context = ctx;
-	struct hostinfo *hi = context->hostinfo;
-
-	switch (placeholder[0]) {
-	case 'H':
-		strbuf_addbuf(sb, &hi->hostname);
-		return 1;
-	case 'C':
-		if (placeholder[1] == 'H') {
-			strbuf_addstr(sb, get_canon_hostname(hi));
-			return 2;
-		}
-		break;
-	case 'I':
-		if (placeholder[1] == 'P') {
-			strbuf_addstr(sb, get_ip_address(hi));
-			return 2;
-		}
-		break;
-	case 'P':
-		strbuf_addbuf(sb, &hi->tcp_port);
-		return 1;
-	case 'D':
-		strbuf_addstr(sb, context->directory);
-		return 1;
-	}
-	return 0;
-}
-
 static const char *path_ok(const char *directory, struct hostinfo *hi)
 {
 	static char rpath[PATH_MAX];
@@ -174,6 +152,7 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 	size_t rlen;
 	const char *path;
 	const char *dir;
+	unsigned enter_repo_flags;
 
 	dir = directory;
 
@@ -210,10 +189,7 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 	}
 	else if (interpolated_path && hi->saw_extended_args) {
 		struct strbuf expanded_path = STRBUF_INIT;
-		struct expand_path_context context;
-
-		context.directory = directory;
-		context.hostinfo = hi;
+		const char *format = interpolated_path;
 
 		if (*dir != '/') {
 			/* Allow only absolute */
@@ -221,18 +197,34 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 			return NULL;
 		}
 
-		strbuf_expand(&expanded_path, interpolated_path,
-			      expand_path, &context);
+		while (strbuf_expand_step(&expanded_path, &format)) {
+			if (skip_prefix(format, "%", &format))
+				strbuf_addch(&expanded_path, '%');
+			else if (skip_prefix(format, "H", &format))
+				strbuf_addbuf(&expanded_path, &hi->hostname);
+			else if (skip_prefix(format, "CH", &format))
+				strbuf_addstr(&expanded_path,
+					      get_canon_hostname(hi));
+			else if (skip_prefix(format, "IP", &format))
+				strbuf_addstr(&expanded_path,
+					      get_ip_address(hi));
+			else if (skip_prefix(format, "P", &format))
+				strbuf_addbuf(&expanded_path, &hi->tcp_port);
+			else if (skip_prefix(format, "D", &format))
+				strbuf_addstr(&expanded_path, directory);
+			else
+				strbuf_addch(&expanded_path, '%');
+		}
 
 		rlen = strlcpy(interp_path, expanded_path.buf,
 			       sizeof(interp_path));
+		strbuf_release(&expanded_path);
 		if (rlen >= sizeof(interp_path)) {
 			logerror("interpolated path too large: %s",
 				 interp_path);
 			return NULL;
 		}
 
-		strbuf_release(&expanded_path);
 		loginfo("Interpolated dir '%s'", interp_path);
 
 		dir = interp_path;
@@ -251,14 +243,15 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 		dir = rpath;
 	}
 
-	path = enter_repo(dir, strict_paths);
+	enter_repo_flags = strict_paths ? ENTER_REPO_STRICT : 0;
+	path = enter_repo(dir, enter_repo_flags);
 	if (!path && base_path && base_path_relaxed) {
 		/*
 		 * if we fail and base_path_relaxed is enabled, try without
 		 * prefixing the base path
 		 */
 		dir = directory;
-		path = enter_repo(dir, strict_paths);
+		path = enter_repo(dir, enter_repo_flags);
 	}
 
 	if (!path) {
@@ -273,7 +266,7 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 		/* The validation is done on the paths after enter_repo
 		 * appends optional {.git,.git/.git} and friends, but
 		 * it does not use getcwd().  So if your /pub is
-		 * a symlink to /mnt/pub, you can whitelist /pub and
+		 * a symlink to /mnt/pub, you can include /pub and
 		 * do not have to say /mnt/pub.
 		 * Do not say /pub/.
 		 */
@@ -292,7 +285,7 @@ static const char *path_ok(const char *directory, struct hostinfo *hi)
 			return path;
 	}
 
-	logerror("'%s': not in whitelist", path);
+	logerror("'%s': not in directory list", path);
 	return NULL;		/* Fallthrough. Deny by default */
 }
 
@@ -320,22 +313,18 @@ static int run_access_hook(struct daemon_service *service, const char *dir,
 {
 	struct child_process child = CHILD_PROCESS_INIT;
 	struct strbuf buf = STRBUF_INIT;
-	const char *argv[8];
-	const char **arg = argv;
 	char *eol;
 	int seen_errors = 0;
 
-	*arg++ = access_hook;
-	*arg++ = service->name;
-	*arg++ = path;
-	*arg++ = hi->hostname.buf;
-	*arg++ = get_canon_hostname(hi);
-	*arg++ = get_ip_address(hi);
-	*arg++ = hi->tcp_port.buf;
-	*arg = NULL;
+	strvec_push(&child.args, access_hook);
+	strvec_push(&child.args, service->name);
+	strvec_push(&child.args, path);
+	strvec_push(&child.args, hi->hostname.buf);
+	strvec_push(&child.args, get_canon_hostname(hi));
+	strvec_push(&child.args, get_ip_address(hi));
+	strvec_push(&child.args, hi->tcp_port.buf);
 
 	child.use_shell = 1;
-	child.argv = argv;
 	child.no_stdin = 1;
 	child.no_stderr = 1;
 	child.out = -1;
@@ -401,7 +390,7 @@ static int run_service(const char *dir, struct daemon_service *service,
 	 * a "git-daemon-export-ok" flag that says that the other side
 	 * is ok with us doing this.
 	 *
-	 * path_ok() uses enter_repo() and does whitelist checking.
+	 * path_ok() uses enter_repo() and checks for included directories.
 	 * We only need to make sure the repository is exported.
 	 */
 
@@ -445,7 +434,7 @@ static void copy_to_log(int fd)
 	FILE *fp;
 
 	fp = fdopen(fd, "r");
-	if (fp == NULL) {
+	if (!fp) {
 		logerror("fdopen of error channel failed");
 		close(fd);
 		return;
@@ -482,7 +471,7 @@ static int upload_pack(const struct strvec *env)
 	strvec_pushl(&cld.args, "upload-pack", "--strict", NULL);
 	strvec_pushf(&cld.args, "--timeout=%u", timeout);
 
-	strvec_pushv(&cld.env_array, env->v);
+	strvec_pushv(&cld.env, env->v);
 
 	return run_service_command(&cld);
 }
@@ -492,7 +481,7 @@ static int upload_archive(const struct strvec *env)
 	struct child_process cld = CHILD_PROCESS_INIT;
 	strvec_push(&cld.args, "upload-archive");
 
-	strvec_pushv(&cld.env_array, env->v);
+	strvec_pushv(&cld.env, env->v);
 
 	return run_service_command(&cld);
 }
@@ -502,7 +491,7 @@ static int receive_pack(const struct strvec *env)
 	struct child_process cld = CHILD_PROCESS_INIT;
 	strvec_push(&cld.args, "receive-pack");
 
-	strvec_pushv(&cld.env_array, env->v);
+	strvec_pushv(&cld.env, env->v);
 
 	return run_service_command(&cld);
 }
@@ -515,8 +504,7 @@ static struct daemon_service daemon_service[] = {
 
 static void enable_service(const char *name, int ena)
 {
-	int i;
-	for (i = 0; i < ARRAY_SIZE(daemon_service); i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(daemon_service); i++) {
 		if (!strcmp(daemon_service[i].name, name)) {
 			daemon_service[i].enabled = ena;
 			return;
@@ -527,8 +515,7 @@ static void enable_service(const char *name, int ena)
 
 static void make_service_overridable(const char *name, int ena)
 {
-	int i;
-	for (i = 0; i < ARRAY_SIZE(daemon_service); i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(daemon_service); i++) {
 		if (!strcmp(daemon_service[i].name, name)) {
 			daemon_service[i].overridable = ena;
 			return;
@@ -566,14 +553,14 @@ static void parse_host_and_port(char *hostport, char **host,
 
 /*
  * Sanitize a string from the client so that it's OK to be inserted into a
- * filesystem path. Specifically, we disallow slashes, runs of "..", and
- * trailing and leading dots, which means that the client cannot escape
- * our base path via ".." traversal.
+ * filesystem path. Specifically, we disallow directory separators, runs
+ * of "..", and trailing and leading dots, which means that the client
+ * cannot escape our base path via ".." traversal.
  */
 static void sanitize_client(struct strbuf *out, const char *in)
 {
 	for (; *in; in++) {
-		if (*in == '/')
+		if (is_dir_sep(*in))
 			continue;
 		if (*in == '.' && (!out->len || out->buf[out->len - 1] == '.'))
 			continue;
@@ -727,15 +714,6 @@ static void lookup_hostname(struct hostinfo *hi)
 	}
 }
 
-static void hostinfo_init(struct hostinfo *hi)
-{
-	memset(hi, 0, sizeof(*hi));
-	strbuf_init(&hi->hostname, 0);
-	strbuf_init(&hi->canon_hostname, 0);
-	strbuf_init(&hi->ip_address, 0);
-	strbuf_init(&hi->tcp_port, 0);
-}
-
 static void hostinfo_clear(struct hostinfo *hi)
 {
 	strbuf_release(&hi->hostname);
@@ -758,19 +736,17 @@ static void set_keep_alive(int sockfd)
 static int execute(void)
 {
 	char *line = packet_buffer;
-	int pktlen, len, i;
+	int pktlen, len;
 	char *addr = getenv("REMOTE_ADDR"), *port = getenv("REMOTE_PORT");
-	struct hostinfo hi;
+	struct hostinfo hi = HOSTINFO_INIT;
 	struct strvec env = STRVEC_INIT;
-
-	hostinfo_init(&hi);
 
 	if (addr)
 		loginfo("Connection from %s:%s", addr, port);
 
 	set_keep_alive(0);
 	alarm(init_timeout ? init_timeout : timeout);
-	pktlen = packet_read(0, NULL, NULL, packet_buffer, sizeof(packet_buffer), 0);
+	pktlen = packet_read(0, packet_buffer, sizeof(packet_buffer), 0);
 	alarm(0);
 
 	len = strlen(line);
@@ -781,7 +757,7 @@ static int execute(void)
 	if (len != pktlen)
 		parse_extra_args(&hi, &env, line + len + 1, pktlen - len - 1);
 
-	for (i = 0; i < ARRAY_SIZE(daemon_service); i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(daemon_service); i++) {
 		struct daemon_service *s = &(daemon_service[i]);
 		const char *arg;
 
@@ -826,8 +802,7 @@ static int addrcmp(const struct sockaddr_storage *s1,
 	return 0;
 }
 
-static int max_connections = 32;
-
+static unsigned int max_connections = 32;
 static unsigned int live_children;
 
 static struct child {
@@ -840,7 +815,7 @@ static void add_child(struct child_process *cld, struct sockaddr *addr, socklen_
 {
 	struct child *newborn, **cradle;
 
-	newborn = xcalloc(1, sizeof(*newborn));
+	CALLOC_ARRAY(newborn, 1);
 	live_children++;
 	memcpy(&newborn->cld, cld, sizeof(*cld));
 	memcpy(&newborn->address, addr, addrlen);
@@ -913,21 +888,21 @@ static void handle(int incoming, struct sockaddr *addr, socklen_t addrlen)
 		char buf[128] = "";
 		struct sockaddr_in *sin_addr = (void *) addr;
 		inet_ntop(addr->sa_family, &sin_addr->sin_addr, buf, sizeof(buf));
-		strvec_pushf(&cld.env_array, "REMOTE_ADDR=%s", buf);
-		strvec_pushf(&cld.env_array, "REMOTE_PORT=%d",
+		strvec_pushf(&cld.env, "REMOTE_ADDR=%s", buf);
+		strvec_pushf(&cld.env, "REMOTE_PORT=%d",
 			     ntohs(sin_addr->sin_port));
 #ifndef NO_IPV6
 	} else if (addr->sa_family == AF_INET6) {
 		char buf[128] = "";
 		struct sockaddr_in6 *sin6_addr = (void *) addr;
 		inet_ntop(AF_INET6, &sin6_addr->sin6_addr, buf, sizeof(buf));
-		strvec_pushf(&cld.env_array, "REMOTE_ADDR=[%s]", buf);
-		strvec_pushf(&cld.env_array, "REMOTE_PORT=%d",
+		strvec_pushf(&cld.env, "REMOTE_ADDR=[%s]", buf);
+		strvec_pushf(&cld.env, "REMOTE_PORT=%d",
 			     ntohs(sin6_addr->sin6_port));
 #endif
 	}
 
-	cld.argv = cld_argv.v;
+	strvec_pushv(&cld.args, cld_argv.v);
 	cld.in = incoming;
 	cld.out = dup(incoming);
 
@@ -937,7 +912,7 @@ static void handle(int incoming, struct sockaddr *addr, socklen_t addrlen)
 		add_child(&cld, addr, addrlen);
 }
 
-static void child_handler(int signo)
+static void child_handler(int signo UNUSED)
 {
 	/*
 	 * Otherwise empty handler because systemcalls will get interrupted
@@ -1131,8 +1106,8 @@ static void socksetup(struct string_list *listen_addr, int listen_port, struct s
 	if (!listen_addr->nr)
 		setup_named_sock(NULL, listen_port, socklist);
 	else {
-		int i, socknum;
-		for (i = 0; i < listen_addr->nr; i++) {
+		int socknum;
+		for (size_t i = 0; i < listen_addr->nr; i++) {
 			socknum = setup_named_sock(listen_addr->items[i].string,
 						   listen_port, socklist);
 
@@ -1146,11 +1121,10 @@ static void socksetup(struct string_list *listen_addr, int listen_port, struct s
 static int service_loop(struct socketlist *socklist)
 {
 	struct pollfd *pfd;
-	int i;
 
-	pfd = xcalloc(socklist->nr, sizeof(struct pollfd));
+	CALLOC_ARRAY(pfd, socklist->nr);
 
-	for (i = 0; i < socklist->nr; i++) {
+	for (size_t i = 0; i < socklist->nr; i++) {
 		pfd[i].fd = socklist->list[i];
 		pfd[i].events = POLLIN;
 	}
@@ -1158,8 +1132,6 @@ static int service_loop(struct socketlist *socklist)
 	signal(SIGCHLD, child_handler);
 
 	for (;;) {
-		int i;
-
 		check_dead_children();
 
 		if (poll(pfd, socklist->nr, -1) < 0) {
@@ -1171,7 +1143,7 @@ static int service_loop(struct socketlist *socklist)
 			continue;
 		}
 
-		for (i = 0; i < socklist->nr; i++) {
+		for (size_t i = 0; i < socklist->nr; i++) {
 			if (pfd[i].revents & POLLIN) {
 				union {
 					struct sockaddr sa;
@@ -1202,13 +1174,13 @@ static int service_loop(struct socketlist *socklist)
 
 struct credentials;
 
-static void drop_privileges(struct credentials *cred)
+static void drop_privileges(struct credentials *cred UNUSED)
 {
 	/* nothing */
 }
 
-static struct credentials *prepare_credentials(const char *user_name,
-    const char *group_name)
+static struct credentials *prepare_credentials(const char *user_name UNUSED,
+					       const char *group_name UNUSED)
 {
 	die("--user not supported on this platform");
 }
@@ -1270,19 +1242,20 @@ static int serve(struct string_list *listen_addr, int listen_port,
 int cmd_main(int argc, const char **argv)
 {
 	int listen_port = 0;
-	struct string_list listen_addr = STRING_LIST_INIT_NODUP;
+	struct string_list listen_addr = STRING_LIST_INIT_DUP;
 	int serve_mode = 0, inetd_mode = 0;
 	const char *pid_file = NULL, *user_name = NULL, *group_name = NULL;
 	int detach = 0;
 	struct credentials *cred = NULL;
 	int i;
+	int ret;
 
 	for (i = 1; i < argc; i++) {
 		const char *arg = argv[i];
 		const char *v;
 
 		if (skip_prefix(arg, "--listen=", &v)) {
-			string_list_append(&listen_addr, xstrdup_tolower(v));
+			string_list_append_nodup(&listen_addr, xstrdup_tolower(v));
 			continue;
 		}
 		if (skip_prefix(arg, "--port=", &v)) {
@@ -1332,17 +1305,21 @@ int cmd_main(int argc, const char **argv)
 			continue;
 		}
 		if (skip_prefix(arg, "--timeout=", &v)) {
-			timeout = atoi(v);
+			if (strtoul_ui(v, 10, &timeout))
+				die(_("invalid timeout '%s', expecting a non-negative integer"), v);
 			continue;
 		}
 		if (skip_prefix(arg, "--init-timeout=", &v)) {
-			init_timeout = atoi(v);
+			if (strtoul_ui(v, 10, &init_timeout))
+				die(_("invalid init-timeout '%s', expecting a non-negative integer"), v);
 			continue;
 		}
 		if (skip_prefix(arg, "--max-connections=", &v)) {
-			max_connections = atoi(v);
-			if (max_connections < 0)
-				max_connections = 0;	        /* unlimited */
+			int parsed_value;
+			if (strtol_i(v, 10, &parsed_value))
+				die(_("invalid max-connections '%s', expecting an integer"), v);
+			/* A negative value indicates unlimited children. */
+			max_connections = parsed_value < 0 ? 0 : parsed_value;
 			continue;
 		}
 		if (!strcmp(arg, "--strict-paths")) {
@@ -1453,7 +1430,7 @@ int cmd_main(int argc, const char **argv)
 		cred = prepare_credentials(user_name, group_name);
 
 	if (strict_paths && (!ok_paths || !*ok_paths))
-		die("option --strict-paths requires a whitelist");
+		die("option --strict-paths requires '<directory>' arguments");
 
 	if (base_path && !is_directory(base_path))
 		die("base-path '%s' does not exist or is not a directory",
@@ -1464,22 +1441,26 @@ int cmd_main(int argc, const char **argv)
 			die_errno("failed to redirect stderr to /dev/null");
 	}
 
-	if (inetd_mode || serve_mode)
-		return execute();
+	if (inetd_mode || serve_mode) {
+		ret = execute();
+	} else {
+		if (detach) {
+			if (daemonize())
+				die("--detach not supported on this platform");
+		}
 
-	if (detach) {
-		if (daemonize())
-			die("--detach not supported on this platform");
+		if (pid_file)
+			write_file(pid_file, "%"PRIuMAX, (uintmax_t) getpid());
+
+		/* prepare argv for serving-processes */
+		strvec_push(&cld_argv, argv[0]); /* git-daemon */
+		strvec_push(&cld_argv, "--serve");
+		for (i = 1; i < argc; ++i)
+			strvec_push(&cld_argv, argv[i]);
+
+		ret = serve(&listen_addr, listen_port, cred);
 	}
 
-	if (pid_file)
-		write_file(pid_file, "%"PRIuMAX, (uintmax_t) getpid());
-
-	/* prepare argv for serving-processes */
-	strvec_push(&cld_argv, argv[0]); /* git-daemon */
-	strvec_push(&cld_argv, "--serve");
-	for (i = 1; i < argc; ++i)
-		strvec_push(&cld_argv, argv[i]);
-
-	return serve(&listen_addr, listen_port, cred);
+	string_list_clear(&listen_addr, 0);
+	return ret;
 }

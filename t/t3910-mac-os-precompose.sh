@@ -5,6 +5,9 @@
 
 test_description='utf-8 decomposed (nfd) converted to precomposed (nfc)'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 if ! test_have_prereq UTF8_NFD_TO_NFC
@@ -33,6 +36,27 @@ Alongc=$AEligatu$AEligatu$AEligatu$AEligatu$AEligatu #10 Byte
 Alongc=$Alongc$Alongc$Alongc$Alongc$Alongc           #50 Byte
 Alongc=$Alongc$Alongc$Alongc$Alongc$Alongc           #250 Byte
 Alongc=$Alongc$AEligatu$AEligatu                     #254 Byte
+
+
+ls_files_nfc_nfd () {
+	test_when_finished "git config --global --unset core.precomposeunicode" &&
+	prglbl=$1
+	prlocl=$2
+	aumlcreat=$3
+	aumllist=$4
+	git config --global core.precomposeunicode $prglbl &&
+	(
+		rm -rf .git &&
+		mkdir -p "somewhere/$prglbl/$prlocl/$aumlcreat" &&
+		mypwd=$PWD &&
+		cd "somewhere/$prglbl/$prlocl/$aumlcreat" &&
+		git init &&
+		git config core.precomposeunicode $prlocl &&
+		git --literal-pathspecs ls-files "$mypwd/somewhere/$prglbl/$prlocl/$aumllist" 2>err &&
+		>expected &&
+		test_cmp expected err
+	)
+}
 
 test_expect_success "detect if nfd needed" '
 	precomposeunicode=$(git config core.precomposeunicode) &&
@@ -151,7 +175,7 @@ test_expect_success "git checkout link nfd" '
 	git checkout l.$Odiarnfd
 '
 test_expect_success "setup case mac2" '
-	git checkout master &&
+	git checkout main &&
 	git reset --hard &&
 	git checkout -b mac_os_2
 '
@@ -163,7 +187,7 @@ test_expect_success "commit file d2.Adiarnfd/f.Adiarnfd" '
 	git commit -m "add d2.$Adiarnfd/f.$Adiarnfd" -- d2.$Adiarnfd/f.$Adiarnfd
 '
 test_expect_success "setup for long decomposed filename" '
-	git checkout master &&
+	git checkout main &&
 	git reset --hard &&
 	git checkout -b mac_os_long_nfd_fn
 '
@@ -173,7 +197,7 @@ test_expect_success "Add long decomposed filename" '
 	git commit -m "Long filename"
 '
 test_expect_success "setup for long precomposed filename" '
-	git checkout master &&
+	git checkout main &&
 	git reset --hard &&
 	git checkout -b mac_os_long_nfc_fn
 '
@@ -191,14 +215,46 @@ test_expect_failure 'handle existing decomposed filenames' '
 	test_must_be_empty untracked
 '
 
+test_expect_success "unicode decomposed: git restore -p . " '
+	DIRNAMEPWD=dir.Odiarnfc &&
+	DIRNAMEINREPO=dir.$Adiarnfc &&
+	export DIRNAMEPWD DIRNAMEINREPO &&
+	git init "$DIRNAMEPWD" &&
+	(
+		cd "$DIRNAMEPWD" &&
+		mkdir "$DIRNAMEINREPO" &&
+		cd "$DIRNAMEINREPO" &&
+		echo "Initial" >file &&
+		git add file &&
+		echo "More stuff" >>file &&
+		echo y | git restore -p .
+	)
+'
+
 # Test if the global core.precomposeunicode stops autosensing
-# Must be the last test case
 test_expect_success "respect git config --global core.precomposeunicode" '
+	test_when_finished "git config --global --unset core.precomposeunicode" &&
 	git config --global core.precomposeunicode true &&
 	rm -rf .git &&
 	git init &&
 	precomposeunicode=$(git config core.precomposeunicode) &&
 	test "$precomposeunicode" = "true"
+'
+
+test_expect_success "ls-files false false nfd nfd" '
+	ls_files_nfc_nfd false false $Adiarnfd $Adiarnfd
+'
+
+test_expect_success "ls-files false true nfd nfd" '
+	ls_files_nfc_nfd false true $Adiarnfd $Adiarnfd
+'
+
+test_expect_success "ls-files true false nfd nfd" '
+	ls_files_nfc_nfd true false $Adiarnfd $Adiarnfd
+'
+
+test_expect_success "ls-files true true nfd nfd" '
+	ls_files_nfc_nfd true true $Adiarnfd $Adiarnfd
 '
 
 test_done

@@ -6,6 +6,7 @@
 test_description='git pack-object with "large" deltas
 
 '
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-pack.sh
 

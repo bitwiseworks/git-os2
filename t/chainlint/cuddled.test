@@ -1,5 +1,5 @@
-# LINT: first subshell statement cuddled with opening "("; for implementation
-# LINT: simplicity, "(..." is split into two lines, "(" and "..."
+test_expect_success 'cuddled' '
+# LINT: first subshell statement cuddled with opening "("
 (cd foo &&
 	bar
 ) &&
@@ -21,3 +21,4 @@
 # LINT: same with missing "&&"
 (cd foo
 	bar)
+'

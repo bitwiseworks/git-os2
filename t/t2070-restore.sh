@@ -2,6 +2,9 @@
 
 test_description='restore basic functionality'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -15,7 +18,7 @@ test_expect_success 'setup' '
 	echo ignored >ignored &&
 	echo /ignored >.gitignore &&
 	git add one two .gitignore &&
-	git update-ref refs/heads/one master
+	git update-ref refs/heads/one main
 '
 
 test_expect_success 'restore without pathspec is not ok' '
@@ -91,7 +94,7 @@ test_expect_success 'restore --ignore-unmerged ignores unmerged entries' '
 		git switch -c first &&
 		echo first >unmerged &&
 		git commit -am first &&
-		git switch -c second master &&
+		git switch -c second main &&
 		echo second >unmerged &&
 		git commit -am second &&
 		test_must_fail git merge first &&
@@ -132,6 +135,89 @@ test_expect_success 'restore --staged invalidates cache tree for deletions' '
 	git commit -m "just new2" &&
 	git rev-parse HEAD:new2 &&
 	test_must_fail git rev-parse HEAD:new1
+'
+
+test_expect_success 'restore --merge to unresolve' '
+	O=$(echo original | git hash-object -w --stdin) &&
+	A=$(echo ourside | git hash-object -w --stdin) &&
+	B=$(echo theirside | git hash-object -w --stdin) &&
+	{
+		echo "100644 $O 1	file" &&
+		echo "100644 $A 2	file" &&
+		echo "100644 $B 3	file"
+	} | git update-index --index-info &&
+	echo nothing >file &&
+	git restore --worktree --merge file &&
+	cat >expect <<-\EOF &&
+	<<<<<<< ours
+	ourside
+	=======
+	theirside
+	>>>>>>> theirs
+	EOF
+	test_cmp expect file
+'
+
+test_expect_success 'restore --merge to unresolve after (mistaken) resolution' '
+	O=$(echo original | git hash-object -w --stdin) &&
+	A=$(echo ourside | git hash-object -w --stdin) &&
+	B=$(echo theirside | git hash-object -w --stdin) &&
+	{
+		echo "100644 $O 1	file" &&
+		echo "100644 $A 2	file" &&
+		echo "100644 $B 3	file"
+	} | git update-index --index-info &&
+	echo nothing >file &&
+	git add file &&
+	git restore --worktree --merge file &&
+	cat >expect <<-\EOF &&
+	<<<<<<< ours
+	ourside
+	=======
+	theirside
+	>>>>>>> theirs
+	EOF
+	test_cmp expect file
+'
+
+test_expect_success 'restore --merge to unresolve after (mistaken) resolution' '
+	O=$(echo original | git hash-object -w --stdin) &&
+	A=$(echo ourside | git hash-object -w --stdin) &&
+	B=$(echo theirside | git hash-object -w --stdin) &&
+	{
+		echo "100644 $O 1	file" &&
+		echo "100644 $A 2	file" &&
+		echo "100644 $B 3	file"
+	} | git update-index --index-info &&
+	git rm -f file &&
+	git restore --worktree --merge file &&
+	cat >expect <<-\EOF &&
+	<<<<<<< ours
+	ourside
+	=======
+	theirside
+	>>>>>>> theirs
+	EOF
+	test_cmp expect file
+'
+
+test_expect_success 'restore with merge options are incompatible with certain options' '
+	for opts in \
+		"--staged --ours" \
+		"--staged --theirs" \
+		"--staged --merge" \
+		"--source=HEAD --ours" \
+		"--source=HEAD --theirs" \
+		"--source=HEAD --merge" \
+		"--staged --conflict=diff3" \
+		"--staged --worktree --ours" \
+		"--staged --worktree --theirs" \
+		"--staged --worktree --merge" \
+		"--staged --worktree --conflict=zdiff3"
+	do
+		test_must_fail git restore $opts . 2>err &&
+		grep "cannot be used" err || return
+	done
 '
 
 test_done

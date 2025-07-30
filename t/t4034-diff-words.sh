@@ -3,7 +3,7 @@
 test_description='word diff colors'
 
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/diff-lib.sh
+. "$TEST_DIRECTORY"/lib-diff.sh
 
 cat >pre.simple <<-\EOF
 	h(4)
@@ -66,6 +66,10 @@ test_language_driver () {
 			"$TEST_DIRECTORY/t4034/'"$lang"'/post" \
 			"$TEST_DIRECTORY/t4034/'"$lang"'/expect" . &&
 		echo "* diff='"$lang"'" >.gitattributes &&
+		word_diff --color-words
+	'
+	test_expect_success "diff driver '$lang' in Islandic" '
+		test_env LANG=is_IS.UTF-8 LANGUAGE=is LC_ALL="$is_IS_locale" \
 		word_diff --color-words
 	'
 }
@@ -182,6 +186,11 @@ test_expect_success 'word diff without context' '
 test_expect_success 'word diff with a regular expression' '
 	cp expect.letter-runs-are-words expect &&
 	word_diff --color-words="[a-z]+"
+'
+
+test_expect_success 'word diff with zero length matches' '
+	cp expect.letter-runs-are-words expect &&
+	word_diff --color-words="[a-z${LF}]*"
 '
 
 test_expect_success 'set up a diff driver' '
@@ -311,6 +320,7 @@ test_expect_success 'unset default driver' '
 
 test_language_driver ada
 test_language_driver bibtex
+test_language_driver bash
 test_language_driver cpp
 test_language_driver csharp
 test_language_driver css
@@ -318,6 +328,7 @@ test_language_driver dts
 test_language_driver fortran
 test_language_driver html
 test_language_driver java
+test_language_driver kotlin
 test_language_driver matlab
 test_language_driver objc
 test_language_driver pascal
@@ -325,6 +336,7 @@ test_language_driver perl
 test_language_driver php
 test_language_driver python
 test_language_driver ruby
+test_language_driver scheme
 test_language_driver tex
 
 test_expect_success 'word-diff with diff.sbe' '

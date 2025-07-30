@@ -23,45 +23,38 @@ test_expect_success setup '
 '
 
 test_expect_success 'GIT_EXTERNAL_DIFF environment' '
-
-	GIT_EXTERNAL_DIFF=echo git diff | {
-		read path oldfile oldhex oldmode newfile newhex newmode &&
-		test "z$path" = zfile &&
-		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$ZERO_OID" &&
-		test "z$newmode" = z100644 &&
-		oh=$(git rev-parse --verify HEAD:file) &&
-		test "z$oh" = "z$oldhex"
-	}
+	cat >expect <<-EOF &&
+	file $(git rev-parse --verify HEAD:file) 100644 file $(test_oid zero) 100644
+	EOF
+	GIT_EXTERNAL_DIFF=echo git diff >out &&
+	cut -d" " -f1,3- <out >actual &&
+	test_cmp expect actual
 
 '
 
 test_expect_success 'GIT_EXTERNAL_DIFF environment should apply only to diff' '
-
-	GIT_EXTERNAL_DIFF=echo git log -p -1 HEAD |
-	grep "^diff --git a/file b/file"
+	GIT_EXTERNAL_DIFF=echo git log -p -1 HEAD >out &&
+	grep "^diff --git a/file b/file" out
 
 '
 
 test_expect_success 'GIT_EXTERNAL_DIFF environment and --no-ext-diff' '
-
-	GIT_EXTERNAL_DIFF=echo git diff --no-ext-diff |
-	grep "^diff --git a/file b/file"
+	GIT_EXTERNAL_DIFF=echo git diff --no-ext-diff >out &&
+	grep "^diff --git a/file b/file" out
 
 '
 
 test_expect_success SYMLINKS 'typechange diff' '
 	rm -f file &&
 	ln -s elif file &&
-	GIT_EXTERNAL_DIFF=echo git diff  | {
-		read path oldfile oldhex oldmode newfile newhex newmode &&
-		test "z$path" = zfile &&
-		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$ZERO_OID" &&
-		test "z$newmode" = z120000 &&
-		oh=$(git rev-parse --verify HEAD:file) &&
-		test "z$oh" = "z$oldhex"
-	} &&
+
+	cat >expect <<-EOF &&
+	file $(git rev-parse --verify HEAD:file) 100644 $(test_oid zero) 120000
+	EOF
+	GIT_EXTERNAL_DIFF=echo git diff >out &&
+	cut -d" " -f1,3-4,6- <out >actual &&
+	test_cmp expect actual &&
+
 	GIT_EXTERNAL_DIFF=echo git diff --no-ext-diff >actual &&
 	git diff >expect &&
 	test_cmp expect actual
@@ -71,27 +64,25 @@ test_expect_success 'diff.external' '
 	git reset --hard &&
 	echo third >file &&
 	test_config diff.external echo &&
-	git diff | {
-		read path oldfile oldhex oldmode newfile newhex newmode &&
-		test "z$path" = zfile &&
-		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$ZERO_OID" &&
-		test "z$newmode" = z100644 &&
-		oh=$(git rev-parse --verify HEAD:file) &&
-		test "z$oh" = "z$oldhex"
-	}
+
+	cat >expect <<-EOF &&
+	file $(git rev-parse --verify HEAD:file) 100644 $(test_oid zero) 100644
+	EOF
+	git diff >out &&
+	cut -d" " -f1,3-4,6- <out >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'diff.external should apply only to diff' '
 	test_config diff.external echo &&
-	git log -p -1 HEAD |
-	grep "^diff --git a/file b/file"
+	git log -p -1 HEAD >out &&
+	grep "^diff --git a/file b/file" out
 '
 
 test_expect_success 'diff.external and --no-ext-diff' '
 	test_config diff.external echo &&
-	git diff --no-ext-diff |
-	grep "^diff --git a/file b/file"
+	git diff --no-ext-diff >out &&
+	grep "^diff --git a/file b/file" out
 '
 
 test_expect_success 'diff attribute' '
@@ -102,29 +93,23 @@ test_expect_success 'diff attribute' '
 
 	echo >.gitattributes "file diff=parrot" &&
 
-	git diff | {
-		read path oldfile oldhex oldmode newfile newhex newmode &&
-		test "z$path" = zfile &&
-		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$ZERO_OID" &&
-		test "z$newmode" = z100644 &&
-		oh=$(git rev-parse --verify HEAD:file) &&
-		test "z$oh" = "z$oldhex"
-	}
-
+	cat >expect <<-EOF &&
+	file $(git rev-parse --verify HEAD:file) 100644 $(test_oid zero) 100644
+	EOF
+	git diff >out &&
+	cut -d" " -f1,3-4,6- <out >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'diff attribute should apply only to diff' '
-
-	git log -p -1 HEAD |
-	grep "^diff --git a/file b/file"
+	git log -p -1 HEAD >out &&
+	grep "^diff --git a/file b/file" out
 
 '
 
 test_expect_success 'diff attribute and --no-ext-diff' '
-
-	git diff --no-ext-diff |
-	grep "^diff --git a/file b/file"
+	git diff --no-ext-diff >out &&
+	grep "^diff --git a/file b/file" out
 
 '
 
@@ -135,51 +120,124 @@ test_expect_success 'diff attribute' '
 
 	echo >.gitattributes "file diff=color" &&
 
-	git diff | {
-		read path oldfile oldhex oldmode newfile newhex newmode &&
-		test "z$path" = zfile &&
-		test "z$oldmode" = z100644 &&
-		test "z$newhex" = "z$ZERO_OID" &&
-		test "z$newmode" = z100644 &&
-		oh=$(git rev-parse --verify HEAD:file) &&
-		test "z$oh" = "z$oldhex"
-	}
-
+	cat >expect <<-EOF &&
+	file $(git rev-parse --verify HEAD:file) 100644 $(test_oid zero) 100644
+	EOF
+	git diff >out &&
+	cut -d" " -f1,3-4,6- <out >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'diff attribute should apply only to diff' '
-
-	git log -p -1 HEAD |
-	grep "^diff --git a/file b/file"
+	git log -p -1 HEAD >out &&
+	grep "^diff --git a/file b/file" out
 
 '
 
 test_expect_success 'diff attribute and --no-ext-diff' '
-
-	git diff --no-ext-diff |
-	grep "^diff --git a/file b/file"
+	git diff --no-ext-diff >out &&
+	grep "^diff --git a/file b/file" out
 
 '
 
 test_expect_success 'GIT_EXTERNAL_DIFF trumps diff.external' '
 	>.gitattributes &&
 	test_config diff.external "echo ext-global" &&
-	GIT_EXTERNAL_DIFF="echo ext-env" git diff | grep ext-env
+
+	cat >expect <<-EOF &&
+	ext-env file $(git rev-parse --verify HEAD:file) 100644 file $(test_oid zero) 100644
+	EOF
+	GIT_EXTERNAL_DIFF="echo ext-env" git diff >out &&
+	cut -d" " -f1-2,4- <out >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'attributes trump GIT_EXTERNAL_DIFF and diff.external' '
 	test_config diff.foo.command "echo ext-attribute" &&
 	test_config diff.external "echo ext-global" &&
 	echo "file diff=foo" >.gitattributes &&
-	GIT_EXTERNAL_DIFF="echo ext-env" git diff | grep ext-attribute
+
+	cat >expect <<-EOF &&
+	ext-attribute file $(git rev-parse --verify HEAD:file) 100644 file $(test_oid zero) 100644
+	EOF
+	GIT_EXTERNAL_DIFF="echo ext-env" git diff >out &&
+	cut -d" " -f1-2,4- <out >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'no diff with -diff' '
 	echo >.gitattributes "file -diff" &&
-	git diff | grep Binary
+	git diff >out &&
+	grep Binary out
 '
 
-echo NULZbetweenZwords | perl -pe 'y/Z/\000/' > file
+check_external_diff () {
+	expect_code=$1
+	expect_out=$2
+	expect_err=$3
+	command_code=$4
+	trust_exit_code=$5
+	shift 5
+	options="$@"
+
+	command="echo output; exit $command_code;"
+	desc="external diff '$command' with trustExitCode=$trust_exit_code"
+	with_options="${options:+ with }$options"
+
+	test_expect_success "$desc via attribute$with_options" "
+		test_config diff.foo.command \"$command\" &&
+		test_config diff.foo.trustExitCode $trust_exit_code &&
+		echo \"file diff=foo\" >.gitattributes &&
+		test_expect_code $expect_code git diff $options >out 2>err &&
+		test_cmp $expect_out out &&
+		test_cmp $expect_err err
+	"
+
+	test_expect_success "$desc via diff.external$with_options" "
+		test_config diff.external \"$command\" &&
+		test_config diff.trustExitCode $trust_exit_code &&
+		>.gitattributes &&
+		test_expect_code $expect_code git diff $options >out 2>err &&
+		test_cmp $expect_out out &&
+		test_cmp $expect_err err
+	"
+
+	test_expect_success "$desc via GIT_EXTERNAL_DIFF$with_options" "
+		>.gitattributes &&
+		test_expect_code $expect_code env \
+			GIT_EXTERNAL_DIFF=\"$command\" \
+			GIT_EXTERNAL_DIFF_TRUST_EXIT_CODE=$trust_exit_code \
+			git diff $options >out 2>err &&
+		test_cmp $expect_out out &&
+		test_cmp $expect_err err
+	"
+}
+
+test_expect_success 'setup output files' '
+	: >empty &&
+	echo output >output &&
+	echo "fatal: external diff died, stopping at file" >error
+'
+
+check_external_diff   0 output empty 0 off
+check_external_diff 128 output error 1 off
+check_external_diff   0 output empty 0 on
+check_external_diff   0 output empty 1 on
+check_external_diff 128 output error 2 on
+
+check_external_diff   1 output empty 0 off --exit-code
+check_external_diff 128 output error 1 off --exit-code
+check_external_diff   0 output empty 0 on  --exit-code
+check_external_diff   1 output empty 1 on  --exit-code
+check_external_diff 128 output error 2 on  --exit-code
+
+check_external_diff   1 empty  empty 0 off --quiet
+check_external_diff   1 empty  empty 1 off --quiet # we don't even call the program
+check_external_diff   0 empty  empty 0 on  --quiet
+check_external_diff   1 empty  empty 1 on  --quiet
+check_external_diff 128 empty  error 2 on  --quiet
+
+echo NULZbetweenZwords | tr "Z" "\000" > file
 
 test_expect_success 'force diff with "diff"' '
 	after=$(git hash-object file) &&
@@ -213,12 +271,17 @@ test_expect_success 'GIT_EXTERNAL_DIFF path counter/total' '
 '
 
 test_expect_success 'GIT_EXTERNAL_DIFF generates pretty paths' '
+	test_when_finished "git rm -f file.ext" &&
 	touch file.ext &&
 	git add file.ext &&
 	echo with extension > file.ext &&
-	GIT_EXTERNAL_DIFF=echo git diff file.ext | grep ......_file\.ext &&
-	git update-index --force-remove file.ext &&
-	rm file.ext
+
+	cat >expect <<-EOF &&
+	file.ext
+	EOF
+	GIT_EXTERNAL_DIFF=echo git diff file.ext >out &&
+	basename $(cut -d" " -f2 <out) >actual &&
+	test_cmp expect actual
 '
 
 echo "#!$SHELL_PATH" >fake-diff.sh
@@ -234,7 +297,7 @@ keep_only_cr () {
 test_expect_success 'external diff with autocrlf = true' '
 	test_config core.autocrlf true &&
 	GIT_EXTERNAL_DIFF=./fake-diff.sh git diff &&
-	test $(wc -l < crlfed.txt) = $(cat crlfed.txt | keep_only_cr | wc -c)
+	test $(wc -l <crlfed.txt) = $(keep_only_cr <crlfed.txt | wc -c)
 '
 
 test_expect_success 'diff --cached' '

@@ -2,6 +2,9 @@
 
 test_description=clone
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 X=
@@ -37,10 +40,17 @@ test_expect_success 'clone with excess parameters (2)' '
 
 '
 
-test_expect_success C_LOCALE_OUTPUT 'output from clone' '
+test_expect_success 'output from clone' '
 	rm -fr dst &&
 	git clone -n "file://$(pwd)/src" dst >output 2>&1 &&
 	test $(grep Clon output | wc -l) = 1
+'
+
+test_expect_success 'output from clone with core.abbrev does not crash' '
+	rm -fr dst &&
+	echo "Cloning into ${SQ}dst${SQ}..." >expect &&
+	git -c core.abbrev=12 clone -n "file://$(pwd)/src" dst >actual 2>&1 &&
+	test_cmp expect actual
 '
 
 test_expect_success 'clone does not keep pack' '
@@ -76,12 +86,10 @@ test_expect_success 'clone from hooks' '
 	cd .. &&
 	git init r1 &&
 	cd r1 &&
-	cat >.git/hooks/pre-commit <<-\EOF &&
-	#!/bin/sh
+	test_hook pre-commit <<-\EOF &&
 	git clone ../r0 ../r2
 	exit 1
 	EOF
-	chmod u+x .git/hooks/pre-commit &&
 	: >file &&
 	git add file &&
 	test_must_fail git commit -m invoke-hook &&
@@ -156,6 +164,23 @@ test_expect_success 'clone --mirror does not repeat tags' '
 
 '
 
+test_expect_success 'clone with files ref format' '
+	test_when_finished "rm -rf ref-storage" &&
+	git clone --ref-format=files --mirror src ref-storage &&
+	echo files >expect &&
+	git -C ref-storage rev-parse --show-ref-format >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'clone with garbage ref format' '
+	cat >expect <<-EOF &&
+	fatal: unknown ref storage format ${SQ}garbage${SQ}
+	EOF
+	test_must_fail git clone --ref-format=garbage --mirror src ref-storage 2>err &&
+	test_cmp expect err &&
+	test_path_is_missing ref-storage
+'
+
 test_expect_success 'clone to destination with trailing /' '
 
 	git clone src target-1/ &&
@@ -217,7 +242,7 @@ test_expect_success 'clone respects global branch.autosetuprebase' '
 		rm -fr dst &&
 		git clone src dst &&
 		cd dst &&
-		actual="z$(git config branch.master.rebase)" &&
+		actual="z$(git config branch.main.rebase)" &&
 		test ztrue = $actual
 	)
 '
@@ -302,7 +327,8 @@ test_expect_success 'clone from original with relative alternate' '
 test_expect_success 'clone checking out a tag' '
 	git clone --branch=some-tag src dst.tag &&
 	GIT_DIR=src/.git git rev-parse some-tag >expected &&
-	test_cmp expected dst.tag/.git/HEAD &&
+	GIT_DIR=dst.tag/.git git rev-parse HEAD >actual &&
+	test_cmp expected actual &&
 	GIT_DIR=dst.tag/.git git config remote.origin.fetch >fetch.actual &&
 	echo "+refs/heads/*:refs/remotes/origin/*" >fetch.expected &&
 	test_cmp fetch.expected fetch.actual
@@ -504,19 +530,30 @@ do
 	'
 done
 
+# Parsing of paths that look like IPv6 addresses is broken on Cygwin.
+expectation_for_ipv6_tests=success
+if test_have_prereq CYGWIN
+then
+	expectation_for_ipv6_tests=failure
+fi
+
 #ipv6
 for repo in rep rep/home/project 123
 do
-	test_expect_success "clone [::1]:$repo" '
+	test_expect_$expectation_for_ipv6_tests "clone [::1]:$repo" '
 		test_clone_url [::1]:$repo ::1 "$repo"
 	'
 done
-#home directory
-test_expect_success "clone host:/~repo" '
+
+# Home directory. All tests that use "~repo" are broken in our CI job when the
+# leak sanitizer is enabled. It seems like either a bug in the sanitizer or in
+# glibc, but when executing getpwnam(3p) with an invalid username we eventually
+# start recursing in a call to free(3p), until bust the stack and segfault.
+test_expect_success !SANITIZE_LEAK "clone host:/~repo" '
 	test_clone_url host:/~repo host "~repo"
 '
 
-test_expect_success "clone [::1]:/~repo" '
+test_expect_$expectation_for_ipv6_tests !SANITIZE_LEAK "clone [::1]:/~repo" '
 	test_clone_url [::1]:/~repo ::1 "~repo"
 '
 
@@ -536,9 +573,9 @@ do
 		test_clone_url "ssh://host.xz$tcol/home/user/repo" host.xz /home/user/repo
 	'
 	# from home directory
-	test_expect_success "clone ssh://host.xz$tcol/~repo" '
-	test_clone_url "ssh://host.xz$tcol/~repo" host.xz "~repo"
-'
+	test_expect_success !SANITIZE_LEAK "clone ssh://host.xz$tcol/~repo" '
+		test_clone_url "ssh://host.xz$tcol/~repo" host.xz "~repo"
+	'
 done
 
 # with port number
@@ -547,7 +584,7 @@ test_expect_success 'clone ssh://host.xz:22/home/user/repo' '
 '
 
 # from home directory with port number
-test_expect_success 'clone ssh://host.xz:22/~repo' '
+test_expect_success !SANITIZE_LEAK 'clone ssh://host.xz:22/~repo' '
 	test_clone_url "ssh://host.xz:22/~repo" "-p 22 host.xz" "~repo"
 '
 
@@ -564,8 +601,8 @@ done
 for tuah in ::1 [::1] user@::1 user@[::1] [user@::1]
 do
 	euah=$(echo $tuah | tr -d "[]")
-	test_expect_success "clone ssh://$tuah/~repo" "
-	  test_clone_url ssh://$tuah/~repo $euah '~repo'
+	test_expect_success !SANITIZE_LEAK "clone ssh://$tuah/~repo" "
+		test_clone_url ssh://$tuah/~repo $euah '~repo'
 	"
 done
 
@@ -582,8 +619,8 @@ done
 for tuah in [::1] user@[::1] [user@::1]
 do
 	euah=$(echo $tuah | tr -d "[]")
-	test_expect_success "clone ssh://$tuah:22/~repo" "
-	  test_clone_url ssh://$tuah:22/~repo '-p 22' $euah '~repo'
+	test_expect_success !SANITIZE_LEAK "clone ssh://$tuah:22/~repo" "
+		  test_clone_url ssh://$tuah:22/~repo '-p 22' $euah '~repo'
 	"
 done
 
@@ -591,7 +628,7 @@ test_expect_success 'clone from a repository with two identical branches' '
 
 	(
 		cd src &&
-		git checkout -b another master
+		git checkout -b another main
 	) &&
 	git clone src target-11 &&
 	test "z$( cd target-11 && git symbolic-ref HEAD )" = zrefs/heads/another
@@ -612,7 +649,7 @@ test_expect_success 'GIT_TRACE_PACKFILE produces a usable pack' '
 	git -C replay.git index-pack -v --stdin <tmp.pack
 '
 
-test_expect_success 'clone on case-insensitive fs' '
+test_expect_success PERL_TEST_HELPERS 'clone on case-insensitive fs' '
 	git init icasefs &&
 	(
 		cd icasefs &&
@@ -625,10 +662,25 @@ test_expect_success 'clone on case-insensitive fs' '
 	)
 '
 
-test_expect_success CASE_INSENSITIVE_FS 'colliding file detection' '
+test_expect_success PERL_TEST_HELPERS,CASE_INSENSITIVE_FS 'colliding file detection' '
 	grep X icasefs/warning &&
 	grep x icasefs/warning &&
-	test_i18ngrep "the following paths have collided" icasefs/warning
+	test_grep "the following paths have collided" icasefs/warning
+'
+
+test_expect_success CASE_INSENSITIVE_FS,SYMLINKS \
+		'colliding symlink/directory keeps directory' '
+	git init icasefs-colliding-symlink &&
+	(
+		cd icasefs-colliding-symlink &&
+		a=$(printf a | git hash-object -w --stdin) &&
+		printf "100644 %s 0\tA/dir/b\n120000 %s 0\ta\n" $a $a >idx &&
+		git update-index --index-info <idx &&
+		test_tick &&
+		git commit -m initial
+	) &&
+	git clone icasefs-colliding-symlink icasefs-colliding-symlink-clone &&
+	test_file_not_empty icasefs-colliding-symlink-clone/A/dir/b
 '
 
 test_expect_success 'clone with GIT_DEFAULT_HASH' '
@@ -694,7 +746,7 @@ test_expect_success 'partial clone: warn if server does not support object filte
 
 	git clone --filter=blob:limit=0 "file://$(pwd)/server" client 2> err &&
 
-	test_i18ngrep "filtering not recognized by server" err
+	test_grep "filtering not recognized by server" err
 '
 
 test_expect_success 'batch missing blob request during checkout' '
@@ -718,7 +770,11 @@ test_expect_success 'batch missing blob request during checkout' '
 
 	# Ensure that there is only one negotiation by checking that there is
 	# only "done" line sent. ("done" marks the end of negotiation.)
-	GIT_TRACE_PACKET="$(pwd)/trace" git -C client checkout HEAD^ &&
+	GIT_TRACE_PACKET="$(pwd)/trace" \
+		GIT_TRACE2_EVENT="$(pwd)/trace2_event" \
+		git -C client -c trace2.eventNesting=5 checkout HEAD^ &&
+	grep \"key\":\"total_rounds\",\"value\":\"1\" trace2_event >trace_lines &&
+	test_line_count = 1 trace_lines &&
 	grep "fetch> done" trace >done_lines &&
 	test_line_count = 1 done_lines
 '
@@ -738,6 +794,7 @@ test_expect_success 'batch missing blob request does not inadvertently try to fe
 	echo aa >server/a &&
 	echo bb >server/b &&
 	# Also add a gitlink pointing to an arbitrary repository
+	test_config_global protocol.file.allow always &&
 	git -C server submodule add "$(pwd)/repo_for_submodule" c &&
 	git -C server add a b c &&
 	git -C server commit -m x &&
@@ -752,8 +809,134 @@ test_expect_success 'batch missing blob request does not inadvertently try to fe
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
+test_expect_success 'clone with includeIf' '
+	test_when_finished "rm -rf repo \"$HTTPD_DOCUMENT_ROOT_PATH/repo.git\"" &&
+	git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
+
+	test_when_finished "rm \"$HOME\"/.gitconfig" &&
+	cat >"$HOME"/.gitconfig <<-EOF &&
+	[includeIf "onbranch:something"]
+		path = /does/not/exist.inc
+	EOF
+	git clone $HTTPD_URL/smart/repo.git repo
+'
+
 test_expect_success 'partial clone using HTTP' '
 	partial_clone "$HTTPD_DOCUMENT_ROOT_PATH/server" "$HTTPD_URL/smart/server"
+'
+
+test_expect_success 'reject cloning shallow repository using HTTP' '
+	test_when_finished "rm -rf repo" &&
+	git clone --bare --no-local --depth=1 src "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
+	test_must_fail git -c protocol.version=2 clone --reject-shallow $HTTPD_URL/smart/repo.git repo 2>err &&
+	test_grep -e "source repository is shallow, reject to clone." err &&
+
+	git clone --no-reject-shallow $HTTPD_URL/smart/repo.git repo
+'
+
+test_expect_success 'auto-discover bundle URI from HTTP clone' '
+	test_when_finished rm -rf trace.txt repo2 "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" &&
+	git -C src bundle create "$HTTPD_DOCUMENT_ROOT_PATH/everything.bundle" --all &&
+	git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" &&
+
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+		uploadpack.advertiseBundleURIs true &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+		bundle.version 1 &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+		bundle.mode all &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo2.git" config \
+		bundle.everything.uri "$HTTPD_URL/everything.bundle" &&
+
+	GIT_TRACE2_EVENT="$(pwd)/trace.txt" \
+		git -c protocol.version=2 \
+		    -c transfer.bundleURI=true clone \
+		$HTTPD_URL/smart/repo2.git repo2 &&
+	cat >pattern <<-EOF &&
+	"event":"child_start".*"argv":\["git-remote-https","$HTTPD_URL/everything.bundle"\]
+	EOF
+	grep -f pattern trace.txt
+'
+
+test_expect_success 'auto-discover multiple bundles from HTTP clone' '
+	test_when_finished rm -rf trace.txt repo3 "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" &&
+
+	test_commit -C src new &&
+	git -C src bundle create "$HTTPD_DOCUMENT_ROOT_PATH/new.bundle" HEAD~1..HEAD &&
+	git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" &&
+
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+		uploadpack.advertiseBundleURIs true &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+		bundle.version 1 &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+		bundle.mode all &&
+
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+		bundle.everything.uri "$HTTPD_URL/everything.bundle" &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo3.git" config \
+		bundle.new.uri "$HTTPD_URL/new.bundle" &&
+
+	GIT_TRACE2_EVENT="$(pwd)/trace.txt" \
+		git -c protocol.version=2 \
+		    -c transfer.bundleURI=true clone \
+		$HTTPD_URL/smart/repo3.git repo3 &&
+
+	# We should fetch _both_ bundles
+	cat >pattern <<-EOF &&
+	"event":"child_start".*"argv":\["git-remote-https","$HTTPD_URL/everything.bundle"\]
+	EOF
+	grep -f pattern trace.txt &&
+	cat >pattern <<-EOF &&
+	"event":"child_start".*"argv":\["git-remote-https","$HTTPD_URL/new.bundle"\]
+	EOF
+	grep -f pattern trace.txt
+'
+
+test_expect_success 'auto-discover multiple bundles from HTTP clone: creationToken heuristic' '
+	test_when_finished rm -rf "$HTTPD_DOCUMENT_ROOT_PATH/repo4.git" &&
+	test_when_finished rm -rf clone-heuristic trace*.txt &&
+
+	test_commit -C src newest &&
+	git -C src bundle create "$HTTPD_DOCUMENT_ROOT_PATH/newest.bundle" HEAD~1..HEAD &&
+	git clone --bare --no-local src "$HTTPD_DOCUMENT_ROOT_PATH/repo4.git" &&
+
+	cat >>"$HTTPD_DOCUMENT_ROOT_PATH/repo4.git/config" <<-EOF &&
+	[uploadPack]
+		advertiseBundleURIs = true
+
+	[bundle]
+		version = 1
+		mode = all
+		heuristic = creationToken
+
+	[bundle "everything"]
+		uri = $HTTPD_URL/everything.bundle
+		creationtoken = 1
+
+	[bundle "new"]
+		uri = $HTTPD_URL/new.bundle
+		creationtoken = 2
+
+	[bundle "newest"]
+		uri = $HTTPD_URL/newest.bundle
+		creationtoken = 3
+	EOF
+
+	GIT_TRACE2_EVENT="$(pwd)/trace-clone.txt" \
+		git -c protocol.version=2 \
+		    -c transfer.bundleURI=true clone \
+		"$HTTPD_URL/smart/repo4.git" clone-heuristic &&
+
+	cat >expect <<-EOF &&
+	$HTTPD_URL/newest.bundle
+	$HTTPD_URL/new.bundle
+	$HTTPD_URL/everything.bundle
+	EOF
+
+	# We should fetch all bundles in the expected order.
+	test_remote_https_urls <trace-clone.txt >actual &&
+	test_cmp expect actual
 '
 
 # DO NOT add non-httpd-specific tests here, because the last part of this

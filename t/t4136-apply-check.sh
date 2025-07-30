@@ -2,6 +2,7 @@
 
 test_description='git apply should exit non-zero with unrecognized input.'
 
+
 . ./test-lib.sh
 
 test_expect_success 'setup' '

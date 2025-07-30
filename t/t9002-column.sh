@@ -42,6 +42,24 @@ EOF
 	test_cmp expected actual
 '
 
+test_expect_success '--nl' '
+	cat >expected <<\EOF &&
+oneZ
+twoZ
+threeZ
+fourZ
+fiveZ
+sixZ
+sevenZ
+eightZ
+nineZ
+tenZ
+elevenZ
+EOF
+	git column --nl="Z$LF" --mode=plain <lista >actual &&
+	test_cmp expected actual
+'
+
 test_expect_success '80 columns' '
 	cat >expected <<\EOF &&
 one    two    three  four   five   six    seven  eight  nine   ten    eleven
@@ -174,6 +192,17 @@ seven eight  nine
 ten   eleven
 EOF
 	git column --mode=row,dense <lista >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'padding must be non-negative' '
+	cat >input <<\EOF &&
+1 2 3 4 5 6
+EOF
+	cat >expected <<\EOF &&
+fatal: --padding must be non-negative
+EOF
+	test_must_fail git column --mode=column --padding=-1 <input >actual 2>&1 &&
 	test_cmp expected actual
 '
 

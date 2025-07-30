@@ -6,6 +6,7 @@
 test_description='git apply handling copy/rename patch.
 
 '
+
 . ./test-lib.sh
 
 # setup

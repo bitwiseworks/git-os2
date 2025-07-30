@@ -1,18 +1,25 @@
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "builtin.h"
-#include "cache.h"
+#include "bulk-checkin.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "git-zlib.h"
+#include "hex.h"
+#include "object-file.h"
 #include "object-store.h"
 #include "object.h"
 #include "delta.h"
 #include "pack.h"
 #include "blob.h"
-#include "commit.h"
-#include "tag.h"
-#include "tree.h"
-#include "tree-walk.h"
+#include "replace-object.h"
+#include "strbuf.h"
 #include "progress.h"
 #include "decorate.h"
 #include "fsck.h"
+#include "packfile.h"
 
 static int dry_run, quiet, recover, has_errors, strict;
 static const char unpack_usage[] = "git unpack-objects [-n] [-q] [-r] [--strict]";
@@ -22,7 +29,7 @@ static unsigned char buffer[4096];
 static unsigned int offset, len;
 static off_t consumed_bytes;
 static off_t max_input_size;
-static git_hash_ctx ctx;
+static struct git_hash_ctx ctx;
 static struct fsck_options fsck_options = FSCK_OPTIONS_STRICT;
 static struct progress *progress;
 
@@ -46,7 +53,7 @@ static struct obj_buffer *lookup_object_buffer(struct object *base)
 static void add_object_buffer(struct object *object, char *buffer, unsigned long size)
 {
 	struct obj_buffer *obj;
-	obj = xcalloc(1, sizeof(struct obj_buffer));
+	CALLOC_ARRAY(obj, 1);
 	obj->buffer = buffer;
 	obj->size = size;
 	if (add_decoration(&obj_decorate, object, obj))
@@ -64,7 +71,7 @@ static void *fill(int min)
 	if (min > sizeof(buffer))
 		die("cannot fill %d bytes", min);
 	if (offset) {
-		the_hash_algo->update_fn(&ctx, buffer, offset);
+		git_hash_update(&ctx, buffer, offset);
 		memmove(buffer, buffer + offset, len);
 		offset = 0;
 	}
@@ -96,15 +103,27 @@ static void use(int bytes)
 	display_throughput(progress, consumed_bytes);
 }
 
+/*
+ * Decompress zstream from the standard input into a newly
+ * allocated buffer of specified size and return the buffer.
+ * The caller is responsible to free the returned buffer.
+ *
+ * But for dry_run mode, "get_data()" is only used to check the
+ * integrity of data, and the returned buffer is not used at all.
+ * Therefore, in dry_run mode, "get_data()" will release the small
+ * allocated buffer which is reused to hold temporary zstream output
+ * and return NULL instead of returning garbage data.
+ */
 static void *get_data(unsigned long size)
 {
 	git_zstream stream;
-	void *buf = xmallocz(size);
+	unsigned long bufsize = dry_run && size > 8192 ? 8192 : size;
+	void *buf = xmallocz(bufsize);
 
 	memset(&stream, 0, sizeof(stream));
 
 	stream.next_out = buf;
-	stream.avail_out = size;
+	stream.avail_out = bufsize;
 	stream.next_in = fill(1);
 	stream.avail_in = len;
 	git_inflate_init(&stream);
@@ -124,8 +143,17 @@ static void *get_data(unsigned long size)
 		}
 		stream.next_in = fill(1);
 		stream.avail_in = len;
+		if (dry_run) {
+			/* reuse the buffer in dry_run mode */
+			stream.next_out = buf;
+			stream.avail_out = bufsize > size - stream.total_out ?
+						   size - stream.total_out :
+						   bufsize;
+		}
 	}
 	git_inflate_end(&stream);
+	if (dry_run)
+		FREE_AND_NULL(buf);
 	return buf;
 }
 
@@ -177,7 +205,7 @@ static void write_cached_object(struct object *obj, struct obj_buffer *obj_buf)
 	struct object_id oid;
 
 	if (write_object_file(obj_buf->buffer, obj_buf->size,
-			      type_name(obj->type), &oid) < 0)
+			      obj->type, &oid) < 0)
 		die("failed to write object %s", oid_to_hex(&obj->oid));
 	obj->flags |= FLAG_WRITTEN;
 }
@@ -187,7 +215,9 @@ static void write_cached_object(struct object *obj, struct obj_buffer *obj_buf)
  * that have reachability requirements and calls this function.
  * Verify its reachability and validity recursively and write it out.
  */
-static int check_object(struct object *obj, int type, void *data, struct fsck_options *options)
+static int check_object(struct object *obj, enum object_type type,
+			void *data UNUSED,
+			struct fsck_options *options UNUSED)
 {
 	struct obj_buffer *obj_buf;
 
@@ -242,7 +272,7 @@ static void write_object(unsigned nr, enum object_type type,
 			 void *buf, unsigned long size)
 {
 	if (!strict) {
-		if (write_object_file(buf, size, type_name(type),
+		if (write_object_file(buf, size, type,
 				      &obj_list[nr].oid) < 0)
 			die("failed to write object");
 		added_object(nr, type, buf, size);
@@ -250,7 +280,7 @@ static void write_object(unsigned nr, enum object_type type,
 		obj_list[nr].obj = NULL;
 	} else if (type == OBJ_BLOB) {
 		struct blob *blob;
-		if (write_object_file(buf, size, type_name(type),
+		if (write_object_file(buf, size, type,
 				      &obj_list[nr].oid) < 0)
 			die("failed to write object");
 		added_object(nr, type, buf, size);
@@ -265,7 +295,7 @@ static void write_object(unsigned nr, enum object_type type,
 	} else {
 		struct object *obj;
 		int eaten;
-		hash_object_file(the_hash_algo, buf, size, type_name(type),
+		hash_object_file(the_hash_algo, buf, size, type,
 				 &obj_list[nr].oid);
 		added_object(nr, type, buf, size);
 		obj = parse_object_buffer(the_repository, &obj_list[nr].oid,
@@ -324,10 +354,70 @@ static void unpack_non_delta_entry(enum object_type type, unsigned long size,
 {
 	void *buf = get_data(size);
 
-	if (!dry_run && buf)
+	if (buf)
 		write_object(nr, type, buf, size);
-	else
-		free(buf);
+}
+
+struct input_zstream_data {
+	git_zstream *zstream;
+	unsigned char buf[8192];
+	int status;
+};
+
+static const void *feed_input_zstream(struct input_stream *in_stream,
+				      unsigned long *readlen)
+{
+	struct input_zstream_data *data = in_stream->data;
+	git_zstream *zstream = data->zstream;
+	void *in = fill(1);
+
+	if (in_stream->is_finished) {
+		*readlen = 0;
+		return NULL;
+	}
+
+	zstream->next_out = data->buf;
+	zstream->avail_out = sizeof(data->buf);
+	zstream->next_in = in;
+	zstream->avail_in = len;
+
+	data->status = git_inflate(zstream, 0);
+
+	in_stream->is_finished = data->status != Z_OK;
+	use(len - zstream->avail_in);
+	*readlen = sizeof(data->buf) - zstream->avail_out;
+
+	return data->buf;
+}
+
+static void stream_blob(unsigned long size, unsigned nr)
+{
+	git_zstream zstream = { 0 };
+	struct input_zstream_data data = { 0 };
+	struct input_stream in_stream = {
+		.read = feed_input_zstream,
+		.data = &data,
+	};
+	struct obj_info *info = &obj_list[nr];
+
+	data.zstream = &zstream;
+	git_inflate_init(&zstream);
+
+	if (stream_loose_object(&in_stream, size, &info->oid))
+		die(_("failed to write object in stream"));
+
+	if (data.status != Z_STREAM_END)
+		die(_("inflate returned (%d)"), data.status);
+	git_inflate_end(&zstream);
+
+	if (strict) {
+		struct blob *blob = lookup_blob(the_repository, &info->oid);
+
+		if (!blob)
+			die(_("invalid blob object from stream"));
+		blob->object.flags |= FLAG_WRITTEN;
+	}
+	info->obj = NULL;
 }
 
 static int resolve_against_held(unsigned nr, const struct object_id *base,
@@ -354,21 +444,20 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 	struct object_id base_oid;
 
 	if (type == OBJ_REF_DELTA) {
-		hashcpy(base_oid.hash, fill(the_hash_algo->rawsz));
+		oidread(&base_oid, fill(the_hash_algo->rawsz), the_repository->hash_algo);
 		use(the_hash_algo->rawsz);
 		delta_data = get_data(delta_size);
-		if (dry_run || !delta_data) {
-			free(delta_data);
+		if (!delta_data)
 			return;
-		}
-		if (has_object_file(&base_oid))
+		if (has_object(the_repository, &base_oid,
+			       HAS_OBJECT_RECHECK_PACKED | HAS_OBJECT_FETCH_PROMISOR))
 			; /* Ok we have this one */
 		else if (resolve_against_held(nr, &base_oid,
 					      delta_data, delta_size))
 			return; /* we are done */
 		else {
 			/* cannot resolve yet --- queue it */
-			oidclr(&obj_list[nr].oid);
+			oidclr(&obj_list[nr].oid, the_repository->hash_algo);
 			add_delta_to_list(nr, &base_oid, 0, delta_data, delta_size);
 			return;
 		}
@@ -396,10 +485,8 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 			die("offset value out of bound for delta base object");
 
 		delta_data = get_data(delta_size);
-		if (dry_run || !delta_data) {
-			free(delta_data);
+		if (!delta_data)
 			return;
-		}
 		lo = 0;
 		hi = nr;
 		while (lo < hi) {
@@ -419,8 +506,9 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 			 * The delta base object is itself a delta that
 			 * has not been resolved yet.
 			 */
-			oidclr(&obj_list[nr].oid);
-			add_delta_to_list(nr, &null_oid, base_offset, delta_data, delta_size);
+			oidclr(&obj_list[nr].oid, the_repository->hash_algo);
+			add_delta_to_list(nr, null_oid(the_hash_algo), base_offset,
+					  delta_data, delta_size);
 			return;
 		}
 	}
@@ -428,7 +516,8 @@ static void unpack_delta_entry(enum object_type type, unsigned long delta_size,
 	if (resolve_against_held(nr, &base_oid, delta_data, delta_size))
 		return;
 
-	base = read_object_file(&base_oid, &type, &base_size);
+	base = repo_read_object_file(the_repository, &base_oid, &type,
+				     &base_size);
 	if (!base) {
 		error("failed to read delta-pack base object %s",
 		      oid_to_hex(&base_oid));
@@ -465,9 +554,15 @@ static void unpack_one(unsigned nr)
 	}
 
 	switch (type) {
+	case OBJ_BLOB:
+		if (!dry_run &&
+		    size > repo_settings_get_big_file_threshold(the_repository)) {
+			stream_blob(size, nr);
+			return;
+		}
+		/* fallthrough */
 	case OBJ_COMMIT:
 	case OBJ_TREE:
-	case OBJ_BLOB:
 	case OBJ_TAG:
 		unpack_non_delta_entry(type, size, nr);
 		return;
@@ -487,40 +582,50 @@ static void unpack_one(unsigned nr)
 static void unpack_all(void)
 {
 	int i;
-	struct pack_header *hdr = fill(sizeof(struct pack_header));
+	unsigned char *hdr = fill(sizeof(struct pack_header));
 
-	nr_objects = ntohl(hdr->hdr_entries);
-
-	if (ntohl(hdr->hdr_signature) != PACK_SIGNATURE)
+	if (get_be32(hdr) != PACK_SIGNATURE)
 		die("bad pack file");
-	if (!pack_version_ok(hdr->hdr_version))
+	hdr += 4;
+	if (!pack_version_ok_native(get_be32(hdr)))
 		die("unknown pack file version %"PRIu32,
-			ntohl(hdr->hdr_version));
+		    get_be32(hdr));
+	hdr += 4;
+	nr_objects = get_be32(hdr);
 	use(sizeof(struct pack_header));
 
 	if (!quiet)
-		progress = start_progress(_("Unpacking objects"), nr_objects);
-	obj_list = xcalloc(nr_objects, sizeof(*obj_list));
+		progress = start_progress(the_repository,
+					  _("Unpacking objects"), nr_objects);
+	CALLOC_ARRAY(obj_list, nr_objects);
+	begin_odb_transaction();
 	for (i = 0; i < nr_objects; i++) {
 		unpack_one(i);
 		display_progress(progress, i + 1);
 	}
+	end_odb_transaction();
 	stop_progress(&progress);
 
 	if (delta_list)
 		die("unresolved deltas left after unpacking");
 }
 
-int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
+int cmd_unpack_objects(int argc,
+		       const char **argv,
+		       const char *prefix UNUSED,
+		       struct repository *repo UNUSED)
 {
 	int i;
 	struct object_id oid;
+	struct git_hash_ctx tmp_ctx;
 
-	read_replace_refs = 0;
+	disable_replace_refs();
 
 	git_config(git_default_config, NULL);
 
 	quiet = !isatty(2);
+
+	show_usage_if_asked(argc, argv, unpack_usage);
 
 	for (i = 1 ; i < argc; i++) {
 		const char *arg = argv[i];
@@ -547,19 +652,10 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
 				fsck_set_msg_types(&fsck_options, arg);
 				continue;
 			}
-			if (starts_with(arg, "--pack_header=")) {
-				struct pack_header *hdr;
-				char *c;
-
-				hdr = (struct pack_header *)buffer;
-				hdr->hdr_signature = htonl(PACK_SIGNATURE);
-				hdr->hdr_version = htonl(strtoul(arg + 14, &c, 10));
-				if (*c != ',')
-					die("bad %s", arg);
-				hdr->hdr_entries = htonl(strtoul(c + 1, &c, 10));
-				if (*c)
-					die("bad %s", arg);
-				len = sizeof(*hdr);
+			if (skip_prefix(arg, "--pack_header=", &arg)) {
+				if (parse_pack_header_option(arg,
+							     buffer, &len) < 0)
+					die(_("bad --pack_header: %s"), arg);
 				continue;
 			}
 			if (skip_prefix(arg, "--max-input-size=", &arg)) {
@@ -574,25 +670,22 @@ int cmd_unpack_objects(int argc, const char **argv, const char *prefix)
 	}
 	the_hash_algo->init_fn(&ctx);
 	unpack_all();
-	the_hash_algo->update_fn(&ctx, buffer, offset);
-	the_hash_algo->final_fn(oid.hash, &ctx);
+	git_hash_update(&ctx, buffer, offset);
+	the_hash_algo->init_fn(&tmp_ctx);
+	git_hash_clone(&tmp_ctx, &ctx);
+	git_hash_final_oid(&oid, &tmp_ctx);
 	if (strict) {
 		write_rest();
 		if (fsck_finish(&fsck_options))
 			die(_("fsck error in pack objects"));
 	}
-	if (!hasheq(fill(the_hash_algo->rawsz), oid.hash))
+	if (!hasheq(fill(the_hash_algo->rawsz), oid.hash,
+		    the_repository->hash_algo))
 		die("final sha1 did not match");
 	use(the_hash_algo->rawsz);
 
 	/* Write the last part of the buffer to stdout */
-	while (len) {
-		int ret = xwrite(1, buffer + offset, len);
-		if (ret <= 0)
-			break;
-		len -= ret;
-		offset += ret;
-	}
+	write_in_full(1, buffer + offset, len);
 
 	/* All done */
 	return has_errors;
