@@ -1,7 +1,9 @@
-# LINT: 'if' cuddled with "(" and ")"; indented with spaces, not tabs
+test_expect_success 'cuddled-if-then-else' '
+# LINT: "if" cuddled with "(" and ")"; indented with spaces, not tabs
 (if test -z ""; then
     echo empty
  else
     echo bizzy
  fi) &&
 echo foobar
+'

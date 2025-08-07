@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='paths written by git-apply cannot escape the working tree'
+
 . ./test-lib.sh
 
 # tests will try to write to ../foo, and we do not

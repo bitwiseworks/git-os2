@@ -2,6 +2,7 @@
 
 test_description='apply same filename'
 
+
 . ./test-lib.sh
 
 modify () {
@@ -10,10 +11,7 @@ modify () {
 }
 
 test_expect_success setup '
-	for i in a b c d e f g h i j k l m
-	do
-		echo $i
-	done >same_fn &&
+	test_write_lines a b c d e f g h i j k l m >same_fn &&
 	cp same_fn other_fn &&
 	git add same_fn other_fn &&
 	git commit -m initial

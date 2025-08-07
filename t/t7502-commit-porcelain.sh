@@ -2,6 +2,9 @@
 
 test_description='git commit porcelain-ish'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 commit_msg_is () {
@@ -10,7 +13,7 @@ commit_msg_is () {
 
 	printf "%s" "$(git log --pretty=format:%s%b -1)" >$actual &&
 	printf "%s" "$1" >$expect &&
-	test_i18ncmp $expect $actual
+	test_cmp $expect $actual
 }
 
 # Arguments: [<prefix] [<commit message>] [<commit options>]
@@ -32,7 +35,17 @@ check_summary_oneline() {
 	SUMMARY_POSTFIX="$(git log -1 --pretty='format:%h')"
 	echo "[$SUMMARY_PREFIX $SUMMARY_POSTFIX] $2" >exp &&
 
-	test_i18ncmp exp act
+	test_cmp exp act
+}
+
+trailer_commit_base () {
+	echo "fun" >>file &&
+	git add file &&
+	git commit -s --trailer "Signed-off-by=C1 E1 " \
+		--trailer "Helped-by:C2 E2 " \
+		--trailer "Reported-by=C3 E3" \
+		--trailer "Mentored-by:C4 E4" \
+		-m "hello"
 }
 
 test_expect_success 'output summary format' '
@@ -76,7 +89,7 @@ test_expect_success 'output summary format for merges' '
 
 output_tests_cleanup() {
 	# this is needed for "do not fire editor in the presence of conflicts"
-	git checkout master &&
+	git checkout main &&
 
 	# this is needed for the "partial removal" test to pass
 	git rm file1 &&
@@ -149,6 +162,345 @@ test_expect_success 'sign off' '
 	sed -e "s/>.*/>/" ident >expected &&
 	test_cmp expected actual
 
+'
+
+test_expect_success 'commit --trailer with "="' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	EOF
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "replace" as ifexists' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Helped-by: C3 E3
+	EOF
+	git -c trailer.ifexists="replace" \
+		commit --trailer "Mentored-by: C4 E4" \
+		 --trailer "Helped-by: C3 E3" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d"  commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "add" as ifexists' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	EOF
+	git -c trailer.ifexists="add" \
+		commit --trailer "Reported-by: C3 E3" \
+		--trailer "Mentored-by: C4 E4" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d"  commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "donothing" as ifexists' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Reviewed-by: C6 E6
+	EOF
+	git -c trailer.ifexists="donothing" \
+		commit --trailer "Mentored-by: C5 E5" \
+		--trailer "Reviewed-by: C6 E6" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d"  commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "addIfDifferent" as ifexists' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Mentored-by: C5 E5
+	EOF
+	git -c trailer.ifexists="addIfDifferent" \
+		commit --trailer "Reported-by: C3 E3" \
+		--trailer "Mentored-by: C5 E5" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d"  commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "addIfDifferentNeighbor" as ifexists' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Reported-by: C3 E3
+	EOF
+	git -c trailer.ifexists="addIfDifferentNeighbor" \
+		commit --trailer "Mentored-by: C4 E4" \
+		--trailer "Reported-by: C3 E3" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d"  commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "end" as where' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	EOF
+	git -c trailer.where="end" \
+		commit --trailer "Reported-by: C3 E3" \
+		--trailer "Mentored-by: C4 E4" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "start" as where' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C1 E1
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	EOF
+	git -c trailer.where="start" \
+		commit --trailer "Signed-off-by: C O Mitter <committer@example.com>" \
+		--trailer "Signed-off-by: C1 E1" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "after" as where' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Mentored-by: C5 E5
+	EOF
+	git -c trailer.where="after" \
+		commit --trailer "Mentored-by: C4 E4" \
+		--trailer "Mentored-by: C5 E5" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "before" as where' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C2 E2
+	Mentored-by: C3 E3
+	Mentored-by: C4 E4
+	EOF
+	git -c trailer.where="before" \
+		commit --trailer "Mentored-by: C3 E3" \
+		--trailer "Mentored-by: C2 E2" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "donothing" as ifmissing' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Helped-by: C5 E5
+	EOF
+	git -c trailer.ifmissing="donothing" \
+		commit --trailer "Helped-by: C5 E5" \
+		--trailer "Based-by: C6 E6" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and "add" as ifmissing' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Reported-by: C3 E3
+	Mentored-by: C4 E4
+	Helped-by: C5 E5
+	Based-by: C6 E6
+	EOF
+	git -c trailer.ifmissing="add" \
+		commit --trailer "Helped-by: C5 E5" \
+		--trailer "Based-by: C6 E6" \
+		--amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c ack.key ' '
+	echo "fun" >>file1 &&
+	git add file1 &&
+	cat >expected <<-\EOF &&
+		hello
+
+		Acked-by: Peff
+	EOF
+	git -c trailer.ack.key="Acked-by" \
+		commit --trailer "ack = Peff" -m "hello" &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and ":=#" as separators' '
+	echo "fun" >>file1 &&
+	git add file1 &&
+	cat >expected <<-\EOF &&
+		I hate bug
+
+		Bug #42
+	EOF
+	git -c trailer.separators=":=#" \
+		-c trailer.bug.key="Bug #" \
+		commit --trailer "bug = 42" -m "I hate bug" &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with -c and command' '
+	trailer_commit_base &&
+	cat >expected <<-\EOF &&
+	hello
+
+	Signed-off-by: C O Mitter <committer@example.com>
+	Signed-off-by: C1 E1
+	Helped-by: C2 E2
+	Mentored-by: C4 E4
+	Reported-by: A U Thor <author@example.com>
+	EOF
+	git -c trailer.report.key="Reported-by: " \
+		-c trailer.report.ifexists="replace" \
+		-c trailer.report.command="NAME=\"\$ARG\"; test -n \"\$NAME\" && \
+		git log --author=\"\$NAME\" -1 --format=\"format:%aN <%aE>\" || true" \
+		commit --trailer "report = author" --amend &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer not confused by --- separator' '
+	cat >msg <<-\EOF &&
+	subject
+
+	body with dashes
+	---
+	in it
+	EOF
+	git commit --allow-empty --trailer="my-trailer: value" -F msg &&
+	{
+		cat msg &&
+		echo &&
+		echo "my-trailer: value"
+	} >expected &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
+'
+
+test_expect_success 'commit --trailer with --verbose' '
+	cat >msg <<-\EOF &&
+	subject
+
+	body
+	EOF
+	GIT_EDITOR=: git commit --edit -F msg --allow-empty \
+		--trailer="my-trailer: value" --verbose &&
+	{
+		cat msg &&
+		echo &&
+		echo "my-trailer: value"
+	} >expected &&
+	git cat-file commit HEAD >commit.msg &&
+	sed -e "1,/^\$/d" commit.msg >actual &&
+	test_cmp expected actual
 '
 
 test_expect_success 'multiple -m' '
@@ -297,7 +649,7 @@ echo "sample
 # with '#' will be ignored, and an empty message aborts the commit." >expect
 
 test_expect_success 'cleanup commit messages (strip option,-F,-e): output' '
-	test_i18ncmp expect actual
+	test_cmp expect actual
 '
 
 test_expect_success 'cleanup commit message (fail on invalid cleanup mode option)' '
@@ -372,16 +724,21 @@ test_expect_success 'cleanup commit message (whitespace config, -m)' '
 test_expect_success 'message shows author when it is not equal to committer' '
 	echo >>negative &&
 	git commit -e -m "sample" -a &&
-	test_i18ngrep \
+	test_grep \
 	  "^# Author: *A U Thor <author@example.com>\$" \
 	  .git/COMMIT_EDITMSG
 '
 
 test_expect_success 'message shows date when it is explicitly set' '
 	git commit --allow-empty -e -m foo --date="2010-01-02T03:04:05" &&
-	test_i18ngrep \
+	test_grep \
 	  "^# Date: *Sat Jan 2 03:04:05 2010 +0000" \
 	  .git/COMMIT_EDITMSG
+'
+
+test_expect_success 'message does not have multiple scissors lines' '
+	git commit --cleanup=scissors -v --allow-empty -e -m foo &&
+	test $(grep -c -e "--- >8 ---" .git/COMMIT_EDITMSG) -eq 1
 '
 
 test_expect_success AUTOIDENT 'message shows committer when it is automatic' '
@@ -394,7 +751,7 @@ test_expect_success AUTOIDENT 'message shows committer when it is automatic' '
 	) &&
 	# the ident is calculated from the system, so we cannot
 	# check the actual value, only that it is there
-	test_i18ngrep "^# Committer: " .git/COMMIT_EDITMSG
+	test_grep "^# Committer: " .git/COMMIT_EDITMSG
 '
 
 write_script .git/FAKE_EDITOR <<EOF
@@ -440,7 +797,7 @@ test_expect_success 'do not fire editor in the presence of conflicts' '
 	git add g &&
 	git commit -m "add g" &&
 	git branch second &&
-	echo master >g &&
+	echo main >g &&
 	echo g >h &&
 	git add g h &&
 	git commit -m "modify g and add h" &&
@@ -449,7 +806,7 @@ test_expect_success 'do not fire editor in the presence of conflicts' '
 	git add g &&
 	git commit -m second &&
 	# Must fail due to conflict
-	test_must_fail git cherry-pick -n master &&
+	test_must_fail git cherry-pick -n main &&
 	echo "editor not started" >.git/result &&
 	(
 		GIT_EDITOR="\"$(pwd)/.git/FAKE_EDITOR\"" &&
@@ -478,9 +835,9 @@ git reset -q --hard
 
 test_expect_success 'Hand committing of a redundant merge removes dups' '
 
-	git rev-parse second master >expect &&
-	test_must_fail git merge second master &&
-	git checkout master g &&
+	git rev-parse second main >expect &&
+	test_must_fail git merge second main &&
+	git checkout main g &&
 	EDITOR=: git commit -a &&
 	git cat-file commit HEAD >raw &&
 	sed -n -e "s/^parent //p" -e "/^$/q" raw >actual &&
@@ -526,9 +883,9 @@ try_commit () {
 	GIT_EDITOR=.git/FAKE_EDITOR git commit -a $* $use_template &&
 	case "$use_template" in
 	'')
-		test_i18ngrep ! "^## Custom template" .git/COMMIT_EDITMSG ;;
+		test_grep ! "^## Custom template" .git/COMMIT_EDITMSG ;;
 	*)
-		test_i18ngrep "^## Custom template" .git/COMMIT_EDITMSG ;;
+		test_grep "^## Custom template" .git/COMMIT_EDITMSG ;;
 	esac
 }
 
@@ -536,53 +893,53 @@ try_commit_status_combo () {
 
 	test_expect_success 'commit' '
 		try_commit "" &&
-		test_i18ngrep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit --status' '
 		try_commit --status &&
-		test_i18ngrep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit --no-status' '
 		try_commit --no-status &&
-		test_i18ngrep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit with commit.status = yes' '
 		test_config commit.status yes &&
 		try_commit "" &&
-		test_i18ngrep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit with commit.status = no' '
 		test_config commit.status no &&
 		try_commit "" &&
-		test_i18ngrep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit --status with commit.status = yes' '
 		test_config commit.status yes &&
 		try_commit --status &&
-		test_i18ngrep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit --no-status with commit.status = yes' '
 		test_config commit.status yes &&
 		try_commit --no-status &&
-		test_i18ngrep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit --status with commit.status = no' '
 		test_config commit.status no &&
 		try_commit --status &&
-		test_i18ngrep "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 	test_expect_success 'commit --no-status with commit.status = no' '
 		test_config commit.status no &&
 		try_commit --no-status &&
-		test_i18ngrep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
+		test_grep ! "^# Changes to be committed:" .git/COMMIT_EDITMSG
 	'
 
 }
@@ -596,13 +953,13 @@ try_commit_status_combo
 test_expect_success 'commit --status with custom comment character' '
 	test_config core.commentchar ";" &&
 	try_commit --status &&
-	test_i18ngrep "^; Changes to be committed:" .git/COMMIT_EDITMSG
+	test_grep "^; Changes to be committed:" .git/COMMIT_EDITMSG
 '
 
 test_expect_success 'switch core.commentchar' '
 	test_commit "#foo" foo &&
 	GIT_EDITOR=.git/FAKE_EDITOR git -c core.commentChar=auto commit --amend &&
-	test_i18ngrep "^; Changes to be committed:" .git/COMMIT_EDITMSG
+	test_grep "^; Changes to be committed:" .git/COMMIT_EDITMSG
 '
 
 test_expect_success 'switch core.commentchar but out of options' '

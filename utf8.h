@@ -7,7 +7,7 @@ typedef unsigned int ucs_char_t;  /* assuming 32bit int */
 
 size_t display_mode_esc_sequence_len(const char *s);
 int utf8_width(const char **start, size_t *remainder_p);
-int utf8_strnwidth(const char *string, int len, int skip_ansi);
+int utf8_strnwidth(const char *string, size_t len, int skip_ansi);
 int utf8_strwidth(const char *string);
 int is_utf8(const char *text);
 int is_encoding_utf8(const char *name);
@@ -33,8 +33,9 @@ char *reencode_string_len(const char *in, size_t insz,
 			  const char *in_encoding,
 			  size_t *outsz);
 #else
-static inline char *reencode_string_len(const char *a, size_t b,
-					const char *c, const char *d, size_t *e)
+static inline char *reencode_string_len(const char *a UNUSED, size_t b UNUSED,
+					const char *c UNUSED,
+					const char *d UNUSED, size_t *e)
 { if (e) *e = 0; return NULL; }
 #endif
 
@@ -61,6 +62,7 @@ int is_hfs_dotgit(const char *path);
 int is_hfs_dotgitmodules(const char *path);
 int is_hfs_dotgitignore(const char *path);
 int is_hfs_dotgitattributes(const char *path);
+int is_hfs_dotmailmap(const char *path);
 
 typedef enum {
 	ALIGN_LEFT,
@@ -82,7 +84,7 @@ void strbuf_utf8_align(struct strbuf *buf, align_type position, unsigned int wid
  * BOM must not be used [1]. The same applies for the UTF-32 equivalents.
  * The function returns true if this rule is violated.
  *
- * [1] http://unicode.org/faq/utf_bom.html#bom10
+ * [1] https://unicode.org/faq/utf_bom.html#bom10
  */
 int has_prohibited_utf_bom(const char *enc, const char *data, size_t len);
 
@@ -98,8 +100,8 @@ int has_prohibited_utf_bom(const char *enc, const char *data, size_t len);
  * Therefore, strictly requiring a BOM seems to be the safest option for
  * content in Git.
  *
- * [1] http://unicode.org/faq/utf_bom.html#gen6
- * [2] http://www.unicode.org/versions/Unicode10.0.0/ch03.pdf
+ * [1] https://unicode.org/faq/utf_bom.html#gen6
+ * [2] https://www.unicode.org/versions/Unicode10.0.0/ch03.pdf
  *     Section 3.10, D98, page 132
  * [3] https://encoding.spec.whatwg.org/#utf-16le
  */

@@ -1,14 +1,17 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
 #include "commit.h"
 #include "refs.h"
 #include "diff.h"
+#include "repository.h"
 #include "revision.h"
 #include "string-list.h"
 #include "reflog-walk.h"
 
 struct complete_reflogs {
 	char *ref;
-	const char *short_ref;
+	char *short_ref;
 	struct reflog_info {
 		struct object_id ooid, noid;
 		char *email;
@@ -51,7 +54,14 @@ static void free_complete_reflog(struct complete_reflogs *array)
 	}
 	free(array->items);
 	free(array->ref);
+	free(array->short_ref);
 	free(array);
+}
+
+static void complete_reflogs_clear(void *util, const char *str UNUSED)
+{
+	struct complete_reflogs *array = util;
+	free_complete_reflog(array);
 }
 
 static struct complete_reflogs *read_complete_reflog(const char *ref)
@@ -59,24 +69,32 @@ static struct complete_reflogs *read_complete_reflog(const char *ref)
 	struct complete_reflogs *reflogs =
 		xcalloc(1, sizeof(struct complete_reflogs));
 	reflogs->ref = xstrdup(ref);
-	for_each_reflog_ent(ref, read_one_reflog, reflogs);
+	refs_for_each_reflog_ent(get_main_ref_store(the_repository), ref,
+				 read_one_reflog, reflogs);
 	if (reflogs->nr == 0) {
 		const char *name;
 		void *name_to_free;
-		name = name_to_free = resolve_refdup(ref, RESOLVE_REF_READING,
-						     NULL, NULL);
+		name = name_to_free = refs_resolve_refdup(get_main_ref_store(the_repository),
+							  ref,
+							  RESOLVE_REF_READING,
+							  NULL, NULL);
 		if (name) {
-			for_each_reflog_ent(name, read_one_reflog, reflogs);
+			refs_for_each_reflog_ent(get_main_ref_store(the_repository),
+						 name, read_one_reflog,
+						 reflogs);
 			free(name_to_free);
 		}
 	}
 	if (reflogs->nr == 0) {
 		char *refname = xstrfmt("refs/%s", ref);
-		for_each_reflog_ent(refname, read_one_reflog, reflogs);
+		refs_for_each_reflog_ent(get_main_ref_store(the_repository),
+					 refname, read_one_reflog, reflogs);
 		if (reflogs->nr == 0) {
 			free(refname);
 			refname = xstrfmt("refs/heads/%s", ref);
-			for_each_reflog_ent(refname, read_one_reflog, reflogs);
+			refs_for_each_reflog_ent(get_main_ref_store(the_repository),
+						 refname, read_one_reflog,
+						 reflogs);
 		}
 		free(refname);
 	}
@@ -112,8 +130,23 @@ struct reflog_walk_info {
 
 void init_reflog_walk(struct reflog_walk_info **info)
 {
-	*info = xcalloc(1, sizeof(struct reflog_walk_info));
+	CALLOC_ARRAY(*info, 1);
 	(*info)->complete_reflogs.strdup_strings = 1;
+}
+
+void reflog_walk_info_release(struct reflog_walk_info *info)
+{
+	size_t i;
+
+	if (!info)
+		return;
+
+	for (i = 0; i < info->nr; i++)
+		free(info->logs[i]);
+	string_list_clear_func(&info->complete_reflogs,
+			       complete_reflogs_clear);
+	free(info->logs);
+	free(info);
 }
 
 int add_reflog_for_walk(struct reflog_walk_info *info,
@@ -151,17 +184,17 @@ int add_reflog_for_walk(struct reflog_walk_info *info,
 	else {
 		if (*branch == '\0') {
 			free(branch);
-			branch = resolve_refdup("HEAD", 0, NULL, NULL);
+			branch = refs_resolve_refdup(get_main_ref_store(the_repository),
+						     "HEAD", 0, NULL, NULL);
 			if (!branch)
 				die("no current branch");
 
 		}
 		reflogs = read_complete_reflog(branch);
 		if (!reflogs || reflogs->nr == 0) {
-			struct object_id oid;
 			char *b;
-			int ret = dwim_log(branch, strlen(branch),
-					   &oid, &b);
+			int ret = repo_dwim_log(the_repository, branch, strlen(branch),
+						NULL, &b);
 			if (ret > 1)
 				free(b);
 			else if (ret == 1) {
@@ -181,7 +214,7 @@ int add_reflog_for_walk(struct reflog_walk_info *info,
 	}
 	free(branch);
 
-	commit_reflog = xcalloc(1, sizeof(struct commit_reflog));
+	CALLOC_ARRAY(commit_reflog, 1);
 	if (recno < 0) {
 		commit_reflog->recno = get_reflog_recno_by_time(reflogs, timestamp);
 		if (commit_reflog->recno < 0) {
@@ -201,7 +234,7 @@ int add_reflog_for_walk(struct reflog_walk_info *info,
 
 void get_reflog_selector(struct strbuf *sb,
 			 struct reflog_walk_info *reflog_info,
-			 const struct date_mode *dmode, int force_date,
+			 struct date_mode dmode, int force_date,
 			 int shorten)
 {
 	struct commit_reflog *commit_reflog = reflog_info->last_commit_reflog;
@@ -214,7 +247,9 @@ void get_reflog_selector(struct strbuf *sb,
 	if (shorten) {
 		if (!commit_reflog->reflogs->short_ref)
 			commit_reflog->reflogs->short_ref
-				= shorten_unambiguous_ref(commit_reflog->reflogs->ref, 0);
+				= refs_shorten_unambiguous_ref(get_main_ref_store(the_repository),
+							       commit_reflog->reflogs->ref,
+							       0);
 		printed_ref = commit_reflog->reflogs->short_ref;
 	} else {
 		printed_ref = commit_reflog->reflogs->ref;
@@ -275,7 +310,7 @@ timestamp_t get_reflog_timestamp(struct reflog_walk_info *reflog_info)
 }
 
 void show_reflog_message(struct reflog_walk_info *reflog_info, int oneline,
-			 const struct date_mode *dmode, int force_date)
+			 struct date_mode dmode, int force_date)
 {
 	if (reflog_info && reflog_info->last_commit_reflog) {
 		struct commit_reflog *commit_reflog = reflog_info->last_commit_reflog;

@@ -4,6 +4,9 @@ test_description='.git file
 
 Verify that plumbing commands work when .git is a file
 '
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 objpath() {
@@ -18,23 +21,25 @@ test_expect_success 'initial setup' '
 test_expect_success 'bad setup: invalid .git file format' '
 	echo "gitdir $REAL" >.git &&
 	test_must_fail git rev-parse 2>.err &&
-	test_i18ngrep "invalid gitfile format" .err
+	test_grep "invalid gitfile format" .err
 '
 
 test_expect_success 'bad setup: invalid .git file path' '
 	echo "gitdir: $REAL.not" >.git &&
 	test_must_fail git rev-parse 2>.err &&
-	test_i18ngrep "not a git repository" .err
+	test_grep "not a git repository" .err
 '
 
 test_expect_success 'final setup + check rev-parse --git-dir' '
 	echo "gitdir: $REAL" >.git &&
-	test "$REAL" = "$(git rev-parse --git-dir)"
+	echo "$REAL" >expect &&
+	git rev-parse --git-dir >actual &&
+	test_cmp expect actual
 '
 
 test_expect_success 'check hash-object' '
 	echo "foo" >bar &&
-	SHA=$(cat bar | git hash-object -w --stdin) &&
+	SHA=$(git hash-object -w --stdin <bar) &&
 	test_path_is_file "$REAL/objects/$(objpath $SHA)"
 '
 
@@ -63,7 +68,9 @@ test_expect_success 'check commit-tree' '
 
 test_expect_success 'check rev-list' '
 	git update-ref "HEAD" "$SHA" &&
-	test "$SHA" = "$(git rev-list HEAD)"
+	git rev-list HEAD >actual &&
+	echo $SHA >expected &&
+	test_cmp expected actual
 '
 
 test_expect_success 'setup_git_dir twice in subdir' '
@@ -96,7 +103,7 @@ test_expect_success 'enter_repo non-strict mode' '
 	git ls-remote enter_repo >actual &&
 	cat >expected <<-EOF &&
 	$head	HEAD
-	$head	refs/heads/master
+	$head	refs/heads/main
 	$head	refs/tags/foo
 	EOF
 	test_cmp expected actual
@@ -111,7 +118,7 @@ test_expect_success 'enter_repo linked checkout' '
 	git ls-remote foo >actual &&
 	cat >expected <<-EOF &&
 	$head	HEAD
-	$head	refs/heads/master
+	$head	refs/heads/main
 	$head	refs/tags/foo
 	EOF
 	test_cmp expected actual
@@ -122,7 +129,7 @@ test_expect_success 'enter_repo strict mode' '
 	git ls-remote --upload-pack="git upload-pack --strict" foo/.git >actual &&
 	cat >expected <<-EOF &&
 	$head	HEAD
-	$head	refs/heads/master
+	$head	refs/heads/main
 	$head	refs/tags/foo
 	EOF
 	test_cmp expected actual

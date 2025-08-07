@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='see how we handle various forms of corruption'
+
 . ./test-lib.sh
 
 # convert "1234abcd" to ".git/objects/12/34abcd"
@@ -123,7 +124,7 @@ test_expect_success 'fetch into corrupted repo with index-pack' '
 		cd bit-error-cp &&
 		test_must_fail git -c transfer.unpackLimit=1 \
 			fetch ../no-bit-error 2>stderr &&
-		test_i18ngrep ! -i collision stderr
+		test_grep ! -i collision stderr
 	)
 '
 
@@ -135,6 +136,13 @@ test_expect_success 'internal tree objects are not "missing"' '
 		commit=$(echo foo | git commit-tree $empty_tree) &&
 		git rev-list --objects $commit
 	)
+'
+
+test_expect_success 'partial clone of corrupted repository' '
+	test_config -C misnamed uploadpack.allowFilter true &&
+	git clone --no-local --no-checkout --filter=blob:none \
+		misnamed corrupt-partial && \
+	test_must_fail git -C corrupt-partial checkout --force
 '
 
 test_done

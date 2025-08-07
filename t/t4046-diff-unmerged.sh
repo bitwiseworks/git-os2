@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='diff with unmerged index entries'
+
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -18,13 +19,15 @@ test_expect_success setup '
 			for t in o x
 			do
 				path="$b$o$t" &&
-				case "$path" in ooo) continue ;; esac
-				paths="$paths$path " &&
-				p="	$path" &&
-				case "$b" in x) echo "$m1$p" ;; esac &&
-				case "$o" in x) echo "$m2$p" ;; esac &&
-				case "$t" in x) echo "$m3$p" ;; esac ||
-				return 1
+				if test "$path" != ooo
+				then
+					paths="$paths$path " &&
+					p="	$path" &&
+					case "$b" in x) echo "$m1$p" ;; esac &&
+					case "$o" in x) echo "$m2$p" ;; esac &&
+					case "$t" in x) echo "$m3$p" ;; esac ||
+					return 1
+				fi
 			done
 		done
 	done >ls-files-s.expect &&
@@ -37,7 +40,7 @@ test_expect_success 'diff-files -0' '
 	for path in $paths
 	do
 		>"$path" &&
-		echo ":000000 100644 $ZERO_OID $ZERO_OID U	$path"
+		echo ":000000 100644 $ZERO_OID $ZERO_OID U	$path" || return 1
 	done >diff-files-0.expect &&
 	git diff-files -0 >diff-files-0.actual &&
 	test_cmp diff-files-0.expect diff-files-0.actual
@@ -50,7 +53,7 @@ test_expect_success 'diff-files -1' '
 		echo ":000000 100644 $ZERO_OID $ZERO_OID U	$path" &&
 		case "$path" in
 		x??) echo ":100644 100644 $blob1 $ZERO_OID M	$path"
-		esac
+		esac || return 1
 	done >diff-files-1.expect &&
 	git diff-files -1 >diff-files-1.actual &&
 	test_cmp diff-files-1.expect diff-files-1.actual
@@ -63,7 +66,7 @@ test_expect_success 'diff-files -2' '
 		echo ":000000 100644 $ZERO_OID $ZERO_OID U	$path" &&
 		case "$path" in
 		?x?) echo ":100644 100644 $blob2 $ZERO_OID M	$path"
-		esac
+		esac || return 1
 	done >diff-files-2.expect &&
 	git diff-files -2 >diff-files-2.actual &&
 	test_cmp diff-files-2.expect diff-files-2.actual &&
@@ -78,10 +81,28 @@ test_expect_success 'diff-files -3' '
 		echo ":000000 100644 $ZERO_OID $ZERO_OID U	$path" &&
 		case "$path" in
 		??x) echo ":100644 100644 $blob3 $ZERO_OID M	$path"
-		esac
+		esac || return 1
 	done >diff-files-3.expect &&
 	git diff-files -3 >diff-files-3.actual &&
 	test_cmp diff-files-3.expect diff-files-3.actual
+'
+
+test_expect_success 'diff --stat' '
+	for path in $paths
+	do
+		echo " $path | Unmerged" || return 1
+	done >diff-stat.expect &&
+	echo " 0 files changed" >>diff-stat.expect &&
+	git diff --cached --stat >diff-stat.actual &&
+	test_cmp diff-stat.expect diff-stat.actual
+'
+
+test_expect_success 'diff --quiet' '
+	test_expect_code 1 git diff --cached --quiet
+'
+
+test_expect_success 'diff --quiet --ignore-all-space' '
+	test_expect_code 1 git diff --cached --quiet --ignore-all-space
 '
 
 test_done

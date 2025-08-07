@@ -16,6 +16,7 @@ This test runs git ls-tree with the following in a tree.
 The new path restriction code should do the right thing for path2 and
 path2/baz.  Also path0/ should snow nothing.
 '
+
 . ./test-lib.sh
 
 test_expect_success \

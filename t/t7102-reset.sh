@@ -7,23 +7,36 @@ test_description='git reset
 
 Documented tests for git reset'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
-commit_msg () {
-	# String "modify 2nd file (changed)" partly in German
-	# (translated with Google Translate),
-	# encoded in UTF-8, used as a commit log message below.
-	msg="modify 2nd file (ge\303\244ndert)\n"
-	if test -n "$1"
-	then
-		printf "$msg" | iconv -f utf-8 -t "$1"
-	else
-		printf "$msg"
-	fi
-}
+if test_have_prereq ICONV
+then
+	commit_msg () {
+		# String "modify 2nd file (changed)" partly in German
+		# (translated with Google Translate),
+		# encoded in UTF-8, used as a commit log message below.
+		msg="modify 2nd file (ge\303\244ndert)\n"
+		if test -n "$1"
+		then
+			printf "$msg" | iconv -f utf-8 -t "$1"
+		else
+			printf "$msg"
+		fi
+	}
 
-# Tested non-UTF-8 encoding
-test_encoding="ISO8859-1"
+	# Tested non-UTF-8 encoding
+	test_encoding="ISO8859-1"
+else
+	commit_msg () {
+		echo "modify 2nd file (geandert)"
+	}
+
+	# Tested non-UTF-8 encoding
+	test_encoding="UTF-8"
+fi
 
 test_expect_success 'creating initial files and commits' '
 	test_tick &&
@@ -68,18 +81,28 @@ check_changes () {
 	done | test_cmp .cat_expect -
 }
 
+# no negated form for various type of resets
+for opt in soft mixed hard merge keep
+do
+	test_expect_success "no 'git reset --no-$opt'" '
+		test_when_finished "rm -f err" &&
+		test_must_fail git reset --no-$opt 2>err &&
+		grep "error: unknown option .no-$opt." err
+	'
+done
+
 test_expect_success 'reset --hard message' '
 	hex=$(git log -1 --format="%h") &&
 	git reset --hard >.actual &&
 	echo HEAD is now at $hex $(commit_msg) >.expected &&
-	test_i18ncmp .expected .actual
+	test_cmp .expected .actual
 '
 
 test_expect_success 'reset --hard message (ISO8859-1 logoutputencoding)' '
 	hex=$(git log -1 --format="%h") &&
 	git -c "i18n.logOutputEncoding=$test_encoding" reset --hard >.actual &&
 	echo HEAD is now at $hex $(commit_msg $test_encoding) >.expected &&
-	test_i18ncmp .expected .actual
+	test_cmp .expected .actual
 '
 
 test_expect_success 'giving a non existing revision should fail' '
@@ -145,7 +168,7 @@ test_expect_success 'trying to do reset --soft with pending merge should fail' '
 	printf "1st line 2nd file\n2nd line 2nd file\n3rd line" >secondfile &&
 	git commit -a -m "the change in branch2" &&
 
-	git checkout master &&
+	git checkout main &&
 	git branch -D branch1 branch2 &&
 	check_changes $head5
 '
@@ -167,7 +190,7 @@ test_expect_success 'trying to do reset --soft with pending checkout merge shoul
 	printf "1st line 2nd file\n2nd line 2nd file\n3rd line" >secondfile &&
 	git commit -a -m "the line in branch3" &&
 
-	git checkout master &&
+	git checkout main &&
 	git branch -D branch3 branch4 &&
 	check_changes $head5
 '
@@ -380,7 +403,7 @@ test_expect_success '--hard reset to ORIG_HEAD should clear a fast-forward merge
 	git reset --hard ORIG_HEAD &&
 	check_changes $head5 &&
 
-	git checkout master &&
+	git checkout main &&
 	git branch -D branch1 branch2 &&
 	check_changes $head5
 '
@@ -459,14 +482,57 @@ test_expect_success 'resetting an unmodified path is a no-op' '
 	git diff-index --cached --exit-code HEAD
 '
 
+test_reset_refreshes_index () {
+
+	# To test whether the index is refreshed in `git reset --mixed` with
+	# the given options, create a scenario where we clearly see different
+	# results depending on whether the refresh occurred or not.
+
+	# Step 0: start with a clean index
+	git reset --hard HEAD &&
+
+	# Step 1: remove file2, but only in the index (no change to worktree)
+	git rm --cached file2 &&
+
+	# Step 2: reset index & leave worktree unchanged from HEAD
+	git $1 reset $2 --mixed HEAD &&
+
+	# Step 3: verify whether the index is refreshed by checking whether
+	# file2 still has staged changes in the index differing from HEAD (if
+	# the refresh occurred, there should be no such changes)
+	git diff-files >output.log &&
+	test_must_be_empty output.log
+}
+
 test_expect_success '--mixed refreshes the index' '
+	# Verify default behavior (without --[no-]refresh or reset.refresh)
+	test_reset_refreshes_index &&
+
+	# With --quiet
+	test_reset_refreshes_index "" --quiet
+'
+
+test_expect_success '--mixed --[no-]refresh sets refresh behavior' '
+	# Verify that --[no-]refresh controls index refresh
+	test_reset_refreshes_index "" --refresh &&
+	! test_reset_refreshes_index "" --no-refresh
+'
+
+test_expect_success '--mixed preserves skip-worktree' '
+	echo 123 >>file2 &&
+	git add file2 &&
+	git update-index --skip-worktree file2 &&
+	git reset --mixed HEAD >output &&
+	test_must_be_empty output &&
+
 	cat >expect <<-\EOF &&
 	Unstaged changes after reset:
 	M	file2
 	EOF
-	echo 123 >>file2 &&
+	git update-index --no-skip-worktree file2 &&
+	git add file2 &&
 	git reset --mixed HEAD >output &&
-	test_i18ncmp expect output
+	test_cmp expect output
 '
 
 test_expect_success 'resetting specific path that is unmerged' '
@@ -558,6 +624,14 @@ test_expect_success 'reset --mixed sets up work tree' '
 	) &&
 	git --git-dir=mixed_worktree/.git --work-tree=mixed_worktree reset >actual &&
 	test_must_be_empty actual
+'
+
+test_expect_success 'reset handles --end-of-options' '
+	git update-ref refs/heads/--foo HEAD^ &&
+	git log -1 --format=%s refs/heads/--foo >expect &&
+	git reset --hard --end-of-options --foo &&
+	git log -1 --format=%s HEAD >actual &&
+	test_cmp expect actual
 '
 
 test_done

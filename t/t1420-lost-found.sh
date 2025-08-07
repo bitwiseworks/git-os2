@@ -4,6 +4,7 @@
 #
 
 test_description='Test fsck --lost-found'
+
 . ./test-lib.sh
 
 test_expect_success setup '

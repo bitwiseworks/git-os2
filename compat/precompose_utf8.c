@@ -4,9 +4,14 @@
  */
 
 #define PRECOMPOSE_UNICODE_C
+#define USE_THE_REPOSITORY_VARIABLE
 
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
+#include "environment.h"
+#include "gettext.h"
+#include "path.h"
+#include "strbuf.h"
 #include "utf8.h"
 #include "precompose_utf8.h"
 
@@ -45,47 +50,60 @@ void probe_utf8_pathname_composition(void)
 	int output_fd;
 	if (precomposed_unicode != -1)
 		return; /* We found it defined in the global config, respect it */
-	git_path_buf(&path, "%s", auml_nfc);
+	repo_git_path_replace(the_repository, &path, "%s", auml_nfc);
 	output_fd = open(path.buf, O_CREAT|O_EXCL|O_RDWR, 0600);
 	if (output_fd >= 0) {
 		close(output_fd);
-		git_path_buf(&path, "%s", auml_nfd);
+		repo_git_path_replace(the_repository, &path, "%s", auml_nfd);
 		precomposed_unicode = access(path.buf, R_OK) ? 0 : 1;
 		git_config_set("core.precomposeunicode",
 			       precomposed_unicode ? "true" : "false");
-		git_path_buf(&path, "%s", auml_nfc);
+		repo_git_path_replace(the_repository, &path, "%s", auml_nfc);
 		if (unlink(path.buf))
 			die_errno(_("failed to unlink '%s'"), path.buf);
 	}
 	strbuf_release(&path);
 }
 
+const char *precompose_string_if_needed(const char *in)
+{
+	size_t inlen;
+	size_t outlen;
+	if (!in)
+		return NULL;
+	if (has_non_ascii(in, (size_t)-1, &inlen)) {
+		iconv_t ic_prec;
+		char *out;
+		if (precomposed_unicode < 0)
+			git_config_get_bool("core.precomposeunicode", &precomposed_unicode);
+		if (precomposed_unicode != 1)
+			return in;
+		ic_prec = iconv_open(repo_encoding, path_encoding);
+		if (ic_prec == (iconv_t) -1)
+			return in;
 
-void precompose_argv(int argc, const char **argv)
+		out = reencode_string_iconv(in, inlen, ic_prec, 0, &outlen);
+		if (out) {
+			if (outlen == inlen && !memcmp(in, out, outlen))
+				free(out); /* no need to return indentical */
+			else
+				in = out;
+		}
+		iconv_close(ic_prec);
+
+	}
+	return in;
+}
+
+const char *precompose_argv_prefix(int argc, const char **argv, const char *prefix)
 {
 	int i = 0;
-	const char *oldarg;
-	char *newarg;
-	iconv_t ic_precompose;
-
-	if (precomposed_unicode != 1)
-		return;
-
-	ic_precompose = iconv_open(repo_encoding, path_encoding);
-	if (ic_precompose == (iconv_t) -1)
-		return;
 
 	while (i < argc) {
-		size_t namelen;
-		oldarg = argv[i];
-		if (has_non_ascii(oldarg, (size_t)-1, &namelen)) {
-			newarg = reencode_string_iconv(oldarg, namelen, ic_precompose, 0, NULL);
-			if (newarg)
-				argv[i] = newarg;
-		}
+		argv[i] = precompose_string_if_needed(argv[i]);
 		i++;
 	}
-	iconv_close(ic_precompose);
+	return precompose_string_if_needed(prefix);
 }
 
 

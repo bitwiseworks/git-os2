@@ -2,7 +2,16 @@
 
 test_description='test automatic tag following'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
+
+if ! test_have_prereq PERL_TEST_HELPERS
+then
+	skip_all='skipping tagfollow tests; Perl not available'
+	test_done
+fi
 
 # End state of the repository:
 #
@@ -11,7 +20,7 @@ test_description='test automatic tag following'
 #   L - A ------ O ------ B
 #    \   \                 \
 #     \   C - origin/cat    \
-#      origin/master         master
+#      origin/main           main
 
 test_expect_success setup '
 	test_tick &&
@@ -57,7 +66,7 @@ test_expect_success 'fetch A (new commit : 1 connection)' '
 	(
 		cd cloned &&
 		GIT_TRACE_PACKET=$UPATH git fetch &&
-		test $A = $(git rev-parse --verify origin/master)
+		test $A = $(git rev-parse --verify origin/main)
 	) &&
 	get_needs $U >actual &&
 	test_cmp expect actual
@@ -72,7 +81,7 @@ test_expect_success "create tag T on A, create C on branch cat" '
 	git add file &&
 	git commit -m C &&
 	C=$(git rev-parse --verify HEAD) &&
-	git checkout master
+	git checkout main
 '
 
 test_expect_success 'setup expect' '
@@ -123,7 +132,7 @@ test_expect_success 'fetch B, S (commit and tag : 1 connection)' '
 	(
 		cd cloned &&
 		GIT_TRACE_PACKET=$UPATH git fetch &&
-		test $B = $(git rev-parse --verify origin/master) &&
+		test $B = $(git rev-parse --verify origin/main) &&
 		test $B = $(git rev-parse --verify tag2^0) &&
 		test $S = $(git rev-parse --verify tag2)
 	) &&
@@ -138,7 +147,7 @@ want $S
 EOF
 '
 
-test_expect_success 'new clone fetch master and tags' '
+test_expect_success 'new clone fetch main and tags' '
 	test_might_fail git branch -D cat &&
 	rm -f $U &&
 	(
@@ -147,7 +156,7 @@ test_expect_success 'new clone fetch master and tags' '
 		git init &&
 		git remote add origin .. &&
 		GIT_TRACE_PACKET=$UPATH git fetch &&
-		test $B = $(git rev-parse --verify origin/master) &&
+		test $B = $(git rev-parse --verify origin/main) &&
 		test $S = $(git rev-parse --verify tag2) &&
 		test $B = $(git rev-parse --verify tag2^0) &&
 		test $T = $(git rev-parse --verify tag1) &&
@@ -155,6 +164,20 @@ test_expect_success 'new clone fetch master and tags' '
 	) &&
 	get_needs $U >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success 'fetch specific OID with tag following' '
+	git init --bare clone3.git &&
+	(
+		cd clone3.git &&
+		git remote add origin .. &&
+		git fetch origin $B:refs/heads/main &&
+
+		git -C .. for-each-ref >expect &&
+		git for-each-ref >actual &&
+
+		test_cmp expect actual
+	)
 '
 
 test_done

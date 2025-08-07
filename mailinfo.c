@@ -1,5 +1,9 @@
-#include "cache.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "git-compat-util.h"
 #include "config.h"
+#include "gettext.h"
+#include "hex-ll.h"
 #include "utf8.h"
 #include "strbuf.h"
 #include "mailinfo.h"
@@ -19,7 +23,7 @@ static void cleanup_space(struct strbuf *sb)
 static void get_sane_name(struct strbuf *out, struct strbuf *name, struct strbuf *email)
 {
 	struct strbuf *src = name;
-	if (name->len < 3 || 60 < name->len || strpbrk(name->buf, "@<>"))
+	if (!name->len || 60 < name->len || strpbrk(name->buf, "@<>"))
 		src = email;
 	else if (name == out)
 		return;
@@ -56,12 +60,13 @@ static void parse_bogus_from(struct mailinfo *mi, const struct strbuf *line)
 
 static const char *unquote_comment(struct strbuf *outbuf, const char *in)
 {
-	int c;
 	int take_next_literally = 0;
+	int depth = 1;
 
 	strbuf_addch(outbuf, '(');
 
-	while ((c = *in++) != 0) {
+	while (*in) {
+		int c = *in++;
 		if (take_next_literally == 1) {
 			take_next_literally = 0;
 		} else {
@@ -70,11 +75,14 @@ static const char *unquote_comment(struct strbuf *outbuf, const char *in)
 				take_next_literally = 1;
 				continue;
 			case '(':
-				in = unquote_comment(outbuf, in);
+				strbuf_addch(outbuf, '(');
+				depth++;
 				continue;
 			case ')':
 				strbuf_addch(outbuf, ')');
-				return in;
+				if (!--depth)
+					return in;
+				continue;
 			}
 		}
 
@@ -86,10 +94,10 @@ static const char *unquote_comment(struct strbuf *outbuf, const char *in)
 
 static const char *unquote_quoted_string(struct strbuf *outbuf, const char *in)
 {
-	int c;
 	int take_next_literally = 0;
 
-	while ((c = *in++) != 0) {
+	while (*in) {
+		int c = *in++;
 		if (take_next_literally == 1) {
 			take_next_literally = 0;
 		} else {
@@ -317,7 +325,7 @@ static void cleanup_subject(struct mailinfo *mi, struct strbuf *subject)
 			pos = strchr(subject->buf + at, ']');
 			if (!pos)
 				break;
-			remove = pos - subject->buf + at + 1;
+			remove = pos - (subject->buf + at) + 1;
 			if (!mi->keep_non_patch_brackets_in_subject ||
 			    (7 <= remove &&
 			     memmem(subject->buf + at, remove, "PATCH", 5)))
@@ -340,9 +348,8 @@ static void cleanup_subject(struct mailinfo *mi, struct strbuf *subject)
 	strbuf_trim(subject);
 }
 
-#define MAX_HDR_PARSED 10
-static const char *header[MAX_HDR_PARSED] = {
-	"From","Subject","Date",
+static const char * const header[] = {
+	"From", "Subject", "Date",
 };
 
 static inline int skip_header(const struct strbuf *line, const char *hdr,
@@ -374,12 +381,12 @@ static int is_format_patch_separator(const char *line, int len)
 	return !memcmp(SAMPLE + (cp - line), cp, strlen(SAMPLE) - (cp - line));
 }
 
-static struct strbuf *decode_q_segment(const struct strbuf *q_seg, int rfc2047)
+static int decode_q_segment(struct strbuf *out, const struct strbuf *q_seg,
+			    int rfc2047)
 {
 	const char *in = q_seg->buf;
 	int c;
-	struct strbuf *out = xmalloc(sizeof(struct strbuf));
-	strbuf_init(out, q_seg->len);
+	strbuf_grow(out, q_seg->len);
 
 	while ((c = *in++) != 0) {
 		if (c == '=') {
@@ -398,16 +405,15 @@ static struct strbuf *decode_q_segment(const struct strbuf *q_seg, int rfc2047)
 			c = 0x20;
 		strbuf_addch(out, c);
 	}
-	return out;
+	return 0;
 }
 
-static struct strbuf *decode_b_segment(const struct strbuf *b_seg)
+static int decode_b_segment(struct strbuf *out, const struct strbuf *b_seg)
 {
 	/* Decode in..ep, possibly in-place to ot */
 	int c, pos = 0, acc = 0;
 	const char *in = b_seg->buf;
-	struct strbuf *out = xmalloc(sizeof(struct strbuf));
-	strbuf_init(out, b_seg->len);
+	strbuf_grow(out, b_seg->len);
 
 	while ((c = *in++) != 0) {
 		if (c == '+')
@@ -440,7 +446,7 @@ static struct strbuf *decode_b_segment(const struct strbuf *b_seg)
 			break;
 		}
 	}
-	return out;
+	return 0;
 }
 
 static int convert_to_utf8(struct mailinfo *mi,
@@ -468,7 +474,7 @@ static int convert_to_utf8(struct mailinfo *mi,
 static void decode_header(struct mailinfo *mi, struct strbuf *it)
 {
 	char *in, *ep, *cp;
-	struct strbuf outbuf = STRBUF_INIT, *dec;
+	struct strbuf outbuf = STRBUF_INIT, dec = STRBUF_INIT;
 	struct strbuf charset_q = STRBUF_INIT, piecebuf = STRBUF_INIT;
 	int found_error = 1; /* pessimism */
 
@@ -523,18 +529,19 @@ static void decode_header(struct mailinfo *mi, struct strbuf *it)
 		default:
 			goto release_return;
 		case 'b':
-			dec = decode_b_segment(&piecebuf);
+			if ((found_error = decode_b_segment(&dec, &piecebuf)))
+				goto release_return;
 			break;
 		case 'q':
-			dec = decode_q_segment(&piecebuf, 1);
+			if ((found_error = decode_q_segment(&dec, &piecebuf, 1)))
+				goto release_return;
 			break;
 		}
-		if (convert_to_utf8(mi, dec, charset_q.buf))
+		if (convert_to_utf8(mi, &dec, charset_q.buf))
 			goto release_return;
 
-		strbuf_addbuf(&outbuf, dec);
-		strbuf_release(dec);
-		free(dec);
+		strbuf_addbuf(&outbuf, &dec);
+		strbuf_release(&dec);
 		in = ep + 2;
 	}
 	strbuf_addstr(&outbuf, in);
@@ -545,6 +552,7 @@ release_return:
 	strbuf_release(&outbuf);
 	strbuf_release(&charset_q);
 	strbuf_release(&piecebuf);
+	strbuf_release(&dec);
 
 	if (found_error)
 		mi->input_error = -1;
@@ -577,7 +585,7 @@ static int check_header(struct mailinfo *mi,
 	struct strbuf sb = STRBUF_INIT;
 
 	/* search for the interesting parts */
-	for (i = 0; header[i]; i++) {
+	for (i = 0; i < ARRAY_SIZE(header); i++) {
 		if ((!hdr_data[i] || overwrite) &&
 		    parse_header(line, header[i], mi, &sb)) {
 			handle_header(&hdr_data[i], &sb);
@@ -597,7 +605,7 @@ static int check_header(struct mailinfo *mi,
 		ret = 1;
 		goto check_header_out;
 	}
-	if (parse_header(line, "Message-Id", mi, &sb)) {
+	if (parse_header(line, "Message-ID", mi, &sb)) {
 		if (mi->add_message_id)
 			mi->message_id = strbuf_detach(&sb, NULL);
 		ret = 1;
@@ -619,7 +627,7 @@ static int is_inbody_header(const struct mailinfo *mi,
 {
 	int i;
 	const char *val;
-	for (i = 0; header[i]; i++)
+	for (i = 0; i < ARRAY_SIZE(header); i++)
 		if (!mi->s_hdr_data[i] && skip_header(line, header[i], &val))
 			return 1;
 	return 0;
@@ -627,23 +635,22 @@ static int is_inbody_header(const struct mailinfo *mi,
 
 static void decode_transfer_encoding(struct mailinfo *mi, struct strbuf *line)
 {
-	struct strbuf *ret;
+	struct strbuf ret = STRBUF_INIT;
 
 	switch (mi->transfer_encoding) {
 	case TE_QP:
-		ret = decode_q_segment(line, 0);
+		decode_q_segment(&ret, line, 0);
 		break;
 	case TE_BASE64:
-		ret = decode_b_segment(line);
+		decode_b_segment(&ret, line);
 		break;
 	case TE_DONTCARE:
 	default:
 		return;
 	}
 	strbuf_reset(line);
-	strbuf_addbuf(line, ret);
-	strbuf_release(ret);
-	free(ret);
+	strbuf_addbuf(line, &ret);
+	strbuf_release(&ret);
 }
 
 static inline int patchbreak(const struct strbuf *line)
@@ -698,15 +705,15 @@ static int is_scissors_line(const char *line)
 			continue;
 		}
 		last_nonblank = c;
-		if (first_nonblank == NULL)
+		if (!first_nonblank)
 			first_nonblank = c;
 		if (*c == '-') {
 			in_perforation = 1;
 			perforation++;
 			continue;
 		}
-		if ((!memcmp(c, ">8", 2) || !memcmp(c, "8<", 2) ||
-		     !memcmp(c, ">%", 2) || !memcmp(c, "%<", 2))) {
+		if (starts_with(c, ">8") || starts_with(c, "8<") ||
+		    starts_with(c, ">%") || starts_with(c, "%<")) {
 			in_perforation = 1;
 			perforation += 2;
 			scissors += 2;
@@ -766,7 +773,7 @@ static int check_inbody_header(struct mailinfo *mi, const struct strbuf *line)
 		return is_format_patch_separator(line->buf + 1, line->len - 1);
 	if (starts_with(line->buf, "[PATCH]") && isspace(line->buf[7])) {
 		int i;
-		for (i = 0; header[i]; i++)
+		for (i = 0; i < ARRAY_SIZE(header); i++)
 			if (!strcmp("Subject", header[i])) {
 				handle_header(&mi->s_hdr_data[i], line);
 				return 1;
@@ -818,10 +825,10 @@ static int handle_commit_msg(struct mailinfo *mi, struct strbuf *line)
 		 * We may have already read "secondary headers"; purge
 		 * them to give ourselves a clean restart.
 		 */
-		for (i = 0; header[i]; i++) {
+		for (i = 0; i < ARRAY_SIZE(header); i++) {
 			if (mi->s_hdr_data[i])
 				strbuf_release(mi->s_hdr_data[i]);
-			mi->s_hdr_data[i] = NULL;
+			FREE_AND_NULL(mi->s_hdr_data[i]);
 		}
 		return 0;
 	}
@@ -829,7 +836,7 @@ static int handle_commit_msg(struct mailinfo *mi, struct strbuf *line)
 	if (patchbreak(line)) {
 		if (mi->message_id)
 			strbuf_addf(&mi->log_message,
-				    "Message-Id: %s\n", mi->message_id);
+				    "Message-ID: %s\n", mi->message_id);
 		return 1;
 	}
 
@@ -994,6 +1001,16 @@ static void handle_filter_flowed(struct mailinfo *mi, struct strbuf *line,
 	const char *rest;
 
 	if (!mi->format_flowed) {
+		if (len >= 2 &&
+		    line->buf[len - 2] == '\r' &&
+		    line->buf[len - 1] == '\n') {
+			mi->have_quoted_cr = 1;
+			if (mi->quoted_cr == quoted_cr_strip) {
+				strbuf_setlen(line, len - 2);
+				strbuf_addch(line, '\n');
+				len--;
+			}
+		}
 		handle_filter(mi, line);
 		return;
 	}
@@ -1033,6 +1050,13 @@ static void handle_filter_flowed(struct mailinfo *mi, struct strbuf *line,
 	handle_filter(mi, line);
 }
 
+static void summarize_quoted_cr(struct mailinfo *mi)
+{
+	if (mi->have_quoted_cr &&
+	    mi->quoted_cr == quoted_cr_warn)
+		warning(_("quoted CRLF detected"));
+}
+
 static void handle_body(struct mailinfo *mi, struct strbuf *line)
 {
 	struct strbuf prev = STRBUF_INIT;
@@ -1051,6 +1075,8 @@ static void handle_body(struct mailinfo *mi, struct strbuf *line)
 				handle_filter(mi, &prev);
 				strbuf_reset(&prev);
 			}
+			summarize_quoted_cr(mi);
+			mi->have_quoted_cr = 0;
 			if (!handle_boundary(mi, line))
 				goto handle_body_out;
 		}
@@ -1075,7 +1101,7 @@ static void handle_body(struct mailinfo *mi, struct strbuf *line)
 			 */
 			lines = strbuf_split(line, '\n');
 			for (it = lines; (sb = *it); it++) {
-				if (*(it + 1) == NULL) /* The last line */
+				if (!*(it + 1)) /* The last line */
 					if (sb->buf[sb->len - 1] != '\n') {
 						/* Partial line, save it for later. */
 						strbuf_addbuf(&prev, sb);
@@ -1100,6 +1126,7 @@ static void handle_body(struct mailinfo *mi, struct strbuf *line)
 
 	if (prev.len)
 		handle_filter(mi, &prev);
+	summarize_quoted_cr(mi);
 
 	flush_inbody_header_accum(mi);
 
@@ -1129,7 +1156,7 @@ static void handle_info(struct mailinfo *mi)
 	struct strbuf *hdr;
 	int i;
 
-	for (i = 0; header[i]; i++) {
+	for (i = 0; i < ARRAY_SIZE(header); i++) {
 		/* only print inbody headers if we output a patch file */
 		if (mi->patch_lines && mi->s_hdr_data[i])
 			hdr = mi->s_hdr_data[i];
@@ -1180,8 +1207,8 @@ int mailinfo(struct mailinfo *mi, const char *msg, const char *patch)
 		return -1;
 	}
 
-	mi->p_hdr_data = xcalloc(MAX_HDR_PARSED, sizeof(*(mi->p_hdr_data)));
-	mi->s_hdr_data = xcalloc(MAX_HDR_PARSED, sizeof(*(mi->s_hdr_data)));
+	mi->p_hdr_data = xcalloc(ARRAY_SIZE(header), sizeof(*(mi->p_hdr_data)));
+	mi->s_hdr_data = xcalloc(ARRAY_SIZE(header), sizeof(*(mi->s_hdr_data)));
 
 	do {
 		peek = fgetc(mi->input);
@@ -1206,21 +1233,42 @@ int mailinfo(struct mailinfo *mi, const char *msg, const char *patch)
 	return mi->input_error;
 }
 
-static int git_mailinfo_config(const char *var, const char *value, void *mi_)
+int mailinfo_parse_quoted_cr_action(const char *actionstr, int *action)
+{
+	if (!strcmp(actionstr, "nowarn"))
+		*action = quoted_cr_nowarn;
+	else if (!strcmp(actionstr, "warn"))
+		*action = quoted_cr_warn;
+	else if (!strcmp(actionstr, "strip"))
+		*action = quoted_cr_strip;
+	else
+		return -1;
+	return 0;
+}
+
+static int git_mailinfo_config(const char *var, const char *value,
+			       const struct config_context *ctx, void *mi_)
 {
 	struct mailinfo *mi = mi_;
 
 	if (!starts_with(var, "mailinfo."))
-		return git_default_config(var, value, NULL);
+		return git_default_config(var, value, ctx, NULL);
 	if (!strcmp(var, "mailinfo.scissors")) {
 		mi->use_scissors = git_config_bool(var, value);
+		return 0;
+	}
+	if (!strcmp(var, "mailinfo.quotedcr")) {
+		if (!value)
+			return config_error_nonbool(var);
+		if (mailinfo_parse_quoted_cr_action(value, &mi->quoted_cr) != 0)
+			return error(_("bad action '%s' for '%s'"), value, var);
 		return 0;
 	}
 	/* perhaps others here */
 	return 0;
 }
 
-void setup_mailinfo(struct mailinfo *mi)
+void setup_mailinfo(struct repository *r, struct mailinfo *mi)
 {
 	memset(mi, 0, sizeof(*mi));
 	strbuf_init(&mi->name, 0);
@@ -1228,29 +1276,35 @@ void setup_mailinfo(struct mailinfo *mi)
 	strbuf_init(&mi->charset, 0);
 	strbuf_init(&mi->log_message, 0);
 	strbuf_init(&mi->inbody_header_accum, 0);
+	mi->quoted_cr = quoted_cr_warn;
 	mi->header_stage = 1;
 	mi->use_inbody_headers = 1;
 	mi->content_top = mi->content;
-	git_config(git_mailinfo_config, mi);
+	repo_config(r, git_mailinfo_config, mi);
 }
 
 void clear_mailinfo(struct mailinfo *mi)
 {
-	int i;
-
 	strbuf_release(&mi->name);
 	strbuf_release(&mi->email);
 	strbuf_release(&mi->charset);
 	strbuf_release(&mi->inbody_header_accum);
 	free(mi->message_id);
 
-	if (mi->p_hdr_data)
-		for (i = 0; mi->p_hdr_data[i]; i++)
-			strbuf_release(mi->p_hdr_data[i]);
+	for (size_t i = 0; i < ARRAY_SIZE(header); i++) {
+		if (!mi->p_hdr_data[i])
+			continue;
+		strbuf_release(mi->p_hdr_data[i]);
+		free(mi->p_hdr_data[i]);
+	}
 	free(mi->p_hdr_data);
-	if (mi->s_hdr_data)
-		for (i = 0; mi->s_hdr_data[i]; i++)
-			strbuf_release(mi->s_hdr_data[i]);
+
+	for (size_t i = 0; i < ARRAY_SIZE(header); i++) {
+		if (!mi->s_hdr_data[i])
+			continue;
+		strbuf_release(mi->s_hdr_data[i]);
+		free(mi->s_hdr_data[i]);
+	}
 	free(mi->s_hdr_data);
 
 	while (mi->content < mi->content_top) {

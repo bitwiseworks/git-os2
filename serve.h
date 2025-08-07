@@ -1,15 +1,9 @@
 #ifndef SERVE_H
 #define SERVE_H
 
-struct strvec;
-int has_capability(const struct strvec *keys, const char *capability,
-		   const char **value);
+struct repository;
 
-struct serve_options {
-	unsigned advertise_capabilities;
-	unsigned stateless_rpc;
-};
-#define SERVE_OPTIONS_INIT { 0 }
-void serve(struct serve_options *options);
+void protocol_v2_advertise_capabilities(struct repository *r);
+void protocol_v2_serve_loop(struct repository *r, int stateless_rpc);
 
 #endif /* SERVE_H */

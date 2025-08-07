@@ -25,7 +25,7 @@ nul_match_internal () {
 			>stderr &&
 			printf '$pattern' | q_to_nul >f &&
 			test_must_fail env LC_ALL=\"$lc_all\" git grep $extra_flags -f f $flags a 2>stderr &&
-			test_i18ngrep ! 'This is only supported with -P under PCRE v2' stderr
+			test_grep ! 'This is only supported with -P under PCRE v2' stderr
 		"
 	elif test "$matches" = P
 	then
@@ -33,7 +33,7 @@ nul_match_internal () {
 			>stderr &&
 			printf '$pattern' | q_to_nul >f &&
 			test_must_fail env LC_ALL=\"$lc_all\" git grep -f f $flags a 2>stderr &&
-			test_i18ngrep 'This is only supported with -P under PCRE v2' stderr
+			test_grep 'This is only supported with -P under PCRE v2' stderr
 		"
 	else
 		test_expect_success "PANIC: Test framework error. Unknown matches value $matches" 'false'
@@ -59,7 +59,7 @@ test_expect_success 'setup' "
 	git commit -m.
 "
 
-# Simple fixed-string matching that can use kwset (no -i && non-ASCII)
+# Simple fixed-string matching
 nul_match P P P '-F' 'yQf'
 nul_match P P P '-F' 'yQx'
 nul_match P P P '-Fi' 'YQf'
@@ -78,7 +78,7 @@ nul_match P P P '-Fi' '[Y]QF'
 nul_match P P P '-F' 'æQ[ð]'
 nul_match P P P '-F' '[æ]Qð'
 
-# The -F kwset codepath can't handle -i && non-ASCII...
+# Matching pattern and subject case with -i
 nul_match P 1 1 '-i' '[æ]Qð'
 
 # ...PCRE v2 only matches non-ASCII with -i casefolding under UTF-8

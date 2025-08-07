@@ -1,8 +1,16 @@
-#include "cache.h"
+#define USE_THE_REPOSITORY_VARIABLE
+
+#include "git-compat-util.h"
 #include "config.h"
-#include "exec-cmd.h"
+#include "gettext.h"
+#include "hex.h"
 #include "http.h"
 #include "walker.h"
+#include "setup.h"
+#include "strvec.h"
+#include "url.h"
+#include "urlmatch.h"
+#include "trace2.h"
 
 static const char http_fetch_usage[] = "git http-fetch "
 "[-c] [-t] [-a] [-v] [--recover] [-w ref] [--stdin | --packfile=hash | commit-id] url";
@@ -44,7 +52,8 @@ static int fetch_using_walker(const char *raw_url, int get_verbosely,
 }
 
 static void fetch_single_packfile(struct object_id *packfile_hash,
-				  const char *url) {
+				  const char *url,
+				  const char **index_pack_args) {
 	struct http_pack_request *preq;
 	struct slot_results results;
 	int ret;
@@ -52,16 +61,26 @@ static void fetch_single_packfile(struct object_id *packfile_hash,
 	http_init(NULL, url, 0);
 
 	preq = new_direct_http_pack_request(packfile_hash->hash, xstrdup(url));
-	if (preq == NULL)
+	if (!preq)
 		die("couldn't create http pack request");
 	preq->slot->results = &results;
-	preq->generate_keep = 1;
+	preq->index_pack_args = index_pack_args;
+	preq->preserve_index_pack_stdout = 1;
 
 	if (start_active_slot(preq->slot)) {
 		run_active_slot(preq->slot);
 		if (results.curl_result != CURLE_OK) {
-			die("Unable to get pack file %s\n%s", preq->url,
-			    curl_errorstr);
+			struct url_info url;
+			char *nurl = url_normalize(preq->url, &url);
+			if (!nurl || !git_env_bool("GIT_TRACE_REDACT", 1)) {
+				die("unable to get pack file '%s'\n%s", preq->url,
+				    curl_errorstr);
+			} else {
+				die("failed to get '%.*s' url from '%.*s' "
+				    "(full URL redacted due to GIT_TRACE_REDACT setting)\n%s",
+				    (int)url.scheme_len, url.url,
+				    (int)url.host_len, &url.url[url.host_off], curl_errorstr);
+			}
 		}
 	} else {
 		die("Unable to start request");
@@ -86,6 +105,8 @@ int cmd_main(int argc, const char **argv)
 	int packfile = 0;
 	int nongit;
 	struct object_id packfile_hash;
+	struct strvec index_pack_args = STRVEC_INIT;
+	int ret;
 
 	setup_git_directory_gently(&nongit);
 
@@ -109,9 +130,15 @@ int cmd_main(int argc, const char **argv)
 		} else if (skip_prefix(argv[arg], "--packfile=", &p)) {
 			const char *end;
 
+			if (nongit)
+				die(_("not a git repository"));
+
 			packfile = 1;
-			if (parse_oid_hex(p, &packfile_hash, &end) || *end)
+			if (parse_oid_hex_algop(p, &packfile_hash, &end,
+						the_repository->hash_algo) || *end)
 				die(_("argument to --packfile must be a valid hash (got '%s')"), p);
+		} else if (skip_prefix(argv[arg], "--index-pack-arg=", &p)) {
+			strvec_push(&index_pack_args, p);
 		}
 		arg++;
 	}
@@ -121,12 +148,22 @@ int cmd_main(int argc, const char **argv)
 	if (nongit)
 		die(_("not a git repository"));
 
+	trace2_cmd_name("http-fetch");
+
 	git_config(git_default_config, NULL);
 
 	if (packfile) {
-		fetch_single_packfile(&packfile_hash, argv[arg]);
-		return 0;
+		if (!index_pack_args.nr)
+			die(_("the option '%s' requires '%s'"), "--packfile", "--index-pack-args");
+
+		fetch_single_packfile(&packfile_hash, argv[arg],
+				      index_pack_args.v);
+		ret = 0;
+		goto out;
 	}
+
+	if (index_pack_args.nr)
+		die(_("the option '%s' requires '%s'"), "--index-pack-args", "--packfile");
 
 	if (commits_on_stdin) {
 		commits = walker_targets_stdin(&commit_id, &write_ref);
@@ -134,7 +171,12 @@ int cmd_main(int argc, const char **argv)
 		commit_id = (char **) &argv[arg++];
 		commits = 1;
 	}
-	return fetch_using_walker(argv[arg], get_verbosely, get_recover,
-				  commits, commit_id, write_ref,
-				  commits_on_stdin);
+
+	ret = fetch_using_walker(argv[arg], get_verbosely, get_recover,
+				 commits, commit_id, write_ref,
+				 commits_on_stdin);
+
+out:
+	strvec_clear(&index_pack_args);
+	return ret;
 }

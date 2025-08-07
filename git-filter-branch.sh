@@ -295,15 +295,18 @@ then
 	if test -n "$state_commit"
 	then
 		echo "Populating map from $state_branch ($state_commit)" 1>&2
-		perl -e'open(MAP, "-|", "git show $ARGV[0]:filter.map") or die;
-			while (<MAP>) {
-				m/(.*):(.*)/ or die;
-				open F, ">../map/$1" or die;
-				print F "$2" or die;
-				close(F) or die;
-			}
-			close(MAP) or die;' "$state_commit" \
-				|| die "Unable to load state from $state_branch:filter.map"
+
+		git show "$state_commit:filter.map" >"$tempdir"/filter-map ||
+			die "Unable to load state from $state_branch:filter.map"
+		while read line
+		do
+			case "$line" in
+			*:*)
+				echo "${line%:*}" >../map/"${line#*:}";;
+			*)
+				die "Unable to load state from $state_branch:filter.map";;
+			esac
+		done <"$tempdir"/filter-map
 	else
 		echo "Branch $state_branch does not exist. Will create" 1>&2
 	fi
@@ -492,14 +495,12 @@ then
 		sha1=$(git rev-parse "$ref"^0)
 		test -f "$workdir"/../map/$sha1 && continue
 		ancestor=$(git rev-list --simplify-merges -1 "$ref" "$@")
-		test "$ancestor" && echo $(map $ancestor) >> "$workdir"/../map/$sha1
+		test "$ancestor" && echo $(map $ancestor) >"$workdir"/../map/$sha1
 	done < "$tempdir"/heads
 fi
 
 # Finally update the refs
 
-_x40='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
-_x40="$_x40$_x40$_x40$_x40$_x40$_x40$_x40$_x40"
 echo
 while read ref
 do
@@ -519,7 +520,7 @@ do
 		git update-ref -m "filter-branch: delete" -d "$ref" $sha1 ||
 			die "Could not delete $ref"
 	;;
-	$_x40)
+	*)
 		echo "Ref '$ref' was rewritten"
 		if ! git update-ref -m "filter-branch: rewrite" \
 					"$ref" $rewritten $sha1 2>/dev/null; then
@@ -532,16 +533,6 @@ do
 				die "Could not rewrite $ref"
 			fi
 		fi
-	;;
-	*)
-		# NEEDSWORK: possibly add -Werror, making this an error
-		warn "WARNING: '$ref' was rewritten into multiple commits:"
-		warn "$rewritten"
-		warn "WARNING: Ref '$ref' points to the first one now."
-		rewritten=$(echo "$rewritten" | head -n 1)
-		git update-ref -m "filter-branch: rewrite to first" \
-				"$ref" $rewritten $sha1 ||
-			die "Could not rewrite $ref"
 	;;
 	esac
 	git update-ref -m "filter-branch: backup" "$orig_namespace$ref" $sha1 ||
@@ -591,7 +582,7 @@ if [ "$filter_tag_name" ]; then
 				git hash-object -t tag -w --stdin) ||
 				die "Could not create new tag object for $ref"
 			if git cat-file tag "$ref" | \
-			   sane_grep '^-----BEGIN PGP SIGNATURE-----' >/dev/null 2>&1
+			   grep '^-----BEGIN PGP SIGNATURE-----' >/dev/null 2>&1
 			then
 				warn "gpg signature stripped from tag object $sha1t"
 			fi
@@ -645,15 +636,13 @@ if test -n "$state_branch"
 then
 	echo "Saving rewrite state to $state_branch" 1>&2
 	state_blob=$(
-		perl -e'opendir D, "../map" or die;
-			open H, "|-", "git hash-object -w --stdin" or die;
-			foreach (sort readdir(D)) {
-				next if m/^\.\.?$/;
-				open F, "<../map/$_" or die;
-				chomp($f = <F>);
-				print H "$_:$f\n" or die;
-			}
-			close(H) or die;' || die "Unable to save state")
+		for file in ../map/*
+		do
+			from_commit=$(basename "$file")
+			to_commit=$(cat "$file")
+			echo "$from_commit:$to_commit"
+		done | git hash-object -w --stdin || die "Unable to save state"
+	)
 	state_tree=$(printf '100644 blob %s\tfilter.map\n' "$state_blob" | git mktree)
 	if test -n "$state_commit"
 	then

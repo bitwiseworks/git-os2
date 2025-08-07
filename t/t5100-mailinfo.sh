@@ -27,7 +27,12 @@ check_mailinfo () {
 
 for mail in 00*
 do
-	test_expect_success "mailinfo $mail" '
+	case "$mail" in
+	0004)
+		prereq=ICONV;;
+	esac
+
+	test_expect_success $prereq "mailinfo $mail" '
 		check_mailinfo "$mail" "" &&
 		if test -f "$DATA/msg$mail--scissors"
 		then
@@ -55,7 +60,12 @@ test_expect_success 'split box with rfc2047 samples' \
 
 for mail in rfc2047/00*
 do
-	test_expect_success "mailinfo $mail" '
+	case "$mail" in
+	rfc2047/0001)
+		prereq=ICONV;;
+	esac
+
+	test_expect_success $prereq "mailinfo $mail" '
 		git mailinfo -u "$mail-msg" "$mail-patch" <"$mail" >"$mail-info" &&
 		echo msg &&
 		test_cmp "$DATA/empty" "$mail-msg" &&
@@ -70,7 +80,7 @@ test_expect_success 'respect NULs' '
 
 	git mailsplit -d3 -o. "$DATA/nul-plain" &&
 	test_cmp "$DATA/nul-plain" 001 &&
-	(cat 001 | git mailinfo msg patch) &&
+	git mailinfo msg patch <001 &&
 	test_line_count = 4 patch
 
 '
@@ -122,7 +132,7 @@ test_expect_success 'mailinfo unescapes with --mboxrd' '
 	do
 		git mailinfo mboxrd/msg mboxrd/patch \
 		  <mboxrd/$i >mboxrd/out &&
-		test_cmp "$DATA/${i}mboxrd" mboxrd/msg
+		test_cmp "$DATA/${i}mboxrd" mboxrd/msg || return 1
 	done &&
 	sp=" " &&
 	echo "From " >expect &&
@@ -201,13 +211,13 @@ test_expect_success 'mailinfo -b double [PATCH]' '
 	test z"$subj" = z"Subject: message"
 '
 
-test_expect_failure 'mailinfo -b trailing [PATCH]' '
+test_expect_success 'mailinfo -b trailing [PATCH]' '
 	subj="$(echo "Subject: [other] [PATCH] message" |
 		git mailinfo -b /dev/null /dev/null)" &&
 	test z"$subj" = z"Subject: [other] message"
 '
 
-test_expect_failure 'mailinfo -b separated double [PATCH]' '
+test_expect_success 'mailinfo -b separated double [PATCH]' '
 	subj="$(echo "Subject: [PATCH] [other] [PATCH] message" |
 		git mailinfo -b /dev/null /dev/null)" &&
 	test z"$subj" = z"Subject: [other] message"
@@ -223,6 +233,68 @@ test_expect_success 'mailinfo handles unusual header whitespace' '
 	Author: Real Name
 	Email: user@example.com
 	Subject: extra spaces
+
+	EOF
+	test_cmp expect actual
+'
+
+check_quoted_cr_mail () {
+	mail="$1" && shift &&
+	git mailinfo -u "$@" "$mail.msg" "$mail.patch" \
+		<"$mail" >"$mail.info" 2>"$mail.err" &&
+	test_cmp "$mail-expected.msg" "$mail.msg" &&
+	test_cmp "$mail-expected.patch" "$mail.patch" &&
+	test_cmp "$DATA/quoted-cr-info" "$mail.info"
+}
+
+test_expect_success 'split base64 email with quoted-cr' '
+	mkdir quoted-cr &&
+	git mailsplit -oquoted-cr "$DATA/quoted-cr.mbox" >quoted-cr/last &&
+	test $(cat quoted-cr/last) = 2
+'
+
+test_expect_success 'mailinfo warn CR in base64 encoded email' '
+	sed -e "s/%%$//" -e "s/%%/$(printf \\015)/g" "$DATA/quoted-cr-msg" \
+		>quoted-cr/0001-expected.msg &&
+	sed "s/%%/$(printf \\015)/g" "$DATA/quoted-cr-msg" \
+		>quoted-cr/0002-expected.msg &&
+	sed -e "s/%%$//" -e "s/%%/$(printf \\015)/g" "$DATA/quoted-cr-patch" \
+		>quoted-cr/0001-expected.patch &&
+	sed "s/%%/$(printf \\015)/g" "$DATA/quoted-cr-patch" \
+		>quoted-cr/0002-expected.patch &&
+	check_quoted_cr_mail quoted-cr/0001 &&
+	test_must_be_empty quoted-cr/0001.err &&
+	check_quoted_cr_mail quoted-cr/0002 &&
+	grep "quoted CRLF detected" quoted-cr/0002.err &&
+	check_quoted_cr_mail quoted-cr/0001 --quoted-cr=nowarn &&
+	test_must_be_empty quoted-cr/0001.err &&
+	check_quoted_cr_mail quoted-cr/0002 --quoted-cr=nowarn &&
+	test_must_be_empty quoted-cr/0002.err &&
+	cp quoted-cr/0001-expected.msg quoted-cr/0002-expected.msg &&
+	cp quoted-cr/0001-expected.patch quoted-cr/0002-expected.patch &&
+	check_quoted_cr_mail quoted-cr/0001 --quoted-cr=strip &&
+	test_must_be_empty quoted-cr/0001.err &&
+	check_quoted_cr_mail quoted-cr/0002 --quoted-cr=strip &&
+	test_must_be_empty quoted-cr/0002.err
+'
+
+test_expect_success 'from line with unterminated quoted string' '
+	echo "From: bob \"unterminated string smith <bob@example.com>" >in &&
+	git mailinfo /dev/null /dev/null <in >actual &&
+	cat >expect <<-\EOF &&
+	Author: bob unterminated string smith
+	Email: bob@example.com
+
+	EOF
+	test_cmp expect actual
+'
+
+test_expect_success 'from line with unterminated comment' '
+	echo "From: bob (unterminated comment smith <bob@example.com>" >in &&
+	git mailinfo /dev/null /dev/null <in >actual &&
+	cat >expect <<-\EOF &&
+	Author: bob (unterminated comment smith
+	Email: bob@example.com
 
 	EOF
 	test_cmp expect actual

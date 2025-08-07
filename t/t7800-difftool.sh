@@ -8,6 +8,9 @@ test_description='git-difftool
 Testing basic diff tool invocation
 '
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 difftool_test_setup ()
@@ -25,33 +28,33 @@ prompt_given ()
 
 test_expect_success 'basic usage requires no repo' '
 	test_expect_code 129 git difftool -h >output &&
-	test_i18ngrep ^usage: output &&
+	test_grep ^usage: output &&
 	# create a ceiling directory to prevent Git from finding a repo
 	mkdir -p not/repo &&
 	test_when_finished rm -r not &&
 	test_expect_code 129 \
 	env GIT_CEILING_DIRECTORIES="$(pwd)/not" \
 	git -C not/repo difftool -h >output &&
-	test_i18ngrep ^usage: output
+	test_grep ^usage: output
 '
 
-# Create a file on master and change it on branch
+# Create a file on main and change it on branch
 test_expect_success 'setup' '
-	echo master >file &&
+	echo main >file &&
 	git add file &&
 	git commit -m "added file" &&
 
-	git checkout -b branch master &&
+	git checkout -b branch main &&
 	echo branch >file &&
 	git commit -a -m "branch changed file" &&
-	git checkout master
+	git checkout main
 '
 
 # Configure a custom difftool.<tool>.cmd and use it
 test_expect_success 'custom commands' '
 	difftool_test_setup &&
 	test_config difftool.test-tool.cmd "cat \"\$REMOTE\"" &&
-	echo master >expect &&
+	echo main >expect &&
 	git difftool --no-prompt branch >actual &&
 	test_cmp expect actual &&
 
@@ -63,7 +66,7 @@ test_expect_success 'custom commands' '
 
 test_expect_success 'custom tool commands override built-ins' '
 	test_config difftool.vimdiff.cmd "cat \"\$REMOTE\"" &&
-	echo master >expect &&
+	echo main >expect &&
 	git difftool --tool vimdiff --no-prompt branch >actual &&
 	test_cmp expect actual
 '
@@ -88,58 +91,67 @@ test_expect_success 'difftool forwards arguments to diff' '
 	rm for-diff
 '
 
-test_expect_success 'difftool ignores exit code' '
-	test_config difftool.error.cmd false &&
-	git difftool -y -t error branch
-'
+for opt in '' '--dir-diff'
+do
+	test_expect_success "difftool ${opt:-without options} ignores exit code" '
+		test_config difftool.error.cmd false &&
+		git difftool ${opt} -y -t error branch
+	'
 
-test_expect_success 'difftool forwards exit code with --trust-exit-code' '
-	test_config difftool.error.cmd false &&
-	test_must_fail git difftool -y --trust-exit-code -t error branch
-'
+	test_expect_success "difftool ${opt:-without options} forwards exit code with --trust-exit-code" '
+		test_config difftool.error.cmd false &&
+		test_must_fail git difftool ${opt} -y --trust-exit-code -t error branch
+	'
 
-test_expect_success 'difftool forwards exit code with --trust-exit-code for built-ins' '
-	test_config difftool.vimdiff.path false &&
-	test_must_fail git difftool -y --trust-exit-code -t vimdiff branch
-'
+	test_expect_success "difftool ${opt:-without options} forwards exit code with --trust-exit-code for built-ins" '
+		test_config difftool.vimdiff.path false &&
+		test_must_fail git difftool ${opt} -y --trust-exit-code -t vimdiff branch
+	'
 
-test_expect_success 'difftool honors difftool.trustExitCode = true' '
-	test_config difftool.error.cmd false &&
-	test_config difftool.trustExitCode true &&
-	test_must_fail git difftool -y -t error branch
-'
+	test_expect_success "difftool ${opt:-without options} honors difftool.trustExitCode = true" '
+		test_config difftool.error.cmd false &&
+		test_config difftool.trustExitCode true &&
+		test_must_fail git difftool ${opt} -y -t error branch
+	'
 
-test_expect_success 'difftool honors difftool.trustExitCode = false' '
-	test_config difftool.error.cmd false &&
-	test_config difftool.trustExitCode false &&
-	git difftool -y -t error branch
-'
+	test_expect_success "difftool ${opt:-without options} honors difftool.trustExitCode = false" '
+		test_config difftool.error.cmd false &&
+		test_config difftool.trustExitCode false &&
+		git difftool ${opt} -y -t error branch
+	'
 
-test_expect_success 'difftool ignores exit code with --no-trust-exit-code' '
-	test_config difftool.error.cmd false &&
-	test_config difftool.trustExitCode true &&
-	git difftool -y --no-trust-exit-code -t error branch
-'
+	test_expect_success "difftool ${opt:-without options} ignores exit code with --no-trust-exit-code" '
+		test_config difftool.error.cmd false &&
+		test_config difftool.trustExitCode true &&
+		git difftool ${opt} -y --no-trust-exit-code -t error branch
+	'
 
-test_expect_success 'difftool stops on error with --trust-exit-code' '
-	test_when_finished "rm -f for-diff .git/fail-right-file" &&
-	test_when_finished "git reset -- for-diff" &&
-	write_script .git/fail-right-file <<-\EOF &&
-	echo failed
-	exit 1
-	EOF
-	>for-diff &&
-	git add for-diff &&
-	test_must_fail git difftool -y --trust-exit-code \
-		--extcmd .git/fail-right-file branch >actual &&
-	test_line_count = 1 actual
-'
+	test_expect_success "difftool ${opt:-without options} stops on error with --trust-exit-code" '
+		test_when_finished "rm -f for-diff .git/fail-right-file" &&
+		test_when_finished "git reset -- for-diff" &&
+		write_script .git/fail-right-file <<-\EOF &&
+		echo failed
+		exit 1
+		EOF
+		>for-diff &&
+		git add for-diff &&
+		test_must_fail git difftool ${opt} -y --trust-exit-code \
+			--extcmd .git/fail-right-file branch >actual &&
+		test_line_count = 1 actual
+	'
 
-test_expect_success 'difftool honors exit status if command not found' '
-	test_config difftool.nonexistent.cmd i-dont-exist &&
-	test_config difftool.trustExitCode false &&
-	test_must_fail git difftool -y -t nonexistent branch
-'
+	test_expect_success "difftool ${opt:-without options} honors exit status if command not found" '
+		test_config difftool.nonexistent.cmd i-dont-exist &&
+		test_config difftool.trustExitCode false &&
+		if test "${opt}" = --dir-diff
+		then
+			expected_code=127
+		else
+			expected_code=128
+		fi &&
+		test_expect_code ${expected_code} git difftool ${opt} -y -t nonexistent branch
+	'
+done
 
 test_expect_success 'difftool honors --gui' '
 	difftool_test_setup &&
@@ -149,6 +161,58 @@ test_expect_success 'difftool honors --gui' '
 
 	echo branch >expect &&
 	git difftool --no-prompt --gui branch >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'difftool with guiDefault auto selects gui tool when there is DISPLAY' '
+	difftool_test_setup &&
+	test_config merge.tool bogus-tool &&
+	test_config diff.tool bogus-tool &&
+	test_config diff.guitool test-tool &&
+	test_config difftool.guiDefault auto &&
+	DISPLAY=SOMETHING && export DISPLAY &&
+
+	echo branch >expect &&
+	git difftool --no-prompt branch >actual &&
+	test_cmp expect actual
+'
+test_expect_success 'difftool with guiDefault auto selects regular tool when no DISPLAY' '
+	difftool_test_setup &&
+	test_config diff.guitool bogus-tool &&
+	test_config diff.tool test-tool &&
+	test_config difftool.guiDefault Auto &&
+	DISPLAY= && export DISPLAY &&
+
+	echo branch >expect &&
+	git difftool --no-prompt branch >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'difftool with guiDefault true selects gui tool' '
+	difftool_test_setup &&
+	test_config diff.tool bogus-tool &&
+	test_config diff.guitool test-tool &&
+	test_config difftool.guiDefault true &&
+
+	DISPLAY= && export DISPLAY &&
+	echo branch >expect &&
+	git difftool --no-prompt branch >actual &&
+	test_cmp expect actual &&
+
+	DISPLAY=Something && export DISPLAY &&
+	echo branch >expect &&
+	git difftool --no-prompt branch >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'difftool --no-gui trumps config guiDefault' '
+	difftool_test_setup &&
+	test_config diff.guitool bogus-tool &&
+	test_config diff.tool test-tool &&
+	test_config difftool.guiDefault true &&
+
+	echo branch >expect &&
+	git difftool --no-prompt --no-gui branch >actual &&
 	test_cmp expect actual
 '
 
@@ -311,21 +375,21 @@ test_expect_success 'difftool.<tool>.path' '
 
 test_expect_success 'difftool --extcmd=cat' '
 	echo branch >expect &&
-	echo master >>expect &&
+	echo main >>expect &&
 	git difftool --no-prompt --extcmd=cat branch >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'difftool --extcmd cat' '
 	echo branch >expect &&
-	echo master >>expect &&
+	echo main >>expect &&
 	git difftool --no-prompt --extcmd=cat branch >actual &&
 	test_cmp expect actual
 '
 
 test_expect_success 'difftool -x cat' '
 	echo branch >expect &&
-	echo master >>expect &&
+	echo main >>expect &&
 	git difftool --no-prompt -x cat branch >actual &&
 	test_cmp expect actual
 '
@@ -338,7 +402,7 @@ test_expect_success 'difftool --extcmd echo arg1' '
 '
 
 test_expect_success 'difftool --extcmd cat arg1' '
-	echo master >expect &&
+	echo main >expect &&
 	git difftool --no-prompt \
 		--extcmd sh\ -c\ \"cat\ \$1\" branch >actual &&
 	test_cmp expect actual
@@ -351,7 +415,7 @@ test_expect_success 'difftool --extcmd cat arg2' '
 	test_cmp expect actual
 '
 
-# Create a second file on master and a different version on branch
+# Create a second file on main and a different version on branch
 test_expect_success 'setup with 2 files different' '
 	echo m2 >file2 &&
 	git add file2 &&
@@ -361,7 +425,7 @@ test_expect_success 'setup with 2 files different' '
 	echo br2 >file2 &&
 	git add file2 &&
 	git commit -a -m "branch changed file2" &&
-	git checkout master
+	git checkout main
 '
 
 test_expect_success 'say no to the first file' '
@@ -369,14 +433,14 @@ test_expect_success 'say no to the first file' '
 	git difftool -x cat branch <input >output &&
 	grep m2 output &&
 	grep br2 output &&
-	! grep master output &&
+	! grep main output &&
 	! grep branch output
 '
 
 test_expect_success 'say no to the second file' '
 	(echo && echo n) >input &&
 	git difftool -x cat branch <input >output &&
-	grep master output &&
+	grep main output &&
 	grep branch output &&
 	! grep m2 output &&
 	! grep br2 output
@@ -384,7 +448,7 @@ test_expect_success 'say no to the second file' '
 
 test_expect_success 'ending prompt input with EOF' '
 	git difftool -x cat branch </dev/null >output &&
-	! grep master output &&
+	! grep main output &&
 	! grep branch output &&
 	! grep m2 output &&
 	! grep br2 output
@@ -396,9 +460,9 @@ test_expect_success 'difftool --tool-help' '
 '
 
 test_expect_success 'setup change in subdirectory' '
-	git checkout master &&
+	git checkout main &&
 	mkdir sub &&
-	echo master >sub/sub &&
+	echo main >sub/sub &&
 	git add sub/sub &&
 	git commit -m "added sub/sub" &&
 	git tag v1 &&
@@ -440,20 +504,27 @@ run_dir_diff_test () {
 
 run_dir_diff_test 'difftool -d' '
 	git difftool -d $symlinks --extcmd ls branch >output &&
-	grep sub output &&
-	grep file output
+	grep "^sub$" output &&
+	grep "^file$" output
 '
 
 run_dir_diff_test 'difftool --dir-diff' '
 	git difftool --dir-diff $symlinks --extcmd ls branch >output &&
-	grep sub output &&
-	grep file output
+	grep "^sub$" output &&
+	grep "^file$" output
+'
+
+run_dir_diff_test 'difftool --dir-diff avoids repeated slashes in TMPDIR' '
+	TMPDIR="${TMPDIR:-/tmp}////" \
+		git difftool --dir-diff $symlinks --extcmd echo branch >output &&
+	grep -v // output >actual &&
+	test_line_count = 1 actual
 '
 
 run_dir_diff_test 'difftool --dir-diff ignores --prompt' '
 	git difftool --dir-diff $symlinks --prompt --extcmd ls branch >output &&
-	grep sub output &&
-	grep file output
+	grep "^sub$" output &&
+	grep "^file$" output
 '
 
 run_dir_diff_test 'difftool --dir-diff branch from subdirectory' '
@@ -462,11 +533,11 @@ run_dir_diff_test 'difftool --dir-diff branch from subdirectory' '
 		git difftool --dir-diff $symlinks --extcmd ls branch >output &&
 		# "sub" must only exist in "right"
 		# "file" and "file2" must be listed in both "left" and "right"
-		grep sub output >sub-output &&
+		grep "^sub$" output >sub-output &&
 		test_line_count = 1 sub-output &&
-		grep file"$" output >file-output &&
+		grep "^file$" output >file-output &&
 		test_line_count = 2 file-output &&
-		grep file2 output >file2-output &&
+		grep "^file2$" output >file2-output &&
 		test_line_count = 2 file2-output
 	)
 '
@@ -477,11 +548,11 @@ run_dir_diff_test 'difftool --dir-diff v1 from subdirectory' '
 		git difftool --dir-diff $symlinks --extcmd ls v1 >output &&
 		# "sub" and "file" exist in both v1 and HEAD.
 		# "file2" is unchanged.
-		grep sub output >sub-output &&
+		grep "^sub$" output >sub-output &&
 		test_line_count = 2 sub-output &&
-		grep file output >file-output &&
+		grep "^file$" output >file-output &&
 		test_line_count = 2 file-output &&
-		! grep file2 output
+		! grep "^file2$" output
 	)
 '
 
@@ -491,9 +562,9 @@ run_dir_diff_test 'difftool --dir-diff branch from subdirectory w/ pathspec' '
 		git difftool --dir-diff $symlinks --extcmd ls branch -- .>output &&
 		# "sub" only exists in "right"
 		# "file" and "file2" must not be listed
-		grep sub output >sub-output &&
+		grep "^sub$" output >sub-output &&
 		test_line_count = 1 sub-output &&
-		! grep file output
+		! grep "^file$" output
 	)
 '
 
@@ -503,9 +574,9 @@ run_dir_diff_test 'difftool --dir-diff v1 from subdirectory w/ pathspec' '
 		git difftool --dir-diff $symlinks --extcmd ls v1 -- .>output &&
 		# "sub" exists in v1 and HEAD
 		# "file" is filtered out by the pathspec
-		grep sub output >sub-output &&
+		grep "^sub$" output >sub-output &&
 		test_line_count = 2 sub-output &&
-		! grep file output
+		! grep "^file$" output
 	)
 '
 
@@ -518,16 +589,16 @@ run_dir_diff_test 'difftool --dir-diff from subdirectory with GIT_DIR set' '
 		cd sub &&
 		git difftool --dir-diff $symlinks --extcmd ls \
 			branch -- sub >output &&
-		grep sub output &&
-		! grep file output
+		grep "^sub$" output &&
+		! grep "^file$" output
 	)
 '
 
 run_dir_diff_test 'difftool --dir-diff when worktree file is missing' '
 	test_when_finished git reset --hard &&
 	rm file2 &&
-	git difftool --dir-diff $symlinks --extcmd ls branch master >output &&
-	grep file2 output
+	git difftool --dir-diff $symlinks --extcmd ls branch main >output &&
+	grep "^file2$" output
 '
 
 run_dir_diff_test 'difftool --dir-diff with unmerged files' '
@@ -543,7 +614,7 @@ run_dir_diff_test 'difftool --dir-diff with unmerged files' '
 	echo b >>file &&
 	git add file &&
 	git commit -m conflict-b &&
-	git checkout master &&
+	git checkout main &&
 	git merge conflict-a &&
 	test_must_fail git merge conflict-b &&
 	cat >expect <<-EOF &&
@@ -594,6 +665,10 @@ run_dir_diff_test 'difftool --dir-diff syncs worktree without unstaged change' '
 	test_cmp expect file
 '
 
+run_dir_diff_test 'difftool --dir-diff with no diff' '
+	git difftool -d main main
+'
+
 write_script modify-file <<\EOF
 echo "new content" >file
 EOF
@@ -626,6 +701,7 @@ test_expect_success 'difftool --no-symlinks detects conflict ' '
 
 test_expect_success 'difftool properly honors gitlink and core.worktree' '
 	test_when_finished rm -rf submod/ule &&
+	test_config_global protocol.file.allow always &&
 	git submodule add ./. submod/ule &&
 	test_config -C submod/ule diff.tool checktrees &&
 	test_config -C submod/ule difftool.checktrees.cmd '\''
@@ -671,7 +747,6 @@ test_expect_success SYMLINKS 'difftool --dir-diff handles modified symlinks' '
 	rm c &&
 	ln -s d c &&
 	cat >expect <<-EOF &&
-		b
 		c
 
 		c
@@ -707,7 +782,6 @@ test_expect_success SYMLINKS 'difftool --dir-diff handles modified symlinks' '
 	# Deleted symlinks
 	rm -f c &&
 	cat >expect <<-EOF &&
-		b
 		c
 
 	EOF
@@ -718,6 +792,71 @@ test_expect_success SYMLINKS 'difftool --dir-diff handles modified symlinks' '
 	git difftool --no-symlinks --dir-diff --extcmd ls >output &&
 	grep -v ^/ output >actual &&
 	test_cmp expect actual
+'
+
+test_expect_success SYMLINKS 'difftool --dir-diff writes symlinks as raw text' '
+	# Start out on a branch called "branch-init".
+	git init -b branch-init symlink-files &&
+	(
+		cd symlink-files &&
+		# This test ensures that symlinks are written as raw text.
+		# The "cat" tools output link and file contents.
+		git config difftool.cat-left-link.cmd "cat \"\$LOCAL/link\"" &&
+		git config difftool.cat-left-a.cmd "cat \"\$LOCAL/file-a\"" &&
+		git config difftool.cat-right-link.cmd "cat \"\$REMOTE/link\"" &&
+		git config difftool.cat-right-b.cmd "cat \"\$REMOTE/file-b\"" &&
+
+		# Record the empty initial state so that we can come back here
+		# later and not have to consider the any cases where difftool
+		# will create symlinks back into the worktree.
+		test_tick &&
+		git commit --allow-empty -m init &&
+
+		# Create a file called "file-a" with a symlink pointing to it.
+		git switch -c branch-a &&
+		echo a >file-a &&
+		ln -s file-a link &&
+		git add file-a link &&
+		test_tick &&
+		git commit -m link-to-file-a &&
+
+		# Create a file called "file-b" and point the symlink to it.
+		git switch -c branch-b &&
+		echo b >file-b &&
+		rm link &&
+		ln -s file-b link &&
+		git add file-b link &&
+		git rm file-a &&
+		test_tick &&
+		git commit -m link-to-file-b &&
+
+		# Checkout the initial branch so that the --symlinks behavior is
+		# not activated. The two directories should be completely
+		# independent with no symlinks pointing back here.
+		git switch branch-init &&
+
+		# The left link must be "file-a" and "file-a" must contain "a".
+		echo file-a >expect &&
+		git difftool --symlinks --dir-diff --tool cat-left-link \
+			branch-a branch-b >actual &&
+		test_cmp expect actual &&
+
+		echo a >expect &&
+		git difftool --symlinks --dir-diff --tool cat-left-a \
+			branch-a branch-b >actual &&
+		test_cmp expect actual &&
+
+		# The right link must be "file-b" and "file-b" must contain "b".
+		echo file-b >expect &&
+		git difftool --symlinks --dir-diff --tool cat-right-link \
+			branch-a branch-b >actual &&
+		test_cmp expect actual &&
+
+		echo b >expect &&
+		git difftool --symlinks --dir-diff --tool cat-right-b \
+			branch-a branch-b >actual &&
+		test_cmp expect actual
+	)
 '
 
 test_expect_success 'add -N and difftool -d' '
@@ -759,4 +898,36 @@ test_expect_success 'difftool --gui, --tool and --extcmd are mutually exclusive'
 	test_must_fail git difftool --gui --tool=test-tool --extcmd=cat
 '
 
+test_expect_success 'difftool --rotate-to' '
+	difftool_test_setup &&
+	test_when_finished git reset --hard &&
+	echo 1 >1 &&
+	echo 2 >2 &&
+	echo 4 >4 &&
+	git add 1 2 4 &&
+	git commit -a -m "124" &&
+	git difftool --no-prompt --extcmd=cat --rotate-to="2" HEAD^ >output &&
+	cat >expect <<-\EOF &&
+	2
+	4
+	1
+	EOF
+	test_cmp output expect
+'
+
+test_expect_success 'difftool --skip-to' '
+	difftool_test_setup &&
+	test_when_finished git reset --hard &&
+	git difftool --no-prompt --extcmd=cat --skip-to="2" HEAD^ >output &&
+	cat >expect <<-\EOF &&
+	2
+	4
+	EOF
+	test_cmp output expect
+'
+
+test_expect_success 'difftool --rotate/skip-to error condition' '
+	test_must_fail git difftool --no-prompt --extcmd=cat --rotate-to="3" HEAD^ &&
+	test_must_fail git difftool --no-prompt --extcmd=cat --skip-to="3" HEAD^
+'
 test_done

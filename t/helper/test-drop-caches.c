@@ -1,8 +1,11 @@
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
 #include "test-tool.h"
 #include "git-compat-util.h"
 
 #if defined(GIT_WINDOWS_NATIVE)
 #include "lazyload.h"
+#include <winnt.h>
 
 static int cmd_sync(void)
 {
@@ -86,7 +89,8 @@ static int cmd_dropcaches(void)
 {
 	HANDLE hProcess = GetCurrentProcess();
 	HANDLE hToken;
-	DECLARE_PROC_ADDR(ntdll.dll, DWORD, NtSetSystemInformation, INT, PVOID, ULONG);
+	DECLARE_PROC_ADDR(ntdll.dll, DWORD, NTAPI, NtSetSystemInformation, INT, PVOID,
+		ULONG);
 	SYSTEM_MEMORY_LIST_COMMAND command;
 	int status;
 
@@ -153,7 +157,7 @@ static int cmd_dropcaches(void)
 
 #endif
 
-int cmd__drop_caches(int argc, const char **argv)
+int cmd__drop_caches(int argc UNUSED, const char **argv UNUSED)
 {
 	cmd_sync();
 	return cmd_dropcaches();

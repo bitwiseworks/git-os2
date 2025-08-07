@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='check that certain rev-parse options work outside repo'
+
 . ./test-lib.sh
 
 test_expect_success 'set up non-repo directory' '

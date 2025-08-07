@@ -2,6 +2,9 @@
 
 test_description='pull can handle submodules'
 
+GIT_TEST_FATAL_REGISTER_SUBMODULE_ODB=1
+export GIT_TEST_FATAL_REGISTER_SUBMODULE_ODB
+
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-submodule-update.sh
 
@@ -42,9 +45,11 @@ git_pull_noff () {
 	$2 git pull --no-ff
 }
 
-KNOWN_FAILURE_NOFF_MERGE_DOESNT_CREATE_EMPTY_SUBMODULE_DIR=1
-KNOWN_FAILURE_NOFF_MERGE_ATTEMPTS_TO_MERGE_REMOVED_SUBMODULE_FILES=1
 test_submodule_switch_func "git_pull_noff"
+
+test_expect_success 'setup' '
+	git config --global protocol.file.allow always
+'
 
 test_expect_success 'pull --recurse-submodule setup' '
 	test_create_repo child &&
@@ -101,6 +106,32 @@ test_expect_success " --[no-]recurse-submodule and submodule.recurse" '
 	test_path_is_file super/sub/merge_strategy_4.t
 '
 
+test_expect_success "fetch.recurseSubmodules option triggers recursive fetch (but not recursive update)" '
+	test_commit -C child merge_strategy_5 &&
+	# Omit the parent commit, otherwise this passes with the
+	# default "pull" behavior.
+
+	git -C super -c fetch.recursesubmodules=true pull --no-rebase &&
+	# Check that the submodule commit was fetched
+	sub_oid=$(git -C child rev-parse HEAD) &&
+	git -C super/sub cat-file -e $sub_oid &&
+	# Check that the submodule worktree did not update
+	test_path_is_missing super/sub/merge_strategy_5.t
+'
+
+test_expect_success "fetch.recurseSubmodules takes precedence over submodule.recurse" '
+	test_commit -C child merge_strategy_6 &&
+	# Omit the parent commit, otherwise this passes with the
+	# default "pull" behavior.
+
+	git -C super -c submodule.recurse=false -c fetch.recursesubmodules=true pull --no-rebase &&
+	# Check that the submodule commit was fetched
+	sub_oid=$(git -C child rev-parse HEAD) &&
+	git -C super/sub cat-file -e $sub_oid &&
+	# Check that the submodule worktree did not update
+	test_path_is_missing super/sub/merge_strategy_6.t
+'
+
 test_expect_success 'pull --rebase --recurse-submodules (remote superproject submodule changes, local submodule changes)' '
 	# This tests the following scenario :
 	# - local submodule has new commits
@@ -141,7 +172,7 @@ test_expect_success 'pull --rebase --recurse-submodules fails if both sides reco
 	# submodule itself, but the merge strategy in submodules
 	# does not support rebase:
 	test_must_fail git -C super pull --rebase --recurse-submodules 2>err &&
-	test_i18ngrep "locally recorded submodule modifications" err
+	test_grep "locally recorded submodule modifications" err
 '
 
 test_expect_success 'pull --rebase --recurse-submodules (no submodule changes, no fork-point)' '
@@ -170,7 +201,7 @@ test_expect_success 'pull --rebase --recurse-submodules (no submodule changes, n
 	# create topic branch in clone, not based on any remote-tracking branch
 	git -C superclone checkout -b feat HEAD~1 &&
 	test_commit -C superclone first_on_feat &&
-	git -C superclone pull --rebase --recurse-submodules origin master
+	git -C superclone pull --rebase --recurse-submodules origin HEAD
 '
 
 # NOTE:
@@ -193,6 +224,7 @@ test_expect_success 'branch has no merge base with remote-tracking counterpart' 
 
 	test_create_repo a-submodule &&
 	test_commit -C a-submodule foo &&
+	test_commit -C a-submodule bar &&
 
 	test_create_repo parent &&
 	git -C parent submodule add "$(pwd)/a-submodule" &&
@@ -200,13 +232,32 @@ test_expect_success 'branch has no merge base with remote-tracking counterpart' 
 
 	git clone parent child &&
 
-	# Reset master so that it has no merge base with
-	# refs/remotes/origin/master.
+	# Reset the current branch so that it has no merge base with
+	# the remote-tracking branch.
 	OTHER=$(git -C child commit-tree -m bar \
 		$(git -C child rev-parse HEAD^{tree})) &&
 	git -C child reset --hard "$OTHER" &&
 
 	git -C child pull --recurse-submodules --rebase
+'
+
+test_expect_success 'fetch submodule remote of different name from superproject' '
+	git -C child remote rename origin o1 &&
+	git -C child submodule update --init &&
+
+	# Needs to create unreachable commit from current master branch.
+	git -C a-submodule checkout -b newmain HEAD^ &&
+	test_commit -C a-submodule echo &&
+	test_commit -C a-submodule moreecho &&
+	subc=$(git -C a-submodule rev-parse --short HEAD) &&
+
+	git -C parent/a-submodule fetch &&
+	git -C parent/a-submodule checkout "$subc" &&
+	git -C parent commit -m "update submodule" a-submodule &&
+	git -C a-submodule reset --hard HEAD^^ &&
+
+	git -C child pull --no-recurse-submodules &&
+	git -C child submodule update
 '
 
 test_done

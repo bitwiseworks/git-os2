@@ -1,6 +1,9 @@
 #!/bin/sh
 
 test_description='test log -L'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 test_expect_success 'setup (import history)' '
@@ -16,7 +19,7 @@ test_expect_success 'basic command line parsing' '
 
 	# -L requires there is no pathspec
 	test_must_fail git log -L1,1:b.c -- b.c 2>error &&
-	test_i18ngrep "cannot be used with pathspec" error &&
+	test_grep "cannot be used with pathspec" error &&
 
 	# This would fail because --follow wants a single path, but
 	# we may fail due to incompatibility between -L/--follow in
@@ -47,7 +50,7 @@ canned_test_failure () {
 test_bad_opts () {
 	test_expect_success "invalid args: $1" "
 		test_must_fail git log $1 2>errors &&
-		test_i18ngrep '$2' errors
+		test_grep '$2' errors
 	"
 }
 
@@ -134,7 +137,7 @@ test_expect_success 'range_set_union' '
 	test_seq 1000 > c.c &&
 	git add c.c &&
 	git commit -m "modify many lines" &&
-	git log $(for x in $(test_seq 200); do echo -L $((2*x)),+1:c.c; done)
+	git log $(for x in $(test_seq 200); do echo -L $((2*x)),+1:c.c || return 1; done)
 '
 
 test_expect_success '-s shows only line-log commits' '
@@ -309,6 +312,56 @@ test_expect_success 'parent oids with parent rewriting' '
 test_expect_success 'line-log with --before' '
 	echo $root_oid >expect &&
 	git log --format=%h --no-patch -L:func2:file.c --before=$first_tick >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'setup tests for zero-width regular expressions' '
+	cat >expect <<-EOF
+	Modify func1() in file.c
+	Add func1() and func2() in file.c
+	EOF
+'
+
+test_expect_success 'zero-width regex $ matches any function name' '
+	git log --format="%s" --no-patch "-L:$:file.c" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'zero-width regex ^ matches any function name' '
+	git log --format="%s" --no-patch "-L:^:file.c" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'zero-width regex .* matches any function name' '
+	git log --format="%s" --no-patch "-L:.*:file.c" >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'show line-log with graph' '
+	qz_to_tab_space >expect <<-EOF &&
+	* $head_oid Modify func2() in file.c
+	|Z
+	| diff --git a/file.c b/file.c
+	| --- a/file.c
+	| +++ b/file.c
+	| @@ -6,4 +6,4 @@
+	|  int func2()
+	|  {
+	| -    return F2;
+	| +    return F2 + 2;
+	|  }
+	* $root_oid Add func1() and func2() in file.c
+	ZZ
+	  diff --git a/file.c b/file.c
+	  --- /dev/null
+	  +++ b/file.c
+	  @@ -0,0 +6,4 @@
+	  +int func2()
+	  +{
+	  +    return F2;
+	  +}
+	EOF
+	git log --graph --oneline -L:func2:file.c >actual &&
 	test_cmp expect actual
 '
 

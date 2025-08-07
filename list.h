@@ -19,7 +19,7 @@
  *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see
- * <http://www.gnu.org/licenses/>.
+ * <https://www.gnu.org/licenses/>.
  */
 
 #ifndef LIST_H
@@ -46,7 +46,10 @@ struct list_head {
 #define INIT_LIST_HEAD(ptr) \
 	(ptr)->next = (ptr)->prev = (ptr)
 
-#define LIST_HEAD_INIT(name) { &(name), &(name) }
+#define LIST_HEAD_INIT(name) { \
+	.next = &(name), \
+	.prev = &(name), \
+}
 
 /* Add new element at the head of the list. */
 static inline void list_add(struct list_head *newp, struct list_head *head)

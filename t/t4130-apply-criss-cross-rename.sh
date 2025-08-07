@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='git apply handling criss-cross rename patch.'
+
 . ./test-lib.sh
 
 create_file() {

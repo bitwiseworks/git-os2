@@ -1,3 +1,4 @@
+test_expect_success 'subshell-here-doc' '
 (
 # LINT: stitch together incomplete \-ending lines
 # LINT: swallow here-doc to avoid false positives in content
@@ -8,10 +9,10 @@
 	nevermore...
 	EOF
 
-# LINT: missing "&&" on 'cat'
+# LINT: missing "&&" on "cat"
 	cat <<EOF >bip
 	fish fly high
-	EOF
+EOF
 
 # LINT: swallow here-doc (EOF is last line of subshell)
 	echo <<-\EOF >bop
@@ -27,13 +28,10 @@
 	glink
 	FIZZ
 	ARBITRARY
-	cat <<-'ARBITRARY2' >bup2 &&
-	glink
-	FIZZ
-	ARBITRARY2
 	cat <<-"ARBITRARY3" >bup3 &&
 	glink
 	FIZZ
 	ARBITRARY3
 	meep
 )
+'

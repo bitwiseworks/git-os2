@@ -25,33 +25,26 @@ test_expect_success 'setup' '
 	echo B >B.java
 '
 
+test_expect_success 'setup: test-tool userdiff' '
+	# Make sure additions to builtin_drivers are sorted
+	test_when_finished "rm builtin-drivers.sorted" &&
+	test-tool userdiff list-builtin-drivers >builtin-drivers &&
+	test_file_not_empty builtin-drivers &&
+	sort <builtin-drivers >builtin-drivers.sorted &&
+	test_cmp builtin-drivers.sorted builtin-drivers &&
+
+	# Ditto, but "custom" requires the .git directory and config
+	# to be setup and read.
+	test_when_finished "rm custom-drivers.sorted" &&
+	test-tool userdiff list-custom-drivers >custom-drivers &&
+	test_file_not_empty custom-drivers &&
+	sort <custom-drivers >custom-drivers.sorted &&
+	test_cmp custom-drivers.sorted custom-drivers
+'
+
 diffpatterns="
-	ada
-	bash
-	bibtex
-	cpp
-	csharp
-	css
-	dts
-	elixir
-	fortran
-	fountain
-	golang
-	html
-	java
-	markdown
-	matlab
-	objc
-	pascal
-	perl
-	php
-	python
-	ruby
-	rust
-	tex
-	custom1
-	custom2
-	custom3
+	$(cat builtin-drivers)
+	$(cat custom-drivers)
 "
 
 for p in $diffpatterns
@@ -60,15 +53,34 @@ do
 		echo "*.java diff=$p" >.gitattributes &&
 		test_expect_code 1 git diff --no-index \
 			A.java B.java 2>msg &&
-		test_i18ngrep ! fatal msg &&
-		test_i18ngrep ! error msg
+		test_grep ! fatal msg &&
+		test_grep ! error msg
 	'
 	test_expect_success "builtin $p wordRegex pattern compiles" '
 		echo "*.java diff=$p" >.gitattributes &&
 		test_expect_code 1 git diff --no-index --word-diff \
 			A.java B.java 2>msg &&
-		test_i18ngrep ! fatal msg &&
-		test_i18ngrep ! error msg
+		test_grep ! fatal msg &&
+		test_grep ! error msg
+	'
+
+	test_expect_success "builtin $p pattern compiles on bare repo with --attr-source" '
+		test_when_finished "rm -rf bare.git" &&
+		git checkout -B master &&
+		git add . &&
+		echo "*.java diff=notexist" >.gitattributes &&
+		git add .gitattributes &&
+		git commit -am "changing gitattributes" &&
+		git checkout -B branchA &&
+		echo "*.java diff=$p" >.gitattributes &&
+		git add .gitattributes &&
+		git commit -am "changing gitattributes" &&
+		git clone --bare --no-local . bare.git &&
+		git -C bare.git symbolic-ref HEAD refs/heads/master &&
+		test_expect_code 1 git -C bare.git --attr-source=branchA \
+			diff --exit-code HEAD:A.java HEAD:B.java 2>msg &&
+		test_grep ! fatal msg &&
+		test_grep ! error msg
 	'
 done
 
@@ -76,13 +88,13 @@ test_expect_success 'last regexp must not be negated' '
 	echo "*.java diff=java" >.gitattributes &&
 	test_config diff.java.funcname "!static" &&
 	test_expect_code 128 git diff --no-index A.java B.java 2>msg &&
-	test_i18ngrep ": Last expression must not be negated:" msg
+	test_grep ": Last expression must not be negated:" msg
 '
 
 test_expect_success 'setup hunk header tests' '
 	for i in $diffpatterns
 	do
-		echo "$i-* diff=$i"
+		echo "$i-* diff=$i" || return 1
 	done > .gitattributes &&
 
 	# add all test files to the index
@@ -101,13 +113,7 @@ test_expect_success 'setup hunk header tests' '
 # check each individual file
 for i in $(git ls-files)
 do
-	if grep broken "$i" >/dev/null 2>&1
-	then
-		result=failure
-	else
-		result=success
-	fi
-	test_expect_$result "hunk header: $i" "
+	test_expect_success "hunk header: $i" "
 		git diff -U1 $i >actual &&
 		grep '@@ .* @@.*RIGHT' actual
 	"

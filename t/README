@@ -32,7 +32,14 @@ the tests.
     ok 2 - plain with GIT_WORK_TREE
     ok 3 - plain bare
 
-Since the tests all output TAP (see http://testanything.org) they can
+t/Makefile defines a target for each test file, such that you can also use
+shell pattern matching to run a subset of the tests:
+
+    make *checkout*
+
+will run all tests with 'checkout' in their filename.
+
+Since the tests all output TAP (see https://testanything.org) they can
 be run with any TAP harness. Here's an example of parallel testing
 powered by a recent version of prove(1):
 
@@ -262,8 +269,8 @@ The argument for --run, <test-selector>, is a list of description
 substrings or globs or individual test numbers or ranges with an
 optional negation prefix (of '!') that define what tests in a test
 suite to include (or exclude, if negated) in the run.  A range is two
-numbers separated with a dash and matches a range of tests with both
-ends been included.  You may omit the first or the second number to
+numbers separated with a dash and specifies an inclusive range of tests
+to run.  You may omit the first or the second number to
 mean "from the first test" or "up to the very last test" respectively.
 
 The argument to --run is split on commas into separate strings,
@@ -274,10 +281,10 @@ text that you want to match includes a comma, use the glob character
 on all tests that match either the glob *rebase* or the glob
 *merge?cherry-pick*.
 
-If --run starts with an unprefixed number or range the initial
-set of tests to run is empty. If the first item starts with '!'
+If --run starts with an unprefixed number or range, the initial
+set of tests to run is empty.  If the first item starts with '!',
 all the tests are added to the initial set.  After initial set is
-determined every test number or range is added or excluded from
+determined, every test number or range is added or excluded from
 the set one by one, from left to right.
 
 For example, to run only tests up to a specific test (21), one
@@ -358,12 +365,6 @@ whether this mode is active, and e.g. skip some tests that are hard to
 refactor to deal with it. The "SYMLINKS" prerequisite is currently
 excluded as so much relies on it, but this might change in the future.
 
-GIT_TEST_GETTEXT_POISON=<boolean> turns all strings marked for
-translation into gibberish if true. Used for spotting those tests that
-need to be marked with a C_LOCALE_OUTPUT prerequisite when adding more
-strings for translation. See "Testing marked strings" in po/README for
-details.
-
 GIT_TEST_SPLIT_INDEX=<boolean> forces split-index mode on the whole
 test suite. Accept any boolean values that are accepted by git-config.
 
@@ -399,12 +400,16 @@ every 'git commit-graph write', as if the `--changed-paths` option was
 passed in.
 
 GIT_TEST_FSMONITOR=$PWD/t7519/fsmonitor-all exercises the fsmonitor
-code path for utilizing a file system monitor to speed up detecting
-new or changed files.
+code paths for utilizing a (hook based) file system monitor to speed up
+detecting new or changed files.
 
 GIT_TEST_INDEX_VERSION=<n> exercises the index read/write code path
 for the index version specified.  Can be set to any valid version
 (currently 2, 3, or 4).
+
+GIT_TEST_PACK_USE_BITMAP_BOUNDARY_TRAVERSAL=<boolean> if enabled will
+use the boundary-based bitmap traversal algorithm. See the documentation
+of `pack.useBitmapBoundaryTraversal` for more details.
 
 GIT_TEST_PACK_SPARSE=<boolean> if disabled will default the pack-objects
 builtin to use the non-sparse object walk. This can still be overridden by
@@ -412,10 +417,6 @@ the --sparse command-line argument.
 
 GIT_TEST_PRELOAD_INDEX=<boolean> exercises the preload-index code path
 by overriding the minimum number of cache entries required per thread.
-
-GIT_TEST_ADD_I_USE_BUILTIN=<boolean>, when true, enables the
-built-in version of git add -i. See 'add.interactive.useBuiltin' in
-git-config(1).
 
 GIT_TEST_INDEX_THREADS=<n> enables exercising the multi-threaded loading
 of the index for the whole test suite by bypassing the default number of
@@ -425,6 +426,10 @@ index loading single threaded.
 GIT_TEST_MULTI_PACK_INDEX=<boolean>, when true, forces the multi-pack-
 index to be written after every 'git repack' command, and overrides the
 'core.multiPackIndex' setting to true.
+
+GIT_TEST_MULTI_PACK_INDEX_WRITE_INCREMENTAL=<boolean>, when true, sets
+the '--incremental' option on all invocations of 'git multi-pack-index
+write'.
 
 GIT_TEST_SIDEBAND_ALL=<boolean>, when true, overrides the
 'uploadpack.allowSidebandAll' setting to true, and when false, forces
@@ -438,6 +443,37 @@ is used.
 GIT_TEST_DEFAULT_HASH=<hash-algo> specifies which hash algorithm to
 use in the test scripts. Recognized values for <hash-algo> are "sha1"
 and "sha256".
+
+GIT_TEST_DEFAULT_REF_FORMAT=<format> specifies which ref storage format to use
+in the test scripts. Recognized values for <format> are "files" and
+"reftable".
+
+GIT_TEST_NO_WRITE_REV_INDEX=<boolean>, when true disables the
+'pack.writeReverseIndex' setting.
+
+GIT_TEST_SPARSE_INDEX=<boolean>, when true enables index writes to use the
+sparse-index format by default.
+
+GIT_TEST_CHECKOUT_WORKERS=<n> overrides the 'checkout.workers' setting
+to <n> and 'checkout.thresholdForParallelism' to 0, forcing the
+execution of the parallel-checkout code.
+
+GIT_TEST_FATAL_REGISTER_SUBMODULE_ODB=<boolean>, when true, makes
+registering submodule ODBs as alternates a fatal action. Support for
+this environment variable can be removed once the migration to
+explicitly providing repositories when accessing submodule objects is
+complete or needs to be abandoned for whatever reason (in which case the
+migrated codepaths still retain their performance benefits).
+
+GIT_TEST_REQUIRE_PREREQ=<list> allows specifying a space separated list of
+prereqs that are required to succeed. If a prereq in this list is triggered by
+a test and then fails then the whole test run will abort. This can help to make
+sure the expected tests are executed and not silently skipped when their
+dependency breaks or is simply not present in a new environment.
+
+GIT_TEST_NAME_HASH_VERSION=<int>, when set, causes 'git pack-objects' to
+assume '--name-hash-version=<n>'.
+
 
 Naming Tests
 ------------
@@ -514,13 +550,67 @@ This test harness library does the following things:
    consistently when command line arguments --verbose (or -v),
    --debug (or -d), and --immediate (or -i) is given.
 
+Recommended style
+-----------------
+
+ - Keep the test_expect_* function call and test title on
+   the same line.
+
+   For example, with test_expect_success, write it like:
+
+  test_expect_success 'test title' '
+      ... test body ...
+  '
+
+   Instead of:
+
+  test_expect_success \
+      'test title' \
+      '... test body ...'
+
+ - End the line with an opening single quote.
+
+ - Indent here-document bodies, and use "<<-" instead of "<<"
+   to strip leading TABs used for indentation:
+
+  test_expect_success 'test something' '
+      cat >expect <<-\EOF &&
+      one
+      two
+      three
+      EOF
+      test_something > actual &&
+      test_cmp expect actual
+  '
+
+   Instead of:
+
+  test_expect_success 'test something' '
+      cat >expect <<\EOF &&
+  one
+  two
+  three
+  EOF
+      test_something > actual &&
+      test_cmp expect actual
+  '
+
+ - Quote or escape the EOF delimiter that begins a here-document if
+   there is no parameter or other expansion in it, to signal readers
+   that they can skim it more casually:
+
+  cmd <<-\EOF
+  literal here-document text without any expansion
+  EOF
+
+
 Do's & don'ts
 -------------
 
 Here are a few examples of things you probably should and shouldn't do
 when writing tests.
 
-Here are the "do's:"
+The "do's:"
 
  - Put all code inside test_expect_success and other assertions.
 
@@ -603,6 +693,26 @@ Here are the "do's:"
 
    Note that we still &&-chain the loop to propagate failures from
    earlier commands.
+
+ - Repeat tests with slightly different arguments in a loop.
+
+   In some cases it may make sense to re-run the same set of tests with
+   different options or commands to ensure that the command behaves
+   despite the different parameters. This can be achieved by looping
+   around a specific parameter:
+
+	for arg in '' "--foo"
+	do
+		test_expect_success "test command ${arg:-without arguments}" '
+			command $arg
+		'
+	done
+
+   Note that while the test title uses double quotes ("), the test body
+   should continue to use single quotes (') to avoid breakage in case the
+   values contain e.g. quoting characters. The loop variable will be
+   accessible regardless of the single quotes as the test body is passed
+   to `eval`.
 
 
 And here are the "don'ts:"
@@ -708,7 +818,7 @@ Skipping tests
 --------------
 
 If you need to skip tests you should do so by using the three-arg form
-of the test_* functions (see the "Test harness library" section
+of the test_expect_* functions (see the "Test harness library" section
 below), e.g.:
 
     test_expect_success PERL 'I need Perl' '
@@ -744,7 +854,8 @@ Test harness library
 --------------------
 
 There are a handful helper functions defined in the test harness
-library for your script to use.
+library for your script to use. Some of them are listed below;
+see test-lib-functions.sh for the full list and their options.
 
  - test_expect_success [<prereq>] <message> <script>
 
@@ -758,6 +869,14 @@ library for your script to use.
 	    'git-write-tree should be able to write an empty tree.' \
 	    'tree=$(git-write-tree)'
 
+   If <script> is `-` (a single dash), then the script to run is read
+   from stdin. This lets you more easily use single quotes within the
+   script by using a here-doc. For example:
+
+	test_expect_success 'output contains expected string' - <<\EOT
+		grep "this string has 'quotes' in it" output
+	EOT
+
    If you supply three parameters the first will be taken to be a
    prerequisite; see the test_set_prereq and test_have_prereq
    documentation below:
@@ -769,7 +888,7 @@ library for your script to use.
    rare case where your test depends on more than one:
 
 	test_expect_success PERL,PYTHON 'yo dawg' \
-	    ' test $(perl -E 'print eval "1 +" . qx[python -c "print 2"]') == "4" '
+	    ' test $(perl -E '\''print eval "1 +" . qx[python -c "print(2)"]'\'') = "4" '
 
  - test_expect_failure [<prereq>] <message> <script>
 
@@ -790,10 +909,12 @@ library for your script to use.
    argument.  This is primarily meant for use during the
    development of a new test script.
 
- - debug <git-command>
+ - debug [options] <git-command>
 
    Run a git command inside a debugger. This is primarily meant for
-   use when debugging a failing test script.
+   use when debugging a failing test script. With '-t', use your
+   original TERM instead of test-lib.sh's "dumb", so that your
+   debugger interface has colors.
 
  - test_done
 
@@ -844,31 +965,28 @@ library for your script to use.
 	    test_done
 	fi
 
- - test_external [<prereq>] <message> <external> <script>
+ - test_lazy_prereq <prereq> <script>
 
-   Execute a <script> with an <external> interpreter (like perl). This
-   was added for tests like t9700-perl-git.sh which do most of their
-   work in an external test script.
+   Declare the way to determine if a test prerequisite <prereq> is
+   satisified or not, but delay the actual determination until the
+   prerequisite is actually used by "test_have_prereq" or the
+   three-arg form of the test_expect_* functions.  For example, this
+   is how the SYMLINKS prerequisite is declared to see if the platform
+   supports symbolic links:
 
-	test_external \
-	    'GitwebCache::*FileCache*' \
-	    perl "$TEST_DIRECTORY"/t9503/test_cache_interface.pl
+	test_lazy_prereq SYMLINKS '
+		ln -s x y && test -h y
+	'
 
-   If the test is outputting its own TAP you should set the
-   test_external_has_tap variable somewhere before calling the first
-   test_external* function. See t9700-perl-git.sh for an example.
-
-	# The external test will outputs its own plan
-	test_external_has_tap=1
-
- - test_external_without_stderr [<prereq>] <message> <external> <script>
-
-   Like test_external but fail if there's any output on stderr,
-   instead of checking the exit code.
-
-	test_external_without_stderr \
-	    'Perl API' \
-	    perl "$TEST_DIRECTORY"/t9700/test.pl
+   The script is lazily invoked when SYMLINKS prerequisite is first
+   queried by either "test_have_prereq SYMLINKS" or "test_expect_*
+   SYMLINKS ...".  The script is run in a temporary directory inside
+   a subshell, so you do not have to worry about removing temporary
+   files you create there.  When the script exits with status 0, the
+   prerequisite is set.  Exiting with non-zero status other than 125
+   makes the prerequisite unsatisified.  Exiting the script with 125
+   signals a programming error and is used to mark a prerequisite that
+   should not be used by test scripts.
 
  - test_expect_code <exit-code> <command>
 
@@ -917,13 +1035,13 @@ library for your script to use.
 
    Check whether a file has the length it is expected to.
 
- - test_path_is_file <path> [<diagnosis>]
-   test_path_is_dir <path> [<diagnosis>]
-   test_path_is_missing <path> [<diagnosis>]
+ - test_path_is_file <path>
+   test_path_is_dir <path>
+   test_path_is_missing <path>
 
    Check if the named path is a file, if the named path is a
    directory, or if the named path does not exist, respectively,
-   and fail otherwise, showing the <diagnosis> text.
+   and fail otherwise.
 
  - test_when_finished <script>
 
@@ -980,7 +1098,7 @@ library for your script to use.
 	EOF
 
 
- - test_pause
+ - test_pause [options]
 
 	This command is useful for writing and debugging tests and must be
 	removed before submitting. It halts the execution of the test and
@@ -1006,6 +1124,12 @@ library for your script to use.
    Sometimes it is possible to split a test in a part that does not need
    the symbolic link in the file system and a part that does; then only
    the latter part need be protected by a SYMLINKS prerequisite (see below).
+
+ - test_path_is_executable
+
+   This tests whether a file is executable and prints an error message
+   if not. This must be used only under the POSIXPERM prerequisite
+   (see below).
 
  - test_oid_init
 
@@ -1104,18 +1228,6 @@ use these, and "test_set_prereq" for how to define your own.
    Git was compiled with support for PCRE. Wrap any tests
    that use git-grep --perl-regexp or git-grep -P in these.
 
- - LIBPCRE1
-
-   Git was compiled with PCRE v1 support via
-   USE_LIBPCRE1=YesPlease. Wrap any PCRE using tests that for some
-   reason need v1 of the PCRE library instead of v2 in these.
-
- - LIBPCRE2
-
-   Git was compiled with PCRE v2 support via
-   USE_LIBPCRE2=YesPlease. Wrap any PCRE using tests that for some
-   reason need v2 of the PCRE library instead of v1 in these.
-
  - CASE_INSENSITIVE_FS
 
    Test is run on a case insensitive file system.
@@ -1128,6 +1240,12 @@ use these, and "test_set_prereq" for how to define your own.
  - PTHREADS
 
    Git wasn't compiled with NO_PTHREADS=YesPlease.
+
+ - REFFILES
+
+   Test is specific to packed/loose ref storage, and should be
+   disabled for other ref storage backends
+
 
 Tips for Writing Tests
 ----------------------
@@ -1142,8 +1260,8 @@ and it knows that the object ID of an empty tree is a certain
 because the things the very basic core test tries to achieve is
 to serve as a basis for people who are changing the Git internals
 drastically.  For these people, after making certain changes,
-not seeing failures from the basic test _is_ a failure.  And
-such drastic changes to the core Git that even changes these
+not seeing failures from the basic test _is_ a failure.  Any
+Git core changes so drastic that they change even these
 otherwise supposedly stable object IDs should be accompanied by
 an update to t0000-basic.sh.
 
@@ -1153,7 +1271,7 @@ knowledge of the core Git internals.  If all the test scripts
 hardcoded the object IDs like t0000-basic.sh does, that defeats
 the purpose of t0000-basic.sh, which is to isolate that level of
 validation in one place.  Your test also ends up needing
-updating when such a change to the internal happens, so do _not_
+an update whenever the internals change, so do _not_
 do it and leave the low level of validation to t0000-basic.sh.
 
 Test coverage
@@ -1184,7 +1302,7 @@ Devel::Cover module. To install it do:
    sudo aptitude install libdevel-cover-perl
 
    # From the CPAN with cpanminus
-   curl -L http://cpanmin.us | perl - --sudo --self-upgrade
+   curl -L https://cpanmin.us/ | perl - --sudo --self-upgrade
    cpanm --sudo Devel::Cover
 
 Then, at the top-level:

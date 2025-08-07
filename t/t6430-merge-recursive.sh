@@ -2,8 +2,10 @@
 
 test_description='merge-recursive backend test'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
-. "$TEST_DIRECTORY"/lib-merge.sh
 
 test_expect_success 'setup 1' '
 
@@ -35,7 +37,7 @@ test_expect_success 'setup 1' '
 	git add a d/e &&
 
 	test_tick &&
-	git commit -m "master modifies a and d/e" &&
+	git commit -m "main modifies a and d/e" &&
 	c1=$(git rev-parse --verify HEAD) &&
 	( git ls-tree -r HEAD && git ls-files -s ) >actual &&
 	(
@@ -305,13 +307,13 @@ test_expect_success 'fail if the index has unresolved entries' '
 
 	test_must_fail git merge "$c5" &&
 	test_must_fail git merge "$c5" 2> out &&
-	test_i18ngrep "not possible because you have unmerged files" out &&
+	test_grep "not possible because you have unmerged files" out &&
 	git add -u &&
 	test_must_fail git merge "$c5" 2> out &&
-	test_i18ngrep "You have not concluded your merge" out &&
+	test_grep "You have not concluded your merge" out &&
 	rm -f .git/MERGE_HEAD &&
 	test_must_fail git merge "$c5" 2> out &&
-	test_i18ngrep "Your local changes to the following files would be overwritten by merge:" out
+	test_grep "Your local changes to the following files would be overwritten by merge:" out
 '
 
 test_expect_success 'merge-recursive remove conflict' '
@@ -370,9 +372,9 @@ test_expect_success 'merge-recursive d/f conflict result' '
 
 	git ls-files -s >actual &&
 	(
-		echo "100644 $o0 1	a" &&
-		echo "100644 $o1 2	a" &&
 		echo "100644 $o4 0	a/c" &&
+		echo "100644 $o0 1	a~$c1" &&
+		echo "100644 $o1 2	a~$c1" &&
 		echo "100644 $o0 0	b" &&
 		echo "100644 $o0 0	c" &&
 		echo "100644 $o1 0	d/e"
@@ -394,9 +396,9 @@ test_expect_success 'merge-recursive d/f conflict result the other way' '
 
 	git ls-files -s >actual &&
 	(
-		echo "100644 $o0 1	a" &&
-		echo "100644 $o1 3	a" &&
 		echo "100644 $o4 0	a/c" &&
+		echo "100644 $o0 1	a~$c1" &&
+		echo "100644 $o1 3	a~$c1" &&
 		echo "100644 $o0 0	b" &&
 		echo "100644 $o0 0	c" &&
 		echo "100644 $o1 0	d/e"
@@ -421,9 +423,9 @@ test_expect_success 'merge-recursive d/f conflict result' '
 		echo "100644 $o1 0	a" &&
 		echo "100644 $o0 0	b" &&
 		echo "100644 $o0 0	c" &&
-		echo "100644 $o6 3	d" &&
 		echo "100644 $o0 1	d/e" &&
-		echo "100644 $o1 2	d/e"
+		echo "100644 $o1 2	d/e" &&
+		echo "100644 $o6 3	d~$c6"
 	) >expected &&
 	test_cmp expected actual
 
@@ -445,9 +447,9 @@ test_expect_success 'merge-recursive d/f conflict result' '
 		echo "100644 $o1 0	a" &&
 		echo "100644 $o0 0	b" &&
 		echo "100644 $o0 0	c" &&
-		echo "100644 $o6 2	d" &&
 		echo "100644 $o0 1	d/e" &&
-		echo "100644 $o1 3	d/e"
+		echo "100644 $o1 3	d/e" &&
+		echo "100644 $o6 2	d~$c6"
 	) >expected &&
 	test_cmp expected actual
 
@@ -466,7 +468,7 @@ test_expect_success SYMLINKS 'dir in working tree with symlink ancestor does not
 		git checkout -b branch1 &&
 		git commit --allow-empty -m "empty commit" &&
 
-		git checkout master &&
+		git checkout main &&
 		git rm foo &&
 		mkdir foo &&
 		>foo/bar &&
@@ -475,7 +477,7 @@ test_expect_success SYMLINKS 'dir in working tree with symlink ancestor does not
 
 		git checkout branch1 &&
 
-		git cherry-pick master &&
+		git cherry-pick main &&
 		test_path_is_dir foo &&
 		test_path_is_file foo/bar
 	)
@@ -490,8 +492,8 @@ test_expect_success 'reset and 3-way merge' '
 
 test_expect_success 'reset and bind merge' '
 
-	git reset --hard master &&
-	git read-tree --prefix=M/ master &&
+	git reset --hard main &&
+	git read-tree --prefix=M/ main &&
 	git ls-files -s >actual &&
 	(
 		echo "100644 $o1 0	M/a" &&
@@ -505,7 +507,7 @@ test_expect_success 'reset and bind merge' '
 	) >expected &&
 	test_cmp expected actual &&
 
-	git read-tree --prefix=a1/ master &&
+	git read-tree --prefix=a1/ main &&
 	git ls-files -s >actual &&
 	(
 		echo "100644 $o1 0	M/a" &&
@@ -523,7 +525,7 @@ test_expect_success 'reset and bind merge' '
 	) >expected &&
 	test_cmp expected actual &&
 
-	git read-tree --prefix=z/ master &&
+	git read-tree --prefix=z/ main &&
 	git ls-files -s >actual &&
 	(
 		echo "100644 $o1 0	M/a" &&
@@ -599,11 +601,11 @@ test_expect_success 'merge-recursive w/ empty work tree - theirs has rename' '
 
 test_expect_success 'merge removes empty directories' '
 
-	git reset --hard master &&
+	git reset --hard main &&
 	git checkout -b rm &&
 	git rm d/e &&
 	git commit -mremoved-d/e &&
-	git checkout master &&
+	git checkout main &&
 	git merge -s recursive rm &&
 	test_path_is_missing d
 '
@@ -642,7 +644,7 @@ test_expect_success 'merge-recursive copy vs. rename' '
 	test_cmp expected actual
 '
 
-test_expect_merge_algorithm failure success 'merge-recursive rename vs. rename/symlink' '
+test_expect_success 'merge-recursive rename vs. rename/symlink' '
 
 	git checkout -f rename &&
 	git merge rename-ln &&
@@ -691,31 +693,6 @@ test_expect_success 'merging with triple rename across D/F conflict' '
 
 	test_tick &&
 	git merge other
-'
-
-test_expect_success 'merge-recursive remembers the names of all base trees' '
-	git reset --hard HEAD &&
-
-	# make the index match $c1 so that merge-recursive below does not
-	# fail early
-	git diff --binary HEAD $c1 -- | git apply --cached &&
-
-	# more trees than static slots used by oid_to_hex()
-	for commit in $c0 $c2 $c4 $c5 $c6 $c7
-	do
-		git rev-parse "$commit^{tree}"
-	done >trees &&
-
-	# ignore the return code; it only fails because the input is weird...
-	test_must_fail git -c merge.verbosity=5 merge-recursive $(cat trees) -- $c1 $c3 >out &&
-
-	# ...but make sure it fails in the expected way
-	test_i18ngrep CONFLICT.*rename/rename out &&
-
-	# merge-recursive prints in reverse order, but we do not care
-	sort <trees >expect &&
-	sed -n "s/^virtual //p" out | sort >actual &&
-	test_cmp expect actual
 '
 
 test_expect_success 'merge-recursive internal merge resolves to the sameness' '

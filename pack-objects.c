@@ -1,9 +1,9 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "object.h"
 #include "pack.h"
 #include "pack-objects.h"
 #include "packfile.h"
-#include "config.h"
+#include "parse.h"
 
 static uint32_t locate_object_entry_hash(struct packing_data *pdata,
 					 const struct object_id *oid,
@@ -49,7 +49,7 @@ static void rehash_objects(struct packing_data *pdata)
 		pdata->index_size = 1024;
 
 	free(pdata->index);
-	pdata->index = xcalloc(pdata->index_size, sizeof(*pdata->index));
+	CALLOC_ARRAY(pdata->index, pdata->index_size);
 
 	entry = pdata->objects;
 
@@ -151,6 +151,21 @@ void prepare_packing_data(struct repository *r, struct packing_data *pdata)
 	init_recursive_mutex(&pdata->odb_lock);
 }
 
+void clear_packing_data(struct packing_data *pdata)
+{
+	if (!pdata)
+		return;
+
+	free(pdata->cruft_mtime);
+	free(pdata->in_pack);
+	free(pdata->in_pack_by_idx);
+	free(pdata->in_pack_pos);
+	free(pdata->index);
+	free(pdata->layer);
+	free(pdata->objects);
+	free(pdata->tree_depth);
+}
+
 struct object_entry *packlist_alloc(struct packing_data *pdata,
 				    const struct object_id *oid)
 {
@@ -170,6 +185,9 @@ struct object_entry *packlist_alloc(struct packing_data *pdata,
 
 		if (pdata->layer)
 			REALLOC_ARRAY(pdata->layer, pdata->nr_alloc);
+
+		if (pdata->cruft_mtime)
+			REALLOC_ARRAY(pdata->cruft_mtime, pdata->nr_alloc);
 	}
 
 	new_entry = pdata->objects + pdata->nr_objects++;
@@ -197,6 +215,9 @@ struct object_entry *packlist_alloc(struct packing_data *pdata,
 
 	if (pdata->layer)
 		pdata->layer[pdata->nr_objects - 1] = 0;
+
+	if (pdata->cruft_mtime)
+		pdata->cruft_mtime[pdata->nr_objects - 1] = 0;
 
 	return new_entry;
 }

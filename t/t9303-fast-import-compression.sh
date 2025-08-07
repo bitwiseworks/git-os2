@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='compression setting of fast-import utility'
+
 . ./test-lib.sh
 
 import_large () {

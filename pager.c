@@ -1,51 +1,88 @@
-#include "cache.h"
+#include "git-compat-util.h"
 #include "config.h"
+#include "editor.h"
+#include "pager.h"
 #include "run-command.h"
 #include "sigchain.h"
 #include "alias.h"
+
+int pager_use_color = 1;
 
 #ifndef DEFAULT_PAGER
 #define DEFAULT_PAGER "less"
 #endif
 
-static struct child_process pager_process = CHILD_PROCESS_INIT;
-static const char *pager_program;
+static struct child_process pager_process;
+static char *pager_program;
+static int old_fd1 = -1, old_fd2 = -1;
 
-static void wait_for_pager(int in_signal)
+/* Is the value coming back from term_columns() just a guess? */
+static int term_columns_guessed;
+
+
+static void close_pager_fds(void)
 {
-	if (!in_signal) {
-		fflush(stdout);
-		fflush(stderr);
-	}
 	/* signal EOF to pager */
 	close(1);
-	close(2);
-	if (in_signal)
-		finish_command_in_signal(&pager_process);
-	else
-		finish_command(&pager_process);
+	if (old_fd2 != -1)
+		close(2);
+}
+
+static void finish_pager(void)
+{
+	fflush(stdout);
+	fflush(stderr);
+	close_pager_fds();
+	finish_command(&pager_process);
 }
 
 static void wait_for_pager_atexit(void)
 {
-	wait_for_pager(0);
+	if (old_fd1 == -1)
+		return;
+
+	finish_pager();
+}
+
+void wait_for_pager(void)
+{
+	if (old_fd1 == -1)
+		return;
+
+	finish_pager();
+	sigchain_pop_common();
+	unsetenv("GIT_PAGER_IN_USE");
+	dup2(old_fd1, 1);
+	close(old_fd1);
+	old_fd1 = -1;
+	if (old_fd2 != -1) {
+		dup2(old_fd2, 2);
+		close(old_fd2);
+		old_fd2 = -1;
+	}
 }
 
 static void wait_for_pager_signal(int signo)
 {
-	wait_for_pager(1);
+	if (old_fd1 == -1)
+		return;
+
+	close_pager_fds();
+	finish_command_in_signal(&pager_process);
 	sigchain_pop(signo);
 	raise(signo);
 }
 
-static int core_pager_config(const char *var, const char *value, void *data)
+static int core_pager_config(const char *var, const char *value,
+			     const struct config_context *ctx UNUSED,
+			     void *data UNUSED)
 {
 	if (!strcmp(var, "core.pager"))
 		return git_config_string(&pager_program, var, value);
 	return 0;
 }
 
-const char *git_pager(int stdout_is_tty)
+const char *git_pager(struct repository *r, int stdout_is_tty)
 {
 	const char *pager;
 
@@ -55,7 +92,8 @@ const char *git_pager(int stdout_is_tty)
 	pager = getenv("GIT_PAGER");
 	if (!pager) {
 		if (!pager_program)
-			read_early_config(core_pager_config, NULL);
+			read_early_config(r,
+					  core_pager_config, NULL);
 		pager = pager_program;
 	}
 	if (!pager)
@@ -99,13 +137,14 @@ void prepare_pager_args(struct child_process *pager_process, const char *pager)
 {
 	strvec_push(&pager_process->args, pager);
 	pager_process->use_shell = 1;
-	setup_pager_env(&pager_process->env_array);
+	setup_pager_env(&pager_process->env);
 	pager_process->trace2_child_class = "pager";
 }
 
-void setup_pager(void)
+void setup_pager(struct repository *r)
 {
-	const char *pager = git_pager(isatty(1));
+	static int once = 0;
+	const char *pager = git_pager(r, isatty(1));
 
 	if (!pager)
 		return;
@@ -118,27 +157,36 @@ void setup_pager(void)
 	{
 		char buf[64];
 		xsnprintf(buf, sizeof(buf), "%d", term_columns());
-		setenv("COLUMNS", buf, 0);
+		if (!term_columns_guessed)
+			setenv("COLUMNS", buf, 0);
 	}
 
 	setenv("GIT_PAGER_IN_USE", "true", 1);
 
+	child_process_init(&pager_process);
+
 	/* spawn the pager */
 	prepare_pager_args(&pager_process, pager);
 	pager_process.in = -1;
-	strvec_push(&pager_process.env_array, "GIT_PAGER_IN_USE");
+	strvec_push(&pager_process.env, "GIT_PAGER_IN_USE");
 	if (start_command(&pager_process))
-		return;
+		die("unable to execute pager '%s'", pager);
 
 	/* original process continues, but writes to the pipe */
+	old_fd1 = dup(1);
 	dup2(pager_process.in, 1);
-	if (isatty(2))
+	if (isatty(2)) {
+		old_fd2 = dup(2);
 		dup2(pager_process.in, 2);
+	}
 	close(pager_process.in);
 
-	/* this makes sure that the parent terminates after the pager */
 	sigchain_push_common(wait_for_pager_signal);
-	atexit(wait_for_pager_atexit);
+
+	if (!once) {
+		once++;
+		atexit(wait_for_pager_atexit);
+	}
 }
 
 int pager_in_use(void)
@@ -162,15 +210,20 @@ int term_columns(void)
 		return term_columns_at_startup;
 
 	term_columns_at_startup = 80;
+	term_columns_guessed = 1;
 
 	col_string = getenv("COLUMNS");
-	if (col_string && (n_cols = atoi(col_string)) > 0)
+	if (col_string && (n_cols = atoi(col_string)) > 0) {
 		term_columns_at_startup = n_cols;
+		term_columns_guessed = 0;
+	}
 #ifdef TIOCGWINSZ
 	else {
 		struct winsize ws;
-		if (!ioctl(1, TIOCGWINSZ, &ws) && ws.ws_col)
+		if (!ioctl(1, TIOCGWINSZ, &ws) && ws.ws_col) {
 			term_columns_at_startup = ws.ws_col;
+			term_columns_guessed = 0;
+		}
 	}
 #endif
 
@@ -182,6 +235,8 @@ int term_columns(void)
  */
 void term_clear_line(void)
 {
+	if (!isatty(2))
+		return;
 	if (is_terminal_dumb())
 		/*
 		 * Fall back to print a terminal width worth of space
@@ -215,7 +270,9 @@ struct pager_command_config_data {
 	char *value;
 };
 
-static int pager_command_config(const char *var, const char *value, void *vdata)
+static int pager_command_config(const char *var, const char *value,
+				const struct config_context *ctx UNUSED,
+				void *vdata)
 {
 	struct pager_command_config_data *data = vdata;
 	const char *cmd;
@@ -234,7 +291,7 @@ static int pager_command_config(const char *var, const char *value, void *vdata)
 }
 
 /* returns 0 for "no pager", 1 for "use pager", and -1 for "not specified" */
-int check_pager_config(const char *cmd)
+int check_pager_config(struct repository *r, const char *cmd)
 {
 	struct pager_command_config_data data;
 
@@ -242,7 +299,7 @@ int check_pager_config(const char *cmd)
 	data.want = -1;
 	data.value = NULL;
 
-	read_early_config(pager_command_config, &data);
+	read_early_config(r, pager_command_config, &data);
 
 	if (data.value)
 		pager_program = data.value;

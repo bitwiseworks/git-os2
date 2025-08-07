@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='handling of alternates in environment variables'
+
 . ./test-lib.sh
 
 check_obj () {

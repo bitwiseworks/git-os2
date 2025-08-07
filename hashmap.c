@@ -1,7 +1,7 @@
 /*
  * Generic implementation of hash-based key value mappings.
  */
-#include "cache.h"
+#include "git-compat-util.h"
 #include "hashmap.h"
 
 #define FNV32_BASE ((unsigned int) 0x811c9dc5)
@@ -76,7 +76,7 @@ unsigned int memihash_cont(unsigned int hash_seed, const void *buf, size_t len)
 static void alloc_table(struct hashmap *map, unsigned int size)
 {
 	map->tablesize = size;
-	map->table = xcalloc(size, sizeof(struct hashmap_entry *));
+	CALLOC_ARRAY(map->table, size);
 
 	/* calculate resize thresholds for new size */
 	map->grow_at = (unsigned int) ((uint64_t) size * HASHMAP_LOAD_FACTOR / 100);
@@ -142,10 +142,10 @@ static inline struct hashmap_entry **find_entry_ptr(const struct hashmap *map,
 	return e;
 }
 
-static int always_equal(const void *unused_cmp_data,
-			const struct hashmap_entry *unused1,
-			const struct hashmap_entry *unused2,
-			const void *unused_keydata)
+static int always_equal(const void *cmp_data UNUSED,
+			const struct hashmap_entry *entry1 UNUSED,
+			const struct hashmap_entry *entry2 UNUSED,
+			const void *keydata UNUSED)
 {
 	return 0;
 }
@@ -205,8 +205,9 @@ void hashmap_clear_(struct hashmap *map, ssize_t entry_offset)
 		return;
 	if (entry_offset >= 0)  /* called by hashmap_clear_and_free */
 		free_individual_entries(map, entry_offset);
-	free(map->table);
-	memset(map, 0, sizeof(*map));
+	FREE_AND_NULL(map->table);
+	map->tablesize = 0;
+	map->private_size = 0;
 }
 
 struct hashmap_entry *hashmap_get(const struct hashmap *map,
@@ -313,7 +314,7 @@ struct pool_entry {
 	unsigned char data[FLEX_ARRAY];
 };
 
-static int pool_entry_cmp(const void *unused_cmp_data,
+static int pool_entry_cmp(const void *cmp_data UNUSED,
 			  const struct hashmap_entry *eptr,
 			  const struct hashmap_entry *entry_or_key,
 			  const void *keydata)

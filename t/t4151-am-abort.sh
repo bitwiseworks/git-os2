@@ -5,10 +5,7 @@ test_description='am --abort'
 . ./test-lib.sh
 
 test_expect_success setup '
-	for i in a b c d e f g
-	do
-		echo $i
-	done >file-1 &&
+	test_write_lines a b c d e f g >file-1 &&
 	cp file-1 file-2 &&
 	test_tick &&
 	git add file-1 file-2 &&
@@ -23,7 +20,13 @@ test_expect_success setup '
 		test_tick &&
 		git commit -a -m $i || return 1
 	done &&
+	git branch changes &&
 	git format-patch --no-numbered initial &&
+	git checkout -b conflicting initial &&
+	echo different >>file-1 &&
+	echo whatever >new-file &&
+	git add file-1 new-file &&
+	git commit -m different &&
 	git checkout -b side initial &&
 	echo local change >file-2-expect
 '
@@ -37,16 +40,13 @@ do
 
 		test_must_fail git am$with3 000[1245]-*.patch &&
 		git log --pretty=tformat:%s >actual &&
-		for i in 3 2 initial
-		do
-			echo $i
-		done >expect &&
+		test_write_lines 3 2 initial >expect &&
 		test_cmp expect actual
 	'
 
 	test_expect_success "am$with3 --skip continue after failed am$with3" '
 		test_must_fail git am$with3 --skip >output &&
-		test_i18ngrep "^Applying: 6$" output &&
+		test_grep "^Applying: 6$" output &&
 		test_cmp file-2-expect file-2 &&
 		test ! -f .git/MERGE_RR
 	'
@@ -112,7 +112,7 @@ test_expect_success 'am --abort will keep dirty index intact' '
 test_expect_success 'am -3 stops on conflict on unborn branch' '
 	git checkout -f --orphan orphan &&
 	git reset &&
-	rm -f otherfile-4 &&
+	rm -f file-1 otherfile-4 &&
 	test_must_fail git am -3 0003-*.patch &&
 	test 2 -eq $(git ls-files -u | wc -l) &&
 	test 4 = "$(cat otherfile-4)"
@@ -189,6 +189,39 @@ test_expect_success 'am --abort leaves index stat info alone' '
 	test_must_fail git am 0001-*.patch &&
 	git am --abort &&
 	git diff-files --exit-code --quiet
+'
+
+test_expect_success 'git am --abort return failed exit status when it fails' '
+	test_when_finished "rm -rf file-2/ && git reset --hard && git am --abort" &&
+	git checkout changes &&
+	git format-patch -1 --stdout conflicting >changes.mbox &&
+	test_must_fail git am --3way changes.mbox &&
+
+	git rm file-2 &&
+	mkdir file-2 &&
+	echo precious >file-2/somefile &&
+	test_must_fail git am --abort &&
+	test_path_is_dir file-2/
+'
+
+test_expect_success 'git am --abort cleans relevant files' '
+	git checkout changes &&
+	git format-patch -1 --stdout conflicting >changes.mbox &&
+	test_must_fail git am --3way changes.mbox &&
+
+	test_path_is_file new-file &&
+	echo further changes >>file-1 &&
+	echo change other file >>file-2 &&
+
+	# Abort, and expect the files touched by am to be reverted
+	git am --abort &&
+
+	test_path_is_missing new-file &&
+
+	# Files not involved in am operation are left modified
+	git diff --name-only changes >actual &&
+	test_write_lines file-2 >expect &&
+	test_cmp expect actual
 '
 
 test_done

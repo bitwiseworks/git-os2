@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='various @{whatever} syntax tests'
+
 . ./test-lib.sh
 
 test_expect_success 'setup' '

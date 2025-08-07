@@ -2,10 +2,33 @@
  * Memory Pool implementation logic.
  */
 
-#include "cache.h"
-#include "mem-pool.h"
+#define DISABLE_SIGN_COMPARE_WARNINGS
 
-#define BLOCK_GROWTH_SIZE 1024*1024 - sizeof(struct mp_block);
+#include "git-compat-util.h"
+#include "mem-pool.h"
+#include "gettext.h"
+
+#define BLOCK_GROWTH_SIZE (1024 * 1024 - sizeof(struct mp_block))
+
+/*
+ * The inner union is an approximation for C11's max_align_t, and the
+ * struct + offsetof computes _Alignof. This can all just be replaced
+ * with _Alignof(max_align_t) if/when C11 is part of the baseline.
+ * Note that _Alignof(X) need not be the same as sizeof(X); it's only
+ * required to be a (possibly trivial) factor. They are the same for
+ * most architectures, but m68k for example has only 2-byte alignment
+ * for its 4-byte and 8-byte types, so using sizeof would waste space.
+ *
+ * Add more types to the union if the current set is insufficient.
+ */
+struct git_max_alignment {
+	char unalign;
+	union {
+		uintmax_t max_align_uintmax;
+		void *max_align_pointer;
+	} aligned;
+};
+#define GIT_MAX_ALIGNMENT offsetof(struct git_max_alignment, aligned)
 
 /*
  * Allocate a new mp_block and insert it after the block specified in
@@ -69,9 +92,7 @@ void *mem_pool_alloc(struct mem_pool *pool, size_t len)
 	struct mp_block *p = NULL;
 	void *r;
 
-	/* round up to a 'uintmax_t' alignment */
-	if (len & (sizeof(uintmax_t) - 1))
-		len += sizeof(uintmax_t) - (len & (sizeof(uintmax_t) - 1));
+	len = DIV_ROUND_UP(len, GIT_MAX_ALIGNMENT) * GIT_MAX_ALIGNMENT;
 
 	if (pool->mp_block &&
 	    pool->mp_block->end - pool->mp_block->next_free >= len)
@@ -79,14 +100,55 @@ void *mem_pool_alloc(struct mem_pool *pool, size_t len)
 
 	if (!p) {
 		if (len >= (pool->block_alloc / 2))
-			return mem_pool_alloc_block(pool, len, pool->mp_block);
-
-		p = mem_pool_alloc_block(pool, pool->block_alloc, NULL);
+			p = mem_pool_alloc_block(pool, len, pool->mp_block);
+		else
+			p = mem_pool_alloc_block(pool, pool->block_alloc, NULL);
 	}
 
 	r = p->next_free;
 	p->next_free += len;
 	return r;
+}
+
+static char *mem_pool_strvfmt(struct mem_pool *pool, const char *fmt,
+			      va_list ap)
+{
+	struct mp_block *block = pool->mp_block;
+	char *next_free = block ? block->next_free : NULL;
+	size_t available = block ? block->end - block->next_free : 0;
+	va_list cp;
+	int len, len2;
+	size_t size;
+	char *ret;
+
+	va_copy(cp, ap);
+	len = vsnprintf(next_free, available, fmt, cp);
+	va_end(cp);
+	if (len < 0)
+		die(_("unable to format message: %s"), fmt);
+
+	size = st_add(len, 1); /* 1 for NUL */
+	ret = mem_pool_alloc(pool, size);
+
+	/* Shortcut; relies on mem_pool_alloc() not touching buffer contents. */
+	if (ret == next_free)
+		return ret;
+
+	len2 = vsnprintf(ret, size, fmt, ap);
+	if (len2 != len)
+		BUG("your vsnprintf is broken (returns inconsistent lengths)");
+	return ret;
+}
+
+char *mem_pool_strfmt(struct mem_pool *pool, const char *fmt, ...)
+{
+	va_list ap;
+	char *ret;
+
+	va_start(ap, fmt);
+	ret = mem_pool_strvfmt(pool, fmt, ap);
+	va_end(ap);
+	return ret;
 }
 
 void *mem_pool_calloc(struct mem_pool *pool, size_t count, size_t size)

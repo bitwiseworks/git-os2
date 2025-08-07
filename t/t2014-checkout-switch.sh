@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='Peter MacMillan'
+
 . ./test-lib.sh
 
 test_expect_success setup '

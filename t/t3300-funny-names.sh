@@ -70,7 +70,7 @@ test_expect_success 'ls-files -z does not quote funny filename' '
 	tabs	," (dq) and spaces
 	EOF
 	git ls-files -z >ls-files.z &&
-	perl -pe "y/\000/\012/" <ls-files.z >current &&
+	tr "\000" "\012" <ls-files.z >current &&
 	test_cmp expected current
 '
 
@@ -107,7 +107,7 @@ test_expect_success 'diff-index -z does not quote funny filename' '
 	tabs	," (dq) and spaces
 	EOF
 	git diff-index -z --name-status $t0 >diff-index.z &&
-	perl -pe "y/\000/\012/" <diff-index.z >current &&
+	tr "\000" "\012" <diff-index.z >current &&
 	test_cmp expected current
 '
 
@@ -117,7 +117,7 @@ test_expect_success 'diff-tree -z does not quote funny filename' '
 	tabs	," (dq) and spaces
 	EOF
 	git diff-tree -z --name-status $t0 $t1 >diff-tree.z &&
-	perl -pe y/\\000/\\012/ <diff-tree.z >current &&
+	tr "\000" "\012" <diff-tree.z >current &&
 	test_cmp expected current
 '
 
@@ -181,7 +181,7 @@ test_expect_success 'diffstat for rename quotes funny filename' '
 	git diff-index -M -p $t0 >diff &&
 	git apply --stat <diff >diffstat &&
 	sed -e "s/|.*//" -e "s/ *\$//" <diffstat >current &&
-	test_i18ncmp expected current
+	test_cmp expected current
 '
 
 test_expect_success 'numstat for rename quotes funny filename' '

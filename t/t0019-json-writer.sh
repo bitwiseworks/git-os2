@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test json-writer JSON generation'
+
 . ./test-lib.sh
 
 test_expect_success 'unit test of json-writer routines' '

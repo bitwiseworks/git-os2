@@ -3,33 +3,40 @@
  *
  * Copyright (c) 2006 Junio C Hamano
  */
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
-#include "cache.h"
+
+#define USE_THE_REPOSITORY_VARIABLE
+#define DISABLE_SIGN_COMPARE_WARNINGS
+
+#include "builtin.h"
 #include "config.h"
 #include "ewah/ewok.h"
 #include "lockfile.h"
 #include "color.h"
 #include "commit.h"
-#include "blob.h"
+#include "gettext.h"
 #include "tag.h"
 #include "diff.h"
+#include "diff-merges.h"
 #include "diffcore.h"
+#include "preload-index.h"
+#include "read-cache-ll.h"
 #include "revision.h"
 #include "log-tree.h"
-#include "builtin.h"
-#include "submodule.h"
+#include "setup.h"
 #include "oid-array.h"
+#include "tree.h"
 
 #define DIFF_NO_INDEX_EXPLICIT 1
 #define DIFF_NO_INDEX_IMPLICIT 2
 
 static const char builtin_diff_usage[] =
 "git diff [<options>] [<commit>] [--] [<path>...]\n"
-"   or: git diff [<options>] --cached [<commit>] [--] [<path>...]\n"
-"   or: git diff [<options>] <commit> [--merge-base] [<commit>...] <commit> [--] [<path>...]\n"
-"   or: git diff [<options>] <commit>...<commit>] [--] [<path>...]\n"
-"   or: git diff [<options>] <blob> <blob>]\n"
-"   or: git diff [<options>] --no-index [--] <path> <path>]\n"
+"   or: git diff [<options>] --cached [--merge-base] [<commit>] [--] [<path>...]\n"
+"   or: git diff [<options>] [--merge-base] <commit> [<commit>...] <commit> [--] [<path>...]\n"
+"   or: git diff [<options>] <commit>...<commit> [--] [<path>...]\n"
+"   or: git diff [<options>] <blob> <blob>\n"
+"   or: git diff [<options>] --no-index [--] <path> <path>"
+"\n"
 COMMON_DIFF_OPTIONS_HELP;
 
 static const char *blob_path(struct object_array_entry *entry)
@@ -71,9 +78,9 @@ static void stuff_change(struct diff_options *opt,
 	diff_queue(&diff_queued_diff, one, two);
 }
 
-static int builtin_diff_b_f(struct rev_info *revs,
-			    int argc, const char **argv,
-			    struct object_array_entry **blob)
+static void builtin_diff_b_f(struct rev_info *revs,
+			     int argc, const char **argv UNUSED,
+			     struct object_array_entry **blob)
 {
 	/* Blob vs file in the working tree*/
 	struct stat st;
@@ -97,18 +104,17 @@ static int builtin_diff_b_f(struct rev_info *revs,
 
 	stuff_change(&revs->diffopt,
 		     blob[0]->mode, canon_mode(st.st_mode),
-		     &blob[0]->item->oid, &null_oid,
+		     &blob[0]->item->oid, null_oid(the_hash_algo),
 		     1, 0,
 		     blob[0]->path ? blob[0]->path : path,
 		     path);
 	diffcore_std(&revs->diffopt);
 	diff_flush(&revs->diffopt);
-	return 0;
 }
 
-static int builtin_diff_blobs(struct rev_info *revs,
-			      int argc, const char **argv,
-			      struct object_array_entry **blob)
+static void builtin_diff_blobs(struct rev_info *revs,
+			       int argc, const char **argv UNUSED,
+			       struct object_array_entry **blob)
 {
 	const unsigned mode = canon_mode(S_IFREG | 0644);
 
@@ -128,11 +134,10 @@ static int builtin_diff_blobs(struct rev_info *revs,
 		     blob_path(blob[0]), blob_path(blob[1]));
 	diffcore_std(&revs->diffopt);
 	diff_flush(&revs->diffopt);
-	return 0;
 }
 
-static int builtin_diff_index(struct rev_info *revs,
-			      int argc, const char **argv)
+static void builtin_diff_index(struct rev_info *revs,
+			       int argc, const char **argv)
 {
 	unsigned int option = 0;
 	while (1 < argc) {
@@ -155,21 +160,20 @@ static int builtin_diff_index(struct rev_info *revs,
 		usage(builtin_diff_usage);
 	if (!(option & DIFF_INDEX_CACHED)) {
 		setup_work_tree();
-		if (read_cache_preload(&revs->diffopt.pathspec) < 0) {
-			perror("read_cache_preload");
-			return -1;
+		if (repo_read_index_preload(the_repository,
+					    &revs->diffopt.pathspec, 0) < 0) {
+			die_errno("repo_read_index_preload");
 		}
-	} else if (read_cache() < 0) {
-		perror("read_cache");
-		return -1;
+	} else if (repo_read_index(the_repository) < 0) {
+		die_errno("repo_read_cache");
 	}
-	return run_diff_index(revs, option);
+	run_diff_index(revs, option);
 }
 
-static int builtin_diff_tree(struct rev_info *revs,
-			     int argc, const char **argv,
-			     struct object_array_entry *ent0,
-			     struct object_array_entry *ent1)
+static void builtin_diff_tree(struct rev_info *revs,
+			      int argc, const char **argv,
+			      struct object_array_entry *ent0,
+			      struct object_array_entry *ent1)
 {
 	const struct object_id *(oid[2]);
 	struct object_id mb_oid;
@@ -202,13 +206,12 @@ static int builtin_diff_tree(struct rev_info *revs,
 	}
 	diff_tree_oid(oid[0], oid[1], "", &revs->diffopt);
 	log_tree_diff_flush(revs);
-	return 0;
 }
 
-static int builtin_diff_combined(struct rev_info *revs,
-				 int argc, const char **argv,
-				 struct object_array_entry *ent,
-				 int ents)
+static void builtin_diff_combined(struct rev_info *revs,
+				  int argc, const char **argv UNUSED,
+				  struct object_array_entry *ent,
+				  int ents, int first_non_parent)
 {
 	struct oid_array parents = OID_ARRAY_INIT;
 	int i;
@@ -216,13 +219,19 @@ static int builtin_diff_combined(struct rev_info *revs,
 	if (argc > 1)
 		usage(builtin_diff_usage);
 
-	if (!revs->dense_combined_merges && !revs->combine_merges)
-		revs->dense_combined_merges = revs->combine_merges = 1;
-	for (i = 1; i < ents; i++)
-		oid_array_append(&parents, &ent[i].item->oid);
-	diff_tree_combined(&ent[0].item->oid, &parents, revs);
+	if (first_non_parent < 0)
+		die(_("no merge given, only parents."));
+	if (first_non_parent >= ents)
+		BUG("first_non_parent out of range: %d", first_non_parent);
+
+	diff_merges_set_dense_combined_if_unset(revs);
+
+	for (i = 0; i < ents; i++) {
+		if (i != first_non_parent)
+			oid_array_append(&parents, &ent[i].item->oid);
+	}
+	diff_tree_combined(&ent[first_non_parent].item->oid, &parents, revs);
 	oid_array_clear(&parents);
-	return 0;
 }
 
 static void refresh_index_quietly(void)
@@ -230,16 +239,17 @@ static void refresh_index_quietly(void)
 	struct lock_file lock_file = LOCK_INIT;
 	int fd;
 
-	fd = hold_locked_index(&lock_file, 0);
+	fd = repo_hold_locked_index(the_repository, &lock_file, 0);
 	if (fd < 0)
 		return;
-	discard_cache();
-	read_cache();
-	refresh_cache(REFRESH_QUIET|REFRESH_UNMERGED);
+	discard_index(the_repository->index);
+	repo_read_index(the_repository);
+	refresh_index(the_repository->index, REFRESH_QUIET|REFRESH_UNMERGED, NULL, NULL,
+		      NULL);
 	repo_update_index_if_able(the_repository, &lock_file);
 }
 
-static int builtin_diff_files(struct rev_info *revs, int argc, const char **argv)
+static void builtin_diff_files(struct rev_info *revs, int argc, const char **argv)
 {
 	unsigned int options = 0;
 
@@ -254,8 +264,10 @@ static int builtin_diff_files(struct rev_info *revs, int argc, const char **argv
 			options |= DIFF_SILENT_ON_REMOVED;
 		else if (!strcmp(argv[1], "-h"))
 			usage(builtin_diff_usage);
-		else
-			return error(_("invalid option: %s"), argv[1]);
+		else {
+			error(_("invalid option: %s"), argv[1]);
+			usage(builtin_diff_usage);
+		}
 		argv++; argc--;
 	}
 
@@ -265,16 +277,16 @@ static int builtin_diff_files(struct rev_info *revs, int argc, const char **argv
 	 * dense one, --cc can be explicitly asked for, or just rely
 	 * on the default).
 	 */
-	if (revs->max_count == -1 && !revs->combine_merges &&
+	if (revs->max_count == -1 &&
 	    (revs->diffopt.output_format & DIFF_FORMAT_PATCH))
-		revs->combine_merges = revs->dense_combined_merges = 1;
+		diff_merges_set_dense_combined_if_unset(revs);
 
 	setup_work_tree();
-	if (read_cache_preload(&revs->diffopt.pathspec) < 0) {
-		perror("read_cache_preload");
-		return -1;
+	if (repo_read_index_preload(the_repository, &revs->diffopt.pathspec,
+				    0) < 0) {
+		die_errno("repo_read_index_preload");
 	}
-	return run_diff_files(revs, options);
+	run_diff_files(revs, options);
 }
 
 struct symdiff {
@@ -351,7 +363,7 @@ static void symdiff_prepare(struct rev_info *rev, struct symdiff *sym)
 			othercount++;
 			continue;
 		}
-		if (map == NULL)
+		if (!map)
 			map = bitmap_new();
 		bitmap_set(map, i);
 	}
@@ -379,15 +391,24 @@ static void symdiff_prepare(struct rev_info *rev, struct symdiff *sym)
 	sym->skip = map;
 }
 
-int cmd_diff(int argc, const char **argv, const char *prefix)
+static void symdiff_release(struct symdiff *sdiff)
+{
+	bitmap_free(sdiff->skip);
+}
+
+int cmd_diff(int argc,
+	     const char **argv,
+	     const char *prefix,
+	     struct repository *repo UNUSED)
 {
 	int i;
 	struct rev_info rev;
 	struct object_array ent = OBJECT_ARRAY_INIT;
+	int first_non_parent = -1;
 	int blobs = 0, paths = 0;
 	struct object_array_entry *blob[2];
 	int nongit = 0, no_index = 0;
-	int result = 0;
+	int result;
 	struct symdiff sdiff;
 
 	/*
@@ -436,6 +457,11 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 
 	prefix = setup_git_directory_gently(&nongit);
 
+	if (!nongit) {
+		prepare_repo_settings(the_repository);
+		the_repository->settings.command_requires_full_index = 0;
+	}
+
 	if (!no_index) {
 		/*
 		 * Treat git diff with at least one path outside of the
@@ -450,21 +476,30 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 			no_index = DIFF_NO_INDEX_IMPLICIT;
 	}
 
+	/*
+	 * When operating outside of a Git repository we need to have a hash
+	 * algorithm at hand so that we can generate the blob hashes. We
+	 * default to SHA1 here, but may eventually want to change this to be
+	 * configurable via a command line option.
+	 */
+	if (nongit)
+		repo_set_hash_algo(the_repository, GIT_HASH_SHA1);
+
 	init_diff_ui_defaults();
 	git_config(git_diff_ui_config, NULL);
-	precompose_argv(argc, argv);
+	prefix = precompose_argv_prefix(argc, argv, prefix);
 
 	repo_init_revisions(the_repository, &rev, prefix);
 
 	/* Set up defaults that will apply to both no-index and regular diffs. */
-	rev.diffopt.stat_width = -1;
-	rev.diffopt.stat_graph_width = -1;
+	init_diffstat_widths(&rev.diffopt);
 	rev.diffopt.flags.allow_external = 1;
 	rev.diffopt.flags.allow_textconv = 1;
 
 	/* If this is a no-index diff, just run it and exit there. */
 	if (no_index)
-		exit(diff_no_index(&rev, no_index == DIFF_NO_INDEX_IMPLICIT,
+		exit(diff_no_index(&rev, the_repository->hash_algo,
+				   no_index == DIFF_NO_INDEX_IMPLICIT,
 				   argc, argv));
 
 
@@ -490,6 +525,7 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 	}
 
 	rev.diffopt.flags.recursive = 1;
+	rev.diffopt.rotate_to_strict = 1;
 
 	setup_diff_pager(&rev.diffopt);
 
@@ -529,13 +565,18 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 		if (!obj)
 			die(_("invalid object '%s' given."), name);
 		if (obj->type == OBJ_COMMIT)
-			obj = &get_commit_tree(((struct commit *)obj))->object;
+			obj = &repo_get_commit_tree(the_repository,
+						    ((struct commit *)obj))->object;
 
 		if (obj->type == OBJ_TREE) {
 			if (sdiff.skip && bitmap_get(sdiff.skip, i))
 				continue;
 			obj->flags |= flags;
 			add_object_array(obj, name, &ent);
+			if (first_non_parent < 0 &&
+			    (i >= rev.cmdline.nr || /* HEAD by hand. */
+			     rev.cmdline.rev[i].whence != REV_CMD_PARENTS_ONLY))
+				first_non_parent = ent.nr - 1;
 		} else if (obj->type == OBJ_BLOB) {
 			if (2 <= blobs)
 				die(_("more than two blobs given: '%s'"), name);
@@ -555,17 +596,17 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 	if (!ent.nr) {
 		switch (blobs) {
 		case 0:
-			result = builtin_diff_files(&rev, argc, argv);
+			builtin_diff_files(&rev, argc, argv);
 			break;
 		case 1:
 			if (paths != 1)
 				usage(builtin_diff_usage);
-			result = builtin_diff_b_f(&rev, argc, argv, blob);
+			builtin_diff_b_f(&rev, argc, argv, blob);
 			break;
 		case 2:
 			if (paths)
 				usage(builtin_diff_usage);
-			result = builtin_diff_blobs(&rev, argc, argv, blob);
+			builtin_diff_blobs(&rev, argc, argv, blob);
 			break;
 		default:
 			usage(builtin_diff_usage);
@@ -574,21 +615,22 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 	else if (blobs)
 		usage(builtin_diff_usage);
 	else if (ent.nr == 1)
-		result = builtin_diff_index(&rev, argc, argv);
+		builtin_diff_index(&rev, argc, argv);
 	else if (ent.nr == 2) {
 		if (sdiff.warn)
 			warning(_("%s...%s: multiple merge bases, using %s"),
 				sdiff.left, sdiff.right, sdiff.base);
-		result = builtin_diff_tree(&rev, argc, argv,
-					   &ent.objects[0], &ent.objects[1]);
+		builtin_diff_tree(&rev, argc, argv,
+				  &ent.objects[0], &ent.objects[1]);
 	} else
-		result = builtin_diff_combined(&rev, argc, argv,
-					       ent.objects, ent.nr);
-	result = diff_result_code(&rev.diffopt, result);
+		builtin_diff_combined(&rev, argc, argv,
+				      ent.objects, ent.nr,
+				      first_non_parent);
+	result = diff_result_code(&rev);
 	if (1 < rev.diffopt.skip_stat_unmatch)
 		refresh_index_quietly();
-	UNLEAK(rev);
-	UNLEAK(ent);
-	UNLEAK(blob);
+	release_revisions(&rev);
+	object_array_clear(&ent);
+	symdiff_release(&sdiff);
 	return result;
 }

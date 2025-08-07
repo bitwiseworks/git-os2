@@ -4,6 +4,7 @@
 #
 
 test_description='Test diff/status color escape codes'
+
 . ./test-lib.sh
 
 ESC=$(printf '\033')
@@ -58,6 +59,10 @@ test_expect_success 'fg bg attr...' '
 	color "blue bold dim ul blink reverse" "[1;2;4;5;7;34m"
 '
 
+test_expect_success 'reset fg bg attr...' '
+	color "reset blue bold dim ul blink reverse" "[;1;2;4;5;7;34m"
+'
+
 # note that nobold and nodim are the same code (22)
 test_expect_success 'attr negation' '
 	color "nobold nodim noul noblink noreverse" "[22;24;25;27m"
@@ -90,11 +95,23 @@ test_expect_success '256 colors' '
 	color "254 bold 255" "[1;38;5;254;48;5;255m"
 '
 
-test_expect_success '24-bit colors' '
-	color "#ff00ff black" "[38;2;255;0;255;40m"
+test_expect_success 'RGB colors' '
+	color "#ff00ff #0f0" "[38;2;255;0;255;48;2;0;255;0m"
 '
 
-test_expect_success '"normal" yields no color at all"' '
+test_expect_success '"default" foreground' '
+	color "default" "[39m"
+'
+
+test_expect_success '"normal default" to clear background' '
+	color "normal default" "[49m"
+'
+
+test_expect_success '"default" can be combined with attributes' '
+	color "default default no-reverse bold" "[1;27;39;49m"
+'
+
+test_expect_success '"normal" yields no color at all' '
 	color "normal black" "[40m"
 '
 
@@ -120,6 +137,26 @@ test_expect_success 'extra character after color name' '
 
 test_expect_success 'extra character after attribute' '
 	invalid_color "dimX"
+'
+
+test_expect_success 'non-hex character in RGB color' '
+	invalid_color "#x23456" &&
+	invalid_color "#1x3456" &&
+	invalid_color "#12x456" &&
+	invalid_color "#123x56" &&
+	invalid_color "#1234x6" &&
+	invalid_color "#12345x" &&
+	invalid_color "#x23" &&
+	invalid_color "#1x3" &&
+	invalid_color "#12x"
+'
+
+test_expect_success 'wrong number of letters in RGB color' '
+	invalid_color "#1" &&
+	invalid_color "#23" &&
+	invalid_color "#789a" &&
+	invalid_color "#bcdef" &&
+	invalid_color "#1234567"
 '
 
 test_expect_success 'unknown color slots are ignored (diff)' '

@@ -36,7 +36,7 @@ setup_cvs_test_repository () {
 test_cvs_co () {
 	# Usage: test_cvs_co BRANCH_NAME
 	rm -rf module-cvs-"$1"
-	if [ "$1" = "master" ]
+	if [ "$1" = "main" ]
 	then
 		$CVS co -P -d module-cvs-"$1" -A module
 	else
@@ -71,8 +71,8 @@ test_cmp_branch_tree () {
 		find . -type d -name .git -prune -o -type f -print
 	) | sort >module-git-"$1".list &&
 	test_cmp module-cvs-"$1".list module-git-"$1".list &&
-	cat module-cvs-"$1".list | while read f
+	while read f
 	do
 		test_cmp_branch_file "$1" "$f" || return 1
-	done
+	done <module-cvs-"$1".list
 }

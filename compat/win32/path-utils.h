@@ -6,11 +6,7 @@ int win32_has_dos_drive_prefix(const char *path);
 
 int win32_skip_dos_drive_prefix(char **path);
 #define skip_dos_drive_prefix win32_skip_dos_drive_prefix
-static inline int win32_is_dir_sep(int c)
-{
-	return c == '/' || c == '\\';
-}
-#define is_dir_sep win32_is_dir_sep
+#define is_dir_sep is_xplatform_dir_sep
 static inline char *win32_find_last_dir_sep(const char *path)
 {
 	char *ret = NULL;
@@ -33,5 +29,9 @@ static inline int win32_has_dir_sep(const char *path)
 #define has_dir_sep(path) win32_has_dir_sep(path)
 int win32_offset_1st_component(const char *path);
 #define offset_1st_component win32_offset_1st_component
+int win32_fspathcmp(const char *a, const char *b);
+#define fspathcmp win32_fspathcmp
+int win32_fspathncmp(const char *a, const char *b, size_t count);
+#define fspathncmp win32_fspathncmp
 
 #endif

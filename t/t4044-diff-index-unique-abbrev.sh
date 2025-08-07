@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test unique sha1 abbreviation on "index from..to" line'
+
 . ./test-lib.sh
 
 test_expect_success 'setup' '
@@ -32,12 +33,12 @@ test_expect_success 'setup' '
 	100644 blob $(test_oid hash2)	foo
 	EOF
 
-	echo "$(test_oid val1)" > foo &&
+	test_oid val1 > foo &&
 	git add foo &&
 	git commit -m "initial" &&
 	git cat-file -p HEAD: > actual &&
 	test_cmp expect_initial actual &&
-	echo "$(test_oid val2)" > foo &&
+	test_oid val2 > foo &&
 	git commit -a -m "update" &&
 	git cat-file -p HEAD: > actual &&
 	test_cmp expect_update actual

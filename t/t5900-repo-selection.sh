@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='selecting remote repo in ambiguous cases'
+
 . ./test-lib.sh
 
 reset() {

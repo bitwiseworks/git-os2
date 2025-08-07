@@ -6,6 +6,7 @@
 test_description='git apply should handle files with incomplete lines.
 
 '
+
 . ./test-lib.sh
 
 # setup

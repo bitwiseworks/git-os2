@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='Test wacky input to git config'
+
 . ./test-lib.sh
 
 # Leaving off the newline is intentional!

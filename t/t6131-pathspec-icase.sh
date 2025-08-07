@@ -1,6 +1,7 @@
 #!/bin/sh
 
 test_description='test case insensitive pathspec limiting'
+
 . ./test-lib.sh
 
 if test_have_prereq CASE_INSENSITIVE_FS

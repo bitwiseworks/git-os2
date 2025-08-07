@@ -4,10 +4,14 @@
 #ifndef DIFFCORE_H
 #define DIFFCORE_H
 
-#include "cache.h"
+#include "hash.h"
 
 struct diff_options;
+struct mem_pool;
+struct oid_array;
 struct repository;
+struct strintmap;
+struct strmap;
 struct userdiff_driver;
 
 /* This header file is internal between diff.c and its diff transformers
@@ -103,7 +107,7 @@ struct diff_filepair {
 	struct diff_filespec *one;
 	struct diff_filespec *two;
 	unsigned short int score;
-	char status; /* M C R A D U etc. (see Documentation/diff-format.txt or DIFF_STATUS_* in diff.h) */
+	char status; /* M C R A D U etc. (see Documentation/diff-format.adoc or DIFF_STATUS_* in diff.h) */
 	unsigned broken_pair : 1;
 	unsigned renamed_pair : 1;
 	unsigned is_unmerged : 1;
@@ -125,6 +129,8 @@ struct diff_filepair {
 #define DIFF_PAIR_MODE_CHANGED(p) ((p)->one->mode != (p)->two->mode)
 
 void diff_free_filepair(struct diff_filepair *);
+void pool_diff_free_filepair(struct mem_pool *pool,
+			     struct diff_filepair *p);
 
 int diff_unmodified_pair(struct diff_filepair *);
 
@@ -147,11 +153,10 @@ struct diff_queue_struct {
 	int nr;
 };
 
-#define DIFF_QUEUE_CLEAR(q) \
-	do { \
-		(q)->queue = NULL; \
-		(q)->nr = (q)->alloc = 0; \
-	} while (0)
+#define DIFF_QUEUE_INIT { 0 }
+
+void diff_queue_init(struct diff_queue_struct *q);
+void diff_queue_clear(struct diff_queue_struct *q);
 
 extern struct diff_queue_struct diff_queued_diff;
 struct diff_filepair *diff_queue(struct diff_queue_struct *,
@@ -159,11 +164,33 @@ struct diff_filepair *diff_queue(struct diff_queue_struct *,
 				 struct diff_filespec *);
 void diff_q(struct diff_queue_struct *, struct diff_filepair *);
 
+/* dir_rename_relevance: the reason we want rename information for a dir */
+enum dir_rename_relevance {
+	NOT_RELEVANT = 0,
+	RELEVANT_FOR_ANCESTOR = 1,
+	RELEVANT_FOR_SELF = 2
+};
+/* file_rename_relevance: the reason(s) we want rename information for a file */
+enum file_rename_relevance {
+	RELEVANT_NO_MORE = 0,  /* i.e. NOT relevant */
+	RELEVANT_CONTENT = 1,
+	RELEVANT_LOCATION = 2
+};
+
+void partial_clear_dir_rename_count(struct strmap *dir_rename_count);
+
 void diffcore_break(struct repository *, int);
 void diffcore_rename(struct diff_options *);
+void diffcore_rename_extended(struct diff_options *options,
+			      struct mem_pool *pool,
+			      struct strintmap *relevant_sources,
+			      struct strintmap *dirs_removed,
+			      struct strmap *dir_rename_count,
+			      struct strmap *cached_pairs);
 void diffcore_merge_broken(void);
 void diffcore_pickaxe(struct diff_options *);
 void diffcore_order(const char *orderfile);
+void diffcore_rotate(struct diff_options *);
 
 /* low-level interface to diffcore_order */
 struct obj_order {
