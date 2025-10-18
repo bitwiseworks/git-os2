@@ -33,7 +33,7 @@ extern int quote_path_fully;
 
 void sq_quote_buf(struct strbuf *, const char *src);
 void sq_quote_argv(struct strbuf *, const char **argv);
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 void sq_quotef(struct strbuf *, const char *fmt, ...);
 
 /*

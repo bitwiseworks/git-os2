@@ -2234,7 +2234,7 @@ static const char *sequencer_reflog_action(struct replay_opts *opts)
 	return opts->reflog_action;
 }
 
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 static const char *reflog_message(struct replay_opts *opts,
 	const char *sub_action, const char *fmt, ...)
 {
@@ -3880,7 +3880,7 @@ static int do_exec(struct repository *r, const char *command_line, int quiet)
 	return status;
 }
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 static int safe_append(const char *filename, const char *fmt, ...)
 {
 	va_list ap;

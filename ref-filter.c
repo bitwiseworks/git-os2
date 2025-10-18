@@ -250,7 +250,7 @@ static int used_atom_cnt, need_tagged, need_symref;
  * Expand string, append it to strbuf *sb, then return error code ret.
  * Allow to save few lines of code.
  */
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 static int strbuf_addf_ret(struct strbuf *sb, int ret, const char *fmt, ...)
 {
 	va_list ap;

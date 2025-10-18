@@ -258,7 +258,7 @@ static int fsck_vreport(struct fsck_options *options,
 	return result;
 }
 
-__attribute__((format (printf, 5, 6)))
+__attribute__((__format__ (__printf__, 5, 6)))
 static int report(struct fsck_options *options,
 		  const struct object_id *oid, enum object_type object_type,
 		  enum fsck_msg_id msg_id, const char *fmt, ...)

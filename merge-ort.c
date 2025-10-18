@@ -775,7 +775,7 @@ static void format_commit(struct strbuf *sb,
 	strbuf_addch(sb, '\n');
 }
 
-__attribute__((format (printf, 8, 9)))
+__attribute__((__format__ (__printf__, 8, 9)))
 static void path_msg(struct merge_options *opt,
 		     enum conflict_and_info_types type,
 		     int omittable_hint, /* skippable under --remerge-diff */

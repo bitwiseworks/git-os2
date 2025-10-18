@@ -32,7 +32,7 @@ FILE *fopen_or_warn(const char *path, const char *mode);
  */
 int xstrncmpz(const char *s, const char *t, size_t len);
 
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 int xsnprintf(char *dst, size_t max, const char *fmt, ...);
 
 int xgethostname(char *buf, size_t len);
@@ -63,7 +63,7 @@ void write_file_buf(const char *path, const char *buf, size_t len);
  *
  *   write_file(path, "counter: %d", ctr);
  */
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 void write_file(const char *path, const char *fmt, ...);
 
 /* Return 1 if the file is empty or does not exists, 0 otherwise. */

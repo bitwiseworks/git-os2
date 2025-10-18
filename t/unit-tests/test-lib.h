@@ -46,15 +46,15 @@ void test_plan(int count);
 int test_done(void);
 
 /* Skip the current test. */
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 void test_skip(const char *format, ...);
 
 /* Skip all remaining tests. */
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 void test_skip_all(const char *format, ...);
 
 /* Print a diagnostic message to stdout. */
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 void test_msg(const char *format, ...);
 
 /*
@@ -171,11 +171,11 @@ union test__tmp {
 
 extern union test__tmp test__tmp[2];
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 void test__run_describe(const char *, const char *, ...);
 
 int test__run_begin(void);
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 int test__run_end(int, const char *, const char *, ...);
 void test__todo_begin(void);
 int test__todo_end(const char *, const char *, int);

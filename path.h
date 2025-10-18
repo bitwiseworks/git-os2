@@ -54,15 +54,15 @@ const char *repo_common_path_replace(const struct repository *repo,
  */
 char *repo_git_path(struct repository *repo,
 		    const char *fmt, ...)
-	__attribute__((__format_ (__printf__, 2, 3)));
+	__attribute__((__format__ (__printf__, 2, 3)));
 const char *repo_git_path_append(struct repository *repo,
 				 struct strbuf *sb,
 				 const char *fmt, ...)
-	__attribute__((__format_ (__printf__, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 const char *repo_git_path_replace(struct repository *repo,
 				  struct strbuf *sb,
 				  const char *fmt, ...)
-	__attribute__((__format_ (__printf__, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 
 /*
  * Similar to repo_git_path() but can produce paths for a specified
@@ -72,7 +72,7 @@ const char *repo_git_path_replace(struct repository *repo,
 const char *worktree_git_path(struct repository *r,
 			      const struct worktree *wt,
 			      const char *fmt, ...)
-	__attribute__((__format_ (__printf__, 3, 4)));
+	__attribute__((__format__ (__printf__, 3, 4)));
 
 /*
  * The `repo_worktree_path` family of functions will construct a path into a

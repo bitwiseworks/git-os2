@@ -48,7 +48,7 @@ static void clear_credential(void)
 
 #define STRING_WITH_LENGTH(s) s, sizeof(s) - 1
 
-__attribute__((format (printf, 1, 2), __noreturn__))
+__attribute__((__format__ (__printf__, 1, 2), __noreturn__))
 static void die(const char *err, ...)
 {
 	char msg[4096];

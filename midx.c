@@ -850,7 +850,7 @@ void clear_midx_file(struct repository *r)
 
 static int verify_midx_error;
 
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 static void midx_report(const char *fmt, ...)
 {
 	va_list ap;

@@ -267,7 +267,7 @@ static inline void strbuf_insertstr(struct strbuf *sb, size_t pos,
 void strbuf_vinsertf(struct strbuf *sb, size_t pos, const char *fmt,
 		     va_list ap);
 
-__attribute__((format (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 void strbuf_insertf(struct strbuf *sb, size_t pos, const char *fmt, ...);
 
 /**
@@ -382,17 +382,17 @@ void strbuf_humanise_rate(struct strbuf *buf, off_t bytes);
 /**
  * Add a formatted string to the buffer.
  */
-__attribute__((__format__ (__printf__,2,3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 void strbuf_addf(struct strbuf *sb, const char *fmt, ...);
 
 /**
  * Add a formatted string prepended by a comment character and a
  * blank to the buffer.
  */
-__attribute__((__format__ (printf, 3, 4)))
+__attribute__((__format__ (__printf__, 3, 4)))
 void strbuf_commented_addf(struct strbuf *sb, const char *comment_prefix, const char *fmt, ...);
 
-__attribute__((__format__ (__printf__,2,0)))
+__attribute__((__format__ (__printf__, 2, 0)))
 void strbuf_vaddf(struct strbuf *sb, const char *fmt, va_list ap);
 
 /**
@@ -643,9 +643,9 @@ typedef int (*char_predicate)(char ch);
 void strbuf_addstr_urlencode(struct strbuf *sb, const char *name,
 			     char_predicate allow_unencoded_fn);
 
-__attribute__((__format__ (__printf__,1,2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 int printf_ln(const char *fmt, ...);
-__attribute__((__format__ (__printf__,2,3)))
+__attribute__((__format__ (__printf__, 2 ,3)))
 int fprintf_ln(FILE *fp, const char *fmt, ...);
 
 char *xstrdup_tolower(const char *);

@@ -147,7 +147,7 @@ static int write_in_file(const char *path, const char *mode, const char *format,
 	return fclose(fp);
 }
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 static int write_to_file(const char *path, const char *format, ...)
 {
 	int res;
@@ -160,7 +160,7 @@ static int write_to_file(const char *path, const char *format, ...)
 	return res;
 }
 
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 static int append_to_file(const char *path, const char *format, ...)
 {
 	int res;
@@ -432,7 +432,7 @@ static void bisect_status(struct bisect_state *state,
 	free(bad_ref);
 }
 
-__attribute__((format (printf, 1, 2)))
+__attribute__((__format__ (__printf__, 1, 2)))
 static void bisect_log_printf(const char *fmt, ...)
 {
 	struct strbuf buf = STRBUF_INIT;

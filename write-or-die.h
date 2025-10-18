@@ -2,7 +2,7 @@
 #define WRITE_OR_DIE_H
 
 void maybe_flush_or_die(FILE *, const char *);
-__attribute__((format (printf, 2, 3)))
+__attribute__((__format__ (__printf__, 2, 3)))
 void fprintf_or_die(FILE *, const char *fmt, ...);
 void fwrite_or_die(FILE *f, const void *buf, size_t count);
 void fflush_or_die(FILE *f);
