@@ -1,6 +1,5 @@
 #define GIT_OS2_NATIVE
 
-#include <ctype.h>
 #include <libcx/spawn2.h>
 #ifndef NO_ICONV
 # include <iconv.h>
@@ -27,6 +26,7 @@
 #ifdef __EMX__
 # define chdir(d) _chdir2(d)
 # define getcwd(d,n) _getcwd2(d,n)
+# undef O_SIZE /* clashes with ref-filter.c */
 #endif
 
 /*
