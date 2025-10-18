@@ -233,7 +233,6 @@ int exists_in_PATH(const char *command)
 	free(r);
 	return found;
 }
-#endif
 
 int sane_execvp(const char *file, char * const argv[])
 {
