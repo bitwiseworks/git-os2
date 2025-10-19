@@ -12,6 +12,7 @@
 # endif
 #endif
 
+int os2_pipe(int filedes[2]);
 #define pipe(A) os2_pipe(A)
 
 #define SHUT_RD         0               /* shut down the reading side */
