@@ -12,8 +12,7 @@
 # endif
 #endif
 
-/* Use socketpair() instead of pipe() because select() does not work on pipes */
-#define pipe(A) socketpair(AF_UNIX, SOCK_STREAM, 0, A)
+#define pipe(A) os2_pipe(A)
 
 #define SHUT_RD         0               /* shut down the reading side */
 #define SHUT_WR         1               /* shut down the writing side */

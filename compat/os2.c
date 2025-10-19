@@ -32,7 +32,7 @@ remap_charset(const char *org)
 {
   size_t i, i_s, n_org;
   char c, *s, *s_up;
-  
+
   enum {
     CMP_END = 0,
     CMP_CASE = 1,
@@ -79,10 +79,10 @@ remap_charset(const char *org)
     { CMP_NOCASE, "MS932", "IBM-932" }, /* better than nothing, maybe... */
     { CMP_NOCASE, "WINDOWS31J", "IBM-932" },
 #endif
-    
+
     { CMP_END, NULL, NULL }
   };
-  
+
   if (!org || !*org) return org;
   n_org = strlen(org);
   s = alloca(n_org + 1);
@@ -97,12 +97,12 @@ remap_charset(const char *org)
   }
   s[i_s] = '\0';
   s_up[i_s] = '\0';
-  
+
   for(i=0; rmt[i].flag != CMP_END; i++) {
     if (strcmp(rmt[i].map_from, rmt[i].flag == CMP_CASE ? s : s_up) == 0)
       return rmt[i].map_to;
   }
-  
+
   return org;
 }
 
@@ -121,7 +121,7 @@ iconv_t wrapped_iconv_open_for_klibc (const char *cp_to, const char *cp_from)
     UniChar *ucp_from;
   };
   iconv_t ic;
-  
+
   ic = iconv_open(remap_charset(cp_to), remap_charset(cp_from));
   if (ic != (iconv_t)-1) {
     struct k_iconv_t *kic = (struct k_iconv_t *)ic;
@@ -138,7 +138,7 @@ iconv_t wrapped_iconv_open_for_klibc (const char *cp_to, const char *cp_from)
       UniSetUconvObject(kic->uo_to, &ua);
     }
   }
-  
+
   return ic;
 }
 
@@ -177,4 +177,19 @@ void os2_startup(void)
     die("Put your home directory to the environment variable `HOME'.\n");
   if (!getenv ("TMPDIR"))
     die("Put your temporary directory to the environment variable `TMPDIR'.\n");
+}
+
+int os2_pipe(int filedes[2])
+{
+  /* Use socketpair() instead of pipe() because select() does not work on pipes */
+  int rc = socketpair(AF_UNIX, SOCK_STREAM, 0, filedes);
+  /*
+   * Make pipes non inheritable for spawn2 to work properly without the
+   * expensive P_2_NOINHERIT flag (note that MinGW does the same).
+   */
+  if (rc == 0) {
+    fcntl(filedes[0], F_SETFD, FD_CLOEXEC);
+    fcntl(filedes[1], F_SETFD, FD_CLOEXEC);
+  }
+  return rc;
 }
