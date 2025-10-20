@@ -819,4 +819,5 @@ ifeq ($(uname_S),OS/2)
 	PTHREAD_LIBS=-lpthread
 	CURL_CONFIG=curl-config
 	CURL_LDFLAGS=-L/@unixroot/usr/lib -lcurl
+	CSPRNG_METHOD = arc4random
 endif
